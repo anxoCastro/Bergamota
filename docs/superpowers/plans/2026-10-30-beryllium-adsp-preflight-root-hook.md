@@ -56,6 +56,6 @@
 
 - [x] **Step 1: Run the focused test** with `python3 -m unittest discover -s tools/tests -v` (2 tests passed).
 - [x] **Step 2: Build through GitHub Actions** and confirm the new patch applies and the kernel artifact is produced (run `41052991092`, SUCCESS).
-- [ ] **Step 3: Boot the rebuilt kernel temporarily** read-only with the existing Enxerto kernel/ADT, `sweetadsp=1`, `launchd_unsecure_cache=1`, and live UDP listener active.
-- [ ] **Step 4: Verify the capture** reports the firmware probe after rootvnode is set, records its result, and does not show any PAS/GLINK/LPASS action.
-- [ ] **Step 5: Commit and push** the completed patch, regression test, design update, and exact device evidence.
+- [x] **Step 3: Boot the rebuilt kernel temporarily** read-only with the existing Enxerto kernel/ADT, `sweetadsp=1`, `launchd_unsecure_cache=1`, and live UDP listener active.
+- [x] **Step 4: Verify the capture** reports the firmware probe after rootvnode is set, records its result, and does not show any PAS/GLINK/LPASS action.
+- [x] **Step 5: Commit and push** the completed patch, regression test, design update, and exact device evidence.
