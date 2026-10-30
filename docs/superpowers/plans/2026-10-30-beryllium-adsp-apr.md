@@ -52,7 +52,7 @@
 - [x] Register the source in `bsd/conf/files` and call the probe from `sweet_ufs.c` beside the existing Beryllium bring-up hooks.
 - [x] Record that Linux's PAS path enables proxy power domains and clocks before secure authentication; defer PAS until runtime ownership and XNU resource controls are confirmed.
 - [x] Attempt `USE_KDK=1 tools/xnu-local-build.sh 26.5`; exit 2 before XNU compilation on Linux because BSD `sed -i ''` syntax is unavailable (`sed: can't read s/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/: No such file or directory`). No image produced.
-- [ ] Commit as `feat: add read-only beryllium ADSP preflight`.
+- [x] Commit `cc866a9` as `feat: add read-only beryllium ADSP preflight`.
 
 ### Task 2: Add the ADSP GLINK endpoint
 
