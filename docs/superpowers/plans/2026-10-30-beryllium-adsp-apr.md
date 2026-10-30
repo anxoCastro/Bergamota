@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an opt-in XNU bootstrap that starts the Poco F1 SDM845 ADSP and proves APR Q6 core service discovery.
+**Goal:** Build a safe, evidence-led path toward Poco F1 audio by first adding an opt-in, read-only ADSP preflight; defer PAS startup and GLINK/APR writes until the device firmware and runtime ownership are verified.
 
-**Architecture:** Add an isolated Beryllium ADSP worker for firmware validation, PAS lifecycle, and SMP2P readiness. Add a separate ADSP GLINK/APR endpoint for PID 2, mailbox client 8, and `apr_audio_svc`; leave the modem transport and all PCM/codec/HAL routes untouched.
+**Architecture:** Add an isolated Beryllium ADSP preflight that validates local firmware metadata and inspects the remote-owned SMP2P item without writing shared memory or touching PAS. Later stages may add PAS and a separate ADSP GLINK/APR endpoint for PID 2, mailbox client 8, and `apr_audio_svc`; leave the modem transport and all PCM/codec/HAL routes untouched.
 
 **Tech Stack:** XNU 12377 kernel C, existing Beryllium boot-argument and firmware-loading patterns, Qualcomm SDM845 PAS/SMEM/SMP2P/GLINK/APR protocols, GitHub Actions kernel build.
 
@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- `sweetadsp=1` is required to run the ADSP worker; default boot must not touch ADSP resources.
-- Use PAS ID 1 and Beryllium reserved memory `0x8c500000 + 0x01e00000`; validate runtime ownership before assignment.
+- `sweetadsp=1` is required to run the ADSP preflight; default boot must not touch ADSP resources.
+- Linux's DTS reports PAS ID 1 and Beryllium reserved memory `0x8c500000 + 0x01e00000`; this plan's first implementation must not assign or write that memory.
 - ADSP SMP2P uses SMEM items 443/429, local PID 0, remote PID 2, mailbox client 10.
 - ADSP GLINK uses remote PID 2, mailbox client 8, and `apr_audio_svc`; determine and validate its SMEM transport items before use.
 - Keep Qualcomm/Xiaomi firmware and device dumps outside Git.
@@ -32,37 +32,38 @@
 
 ---
 
-### Task 1: Add opt-in ADSP PAS lifecycle and SMP2P readiness
+### Task 1: Add opt-in read-only ADSP preflight
 
 **Files:**
 - Create: `xnu/patches-12377/1131-beryllium-adsp-apr.patch`
 - Create through the patch: `bsd/dev/beryllium_adsp.c`
+- Create through the patch: `bsd/dev/beryllium_adsp.h`
 - Modify through the patch: `bsd/conf/files`
 - Modify through the patch: `bsd/dev/sweet_ufs.c`
 
 **Interfaces:**
 - Produces: `void beryllium_adsp_probe(void)`, called from the existing Beryllium bring-up point; the function returns immediately unless `sweetadsp=1`.
-- Produces: internal states `OFF`, `STARTING`, `DSP_READY`, `APR_READY`, and `FAILED`, with bounded waits and a single `SWEET ADSP:` log prefix.
+- Produces: `enum beryllium_adsp_state` with `OFF`, `PREFLIGHT`, `SMP2P_READY_OBSERVED`, `SMP2P_NOT_READY`, and `FAILED`; `bool beryllium_adsp_is_running_observed(void)` reports only the remote `ready` bit observation.
 - Consumes: the existing root firmware path `/usr/standalone/firmware/sweet/` and the `sweet_ufs.c` initialization point, which runs after `rootvnode` is available.
 
-- [ ] Inspect the actual local `adsp.mbn` artifact before selecting its parser; record its format, size, and segment layout in `docs/audio/BERYLLIUM_ADSP_APR_DESIGN.md` without adding the blob to Git.
-- [ ] Implement `beryllium_adsp_probe()` and the opt-in kernel worker in `bsd/dev/beryllium_adsp.c`; reject absent or invalid firmware before touching PAS or reserved memory.
-- [ ] Implement PAS ID 1 startup/cleanup using only the Beryllium ADSP memory region and SDM845 resources confirmed from the device tree; detect and preserve an already-ready DSP.
-- [ ] Implement bounded SMP2P readiness checks for items 443/429 and remote PID 2; log each state transition and stop on fatal/timeout.
-- [ ] Register the source in `bsd/conf/files` and call the probe from `sweet_ufs.c` beside the existing Beryllium bring-up hooks.
-- [ ] Run `USE_KDK=1 tools/xnu-local-build.sh 26.5`; record the exact result and keep the feature disabled in the default boot arguments.
-- [ ] Commit as `feat: add opt-in beryllium ADSP bootstrap`.
+- [x] Check the known local artifact paths for `adsp.mbn`; it is unavailable. Inspect the upstream PAS loader's ELF32/segment behavior and document that runtime validation remains outstanding. Implement only a bounded metadata parser that rejects unrecognized input.
+- [x] Implement `beryllium_adsp_probe()` as an opt-in read-only preflight in `bsd/dev/beryllium_adsp.c`; validate firmware metadata, then report SMP2P observations without issuing PAS calls or writing shared memory.
+- [x] Inspect only remote-owned SMP2P inbound item 443 for remote PID 2; validate the SMEM partition, item size, PIDs, entry count, and state name before reporting `ready`/`fatal` bits. Do not allocate or write outbound item 429.
+- [x] Register the source in `bsd/conf/files` and call the probe from `sweet_ufs.c` beside the existing Beryllium bring-up hooks.
+- [x] Record that Linux's PAS path enables proxy power domains and clocks before secure authentication; defer PAS until runtime ownership and XNU resource controls are confirmed.
+- [x] Attempt `USE_KDK=1 tools/xnu-local-build.sh 26.5`; exit 2 before XNU compilation on Linux because BSD `sed -i ''` syntax is unavailable (`sed: can't read s/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/: No such file or directory`). No image produced.
+- [ ] Commit as `feat: add read-only beryllium ADSP preflight`.
 
 ### Task 2: Add the ADSP GLINK endpoint
 
 **Files:**
 - Modify through the patch: `bsd/dev/beryllium_adsp.c`
 - Create through the patch: `bsd/dev/beryllium_adsp_ipc.c`
-- Create through the patch: `bsd/dev/beryllium_adsp.h`
+- Modify through the patch: `bsd/dev/beryllium_adsp.h`
 - Modify through the patch: `bsd/conf/files`
 
 **Interfaces:**
-- Consumes: Task 1's `DSP_READY` state.
+- Consumes: a positive SMP2P ready observation from Task 1; that does not establish that PAS ownership or GLINK shared-memory state is safe to modify.
 - Produces: `bool beryllium_adsp_ipc_start(void)`, `bool beryllium_adsp_ipc_poll(uint64_t deadline_ms)`, and `void beryllium_adsp_ipc_stop(void)`.
 - Endpoint parameters: remote PID 2, mailbox client 8, channel `apr_audio_svc`; SMEM descriptor/FIFO item numbers and ownership are resolved from SDM845 source/runtime evidence before they are encoded.
 
@@ -81,6 +82,7 @@
 **Interfaces:**
 - Consumes: `beryllium_adsp_ipc_start()`, `beryllium_adsp_ipc_poll()`, and the open `apr_audio_svc` channel.
 - Produces: `bool beryllium_adsp_apr_query_core_versions(uint32_t timeout_ms)`; query service 3 with `AVCS_GET_VERSIONS` opcode `0x00012905`, validate its response, and transition to `APR_READY` only on a valid reply.
+- Produces: `void beryllium_adsp_mark_apr_ready(void)` to publish the validated APR-ready transition to Task 1's state/logging.
 
 - [ ] Implement APR header construction and sequence tracking for one outstanding core query.
 - [ ] Parse only the expected APR response; bound the response payload and service-count fields before reading service/version entries.
@@ -88,7 +90,7 @@
 - [ ] Run `USE_KDK=1 tools/xnu-local-build.sh 26.5`; record the exact result.
 - [ ] Commit as `feat: query ADSP core versions over APR`.
 
-### Task 4: Verify the opt-in probe on device and record handoff
+### Task 4: Verify the opt-in preflight and record handoff
 
 **Files:**
 - Modify: `docs/audio/BERYLLIUM_ADSP_APR_DESIGN.md`
@@ -96,11 +98,10 @@
 - Build artifact: temporary kernel image only; do not flash a persistent boot partition.
 
 **Interfaces:**
-- Consumes: the complete PAS → SMP2P → GLINK → APR implementation from Tasks 1–3.
-- Produces: one CI build ID and one exact temporary boot result with the complete boot arguments and ADSP log sequence.
+- Consumes: the Task 1 read-only preflight; PAS/GLINK/APR remain gated on firmware and device-state evidence.
+- Produces: build/preflight evidence without flashing or changing partition contents.
 
-- [ ] Run the GitHub Actions kernel build with `gh`; record the run ID and result.
-- [ ] Boot the image with `fastboot boot` and `sweetadsp=1`; verify iOS reaches its normal boot target and collect the `SWEET ADSP:` log sequence.
-- [ ] Confirm that a boot without `sweetadsp=1` has no ADSP startup log and that no modem/WLAN regression appears in the observed boot.
-- [ ] Update `NOTES.md` with the patch/commit, CI run ID, exact build/boot results, and unresolved work; leave firmware/dumps out of Git.
-- [ ] Commit the documentation and handoff update.
+- [ ] Run the GitHub Actions kernel build with `gh` once the implementation branch is available remotely; record the run ID and result.
+- [ ] Run the read-only preflight on-device only after a compatible kernel build and authorized temporary boot are available; record exact arguments and `SWEET ADSP:` output.
+- [ ] Confirm that a boot without `sweetadsp=1` has no ADSP preflight log and that no modem/WLAN regression appears in the observed boot.
+- [ ] Update `NOTES.md` with the patch/commit, build/boot evidence, and remaining PAS/GLINK/APR prerequisites; leave firmware/dumps out of Git.
