@@ -10,5 +10,7 @@ enxerto/applelogo.h
 shim/out/
 xnu/out/
 xnu/out-*/
+.worktrees/
+.superpowers/
 __pycache__/
 tools/identity/out/
