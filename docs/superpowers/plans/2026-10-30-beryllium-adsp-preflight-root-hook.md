@@ -15,7 +15,7 @@
 - Firmware metadata reads are capped at 64 KiB and remain read-only.
 - SMP2P item 443 is remote-owned; do not write it or allocate outbound item 429.
 - Do not call PAS, assign the ADSP carve-out, start GLINK/APR, or touch LPASS.
-- Keep root writable only as needed for iOS startup; keep `sweetlog=0` during device tests.
+- Keep the root read-only during device tests if the post-root hook can be observed; keep `sweetlog=0`.
 - Device dumps and live logs stay under ignored `.superpowers/ci/` and out of Git.
 - Device boot uses `fastboot boot`; do not flash partitions.
 
@@ -56,6 +56,6 @@
 
 - [ ] **Step 1: Run the focused test** with `python3 -m unittest discover -s tools/tests -v`.
 - [ ] **Step 2: Build through GitHub Actions** and confirm the new patch applies and the kernel artifact is produced.
-- [ ] **Step 3: Boot the rebuilt kernel temporarily** with the existing Enxerto kernel/ADT, `sweetadsp=1`, `launchd_unsecure_cache=1`, and live UDP listener active.
+- [ ] **Step 3: Boot the rebuilt kernel temporarily** read-only with the existing Enxerto kernel/ADT, `sweetadsp=1`, `launchd_unsecure_cache=1`, and live UDP listener active.
 - [ ] **Step 4: Verify the capture** reports the firmware probe after rootvnode is set, records its result, and does not show any PAS/GLINK/LPASS action.
 - [ ] **Step 5: Commit and push** the completed patch, regression test, design update, and exact device evidence.
