@@ -46,13 +46,14 @@
 - Produces: `enum beryllium_adsp_state` with `OFF`, `PREFLIGHT`, `SMP2P_READY_OBSERVED`, `SMP2P_NOT_READY`, and `FAILED`; `bool beryllium_adsp_is_running_observed(void)` reports only the remote `ready` bit observation.
 - Consumes: the existing root firmware path `/usr/standalone/firmware/sweet/` and the `sweet_ufs.c` initialization point, which runs after `rootvnode` is available.
 
-- [x] Check the known local artifact paths for `adsp.mbn`; it is unavailable. Inspect the upstream PAS loader's ELF32/segment behavior and document that runtime validation remains outstanding. Implement only a bounded metadata parser that rejects unrecognized input.
+- [x] Check the known local artifact paths for `adsp.mbn`; it is unavailable. Inspect the upstream PAS loader's ELF32/segment behavior and document that runtime validation remains outstanding. Validate ELF header/program-header and declared section-table bounds, reject file ranges beyond ELF32 address space, apply Qualcomm's image-wide embedded/split classification to non-hash `PT_LOAD` payloads, and leave hash metadata and sidecar contents unverified.
 - [x] Implement `beryllium_adsp_probe()` as an opt-in read-only preflight in `bsd/dev/beryllium_adsp.c`; validate firmware metadata, then report SMP2P observations without issuing PAS calls or writing shared memory.
 - [x] Inspect only remote-owned SMP2P inbound item 443 for remote PID 2; validate the SMEM partition, item size, PIDs, entry count, and state name before reporting `ready`/`fatal` bits. Do not allocate or write outbound item 429.
 - [x] Register the source in `bsd/conf/files` and call the probe from `sweet_ufs.c` beside the existing Beryllium bring-up hooks.
 - [x] Record that Linux's PAS path enables proxy power domains and clocks before secure authentication; defer PAS until runtime ownership and XNU resource controls are confirmed.
 - [x] Attempt `USE_KDK=1 tools/xnu-local-build.sh 26.5`; exit 2 before XNU compilation on Linux because BSD `sed -i ''` syntax is unavailable (`sed: can't read s/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/: No such file or directory`). No image produced.
 - [x] Commit `cc866a9` as `feat: add read-only beryllium ADSP preflight`.
+- [x] Apply the review follow-up for ELF file/section bounds, image-wide `.bNN` classification, and separate hash metadata handling; re-review found no remaining actionable issues. The follow-up patch is not built or run on hardware.
 
 ### Task 2: Add the ADSP GLINK endpoint
 

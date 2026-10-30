@@ -26,7 +26,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/beryllium_adsp.c
-@@ -0,0 +1,418 @@
+@@ -0,0 +1,465 @@
 +/*
 + * Poco F1 (beryllium, SDM845): opt-in, read-only ADSP preflight.
 + *
@@ -80,6 +80,7 @@ new file mode 100644
 +#define ADSP_SMEM_MAX_ITEMS       512u
 +#define ADSP_ELF32_EHDR_BYTES     52u
 +#define ADSP_ELF32_PHDR_BYTES     32u
++#define ADSP_ELF32_SHDR_BYTES     40u
 +#define ADSP_ELF32_MAX_PHDRS      64u
 +#define ADSP_PT_LOAD              1u
 +#define ADSP_QCOM_MDT_TYPE_MASK   (7u << 24)
@@ -163,16 +164,33 @@ new file mode 100644
 +static bool
 +adsp_fw_validate_metadata(const uint8_t *e, size_t meta_len, uint64_t file_len)
 +{
-+	uint32_t phoff;
-+	uint16_t phnum;
-+	uint64_t phbytes, min_reloc = UINT64_MAX, max_reloc = 0;
-+	unsigned load_count = 0;
++	uint32_t phoff, shoff;
++	uint16_t phnum, shentsize, shnum, shstrndx;
++	uint64_t phbytes, shbytes, min_reloc = UINT64_MAX, max_reloc = 0;
++	unsigned load_count = 0, embedded_count = 0, split_count = 0;
++	bool split_image = false;
 +
 +	if (meta_len < ADSP_ELF32_EHDR_BYTES || adsp_u32le(e) != 0x464c457fu ||
 +	    e[4] != 1 || e[5] != 1 || e[6] != 1 ||
++	    adsp_u32le(e + 20) != 1 ||
 +	    adsp_u16le(e + 40) != ADSP_ELF32_EHDR_BYTES ||
 +	    adsp_u16le(e + 42) != ADSP_ELF32_PHDR_BYTES) {
 +		printf("SWEET ADSP: firmware is not a supported ELF32 little-endian MDT header\n");
++		return false;
++	}
++	shoff = adsp_u32le(e + 32);
++	shentsize = adsp_u16le(e + 46);
++	shnum = adsp_u16le(e + 48);
++	shstrndx = adsp_u16le(e + 50);
++	shbytes = (uint64_t)shentsize * shnum;
++	if (shoff == 0 && shnum == 0 && shstrndx == 0 &&
++	    (shentsize == 0 || shentsize == ADSP_ELF32_SHDR_BYTES)) {
++		/* No section table. */
++	} else if (shoff == 0 || shnum == 0 || shentsize != ADSP_ELF32_SHDR_BYTES ||
++	    shstrndx == 0xffffu || (shstrndx != 0 && shstrndx >= shnum) ||
++	    !adsp_range((size_t)file_len, shoff, shbytes)) {
++		printf("SWEET ADSP: firmware section-header table malformed or outside file (off %#x count %u entsize %u)\n",
++		    shoff, (unsigned)shnum, (unsigned)shentsize);
 +		return false;
 +	}
 +	phoff = adsp_u32le(e + 28);
@@ -183,13 +201,37 @@ new file mode 100644
 +		printf("SWEET ADSP: firmware program-header table outside bounded metadata (off %#x count %u)\n", phoff, (unsigned)phnum);
 +		return false;
 +	}
++	/* One out-of-file payload makes the Qualcomm MDT image split as a whole. */
++	for (unsigned i = 0; i < phnum; i++) {
++		const uint8_t *p = e + phoff + i * ADSP_ELF32_PHDR_BYTES;
++		uint32_t offset = adsp_u32le(p + 4), filesz = adsp_u32le(p + 16);
++		uint64_t data_end = (uint64_t)offset + filesz;
++		if (filesz == 0) {
++			continue;
++		}
++		if (data_end > 0x100000000ull) {
++			printf("SWEET ADSP: firmware program header %u has a file range beyond ELF32 address space\n", i);
++			return false;
++		}
++		if ((uint64_t)offset > file_len || data_end > file_len) {
++			split_image = true;
++		}
++	}
 +	for (unsigned i = 0; i < phnum; i++) {
 +		const uint8_t *p = e + phoff + i * ADSP_ELF32_PHDR_BYTES;
 +		uint32_t type = adsp_u32le(p), paddr = adsp_u32le(p + 12);
 +		uint32_t filesz = adsp_u32le(p + 16), memsz = adsp_u32le(p + 20), flags = adsp_u32le(p + 24);
 +		uint64_t end = (uint64_t)paddr + memsz;
-+		if (type != ADSP_PT_LOAD || (flags & ADSP_QCOM_MDT_TYPE_MASK) == ADSP_QCOM_MDT_TYPE_HASH) {
++		if (type != ADSP_PT_LOAD ||
++		    (flags & ADSP_QCOM_MDT_TYPE_MASK) == ADSP_QCOM_MDT_TYPE_HASH) {
 +			continue;
++		}
++		if (filesz != 0) {
++			if (split_image) {
++				split_count++;
++			} else {
++				embedded_count++;
++			}
 +		}
 +		if (filesz > memsz || end > 0x100000000ull) {
 +			printf("SWEET ADSP: firmware segment %u has invalid size/address (file %#x memory %#x paddr %#x)\n",
@@ -214,8 +256,13 @@ new file mode 100644
 +		    load_count, min_reloc, max_reloc);
 +		return false;
 +	}
-+	printf("SWEET ADSP: firmware metadata structurally valid: file %llu bytes, phdrs %u, load segments %u; segment data not loaded or verified\n",
-+	    (unsigned long long)file_len, phnum, load_count);
++	if (!split_image) {
++		printf("SWEET ADSP: firmware ELF metadata valid: file %llu bytes, phdrs %u, load segments %u, embedded non-hash load payloads %u; segment bytes and hash metadata source not checked\n",
++		    (unsigned long long)file_len, phnum, load_count, embedded_count);
++	} else {
++		printf("SWEET ADSP: firmware MDT metadata bounded: file %llu bytes, phdrs %u, load segments %u, split sidecars expected for %u nonempty non-hash PT_LOAD payloads (adsp.bNN existence/size not checked); hash metadata source not checked\n",
++		    (unsigned long long)file_len, phnum, load_count, split_count);
++	}
 +	return true;
 +}
 +

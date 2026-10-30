@@ -26,7 +26,7 @@ There are two different mailbox clients: SMP2P uses client 10 and the GLINK edge
 ## Startup flow
 
 1. **Remain opt-in.** Add a `sweetadsp=1` boot argument, disabled by default, and call the preflight from the existing Beryllium bring-up point after `rootvnode` is available. With the argument absent, do not load firmware or inspect ADSP resources.
-2. **Read-only preflight first.** Load the device's own `adsp.mbn` from the iOS root's `/usr/standalone/firmware/sweet/` directory and validate ELF32 metadata with strict size/offset bounds. The upstream [`mdt_loader.c`](https://github.com/torvalds/linux/blob/master/drivers/soc/qcom/mdt_loader.c) supports embedded and split `.bNN` segment data; the actual Beryllium artifact has not been found locally, so XNU must not claim compatibility or load segments until checked against that file. Keep firmware outside Git.
+2. **Read-only preflight first.** Read at most 64 KiB from the device's `adsp.mbn` at `/usr/standalone/firmware/sweet/` and validate ELF32 header/program-header bounds. Validate any declared section-header table against the full file size. Follow Qualcomm MDT's image-wide split rule: if any nonempty program-header file range falls outside the `.mbn`, classify the image as split and report `.bNN` sidecars as expected for every nonempty non-hash `PT_LOAD` payload. Hash metadata uses a separate path and its source is not classified by this preflight. It does not open sidecars or read segment bytes, so their existence and size remain unverified; it must not claim firmware compatibility or load segments until the device artifact is checked. This follows upstream [`mdt_loader.c`](https://github.com/torvalds/linux/blob/master/drivers/soc/qcom/mdt_loader.c). Keep firmware outside Git.
 3. **Inspect remote SMP2P state without modifying it.** The SDM845 DTS defines inbound item 443 and outbound item 429 for local PID 0 / remote PID 2. The first preflight may validate the SMEM table/private partition and read remote-owned item 443, reporting `slave-kernel` fatal/ready/handover/stop-ack bits. It must not allocate or write outbound item 429. A ready bit is an observation, not proof that memory reassignment or reset is safe.
 4. **Defer PAS startup.** The upstream PAS remoteproc path enables proxy power domains, XO/AGGRE2 clocks, optional supplies, and secure image context before authentication. Beryllium's firmware, current ADSP state, reserved-memory ownership, and exact XNU resource controls have not been inspected on-device. Do not call PAS ID 1, assign `0x8c500000 + 0x01e00000`, or reset LPASS until those facts are observed and documented.
 ### Later control-plane stages (not in the first patch)
@@ -43,7 +43,7 @@ The first implementation belongs in a new `bsd/dev/beryllium_adsp.c` driver regi
 
 The eventual driver may own firmware loading, ADSP PAS lifecycle, SMP2P, GLINK/APR transport, and diagnostics. The first patch owns only bounded firmware-metadata and read-only SMP2P inspection. It does not access LPASS registers directly. [HakiOS's ADSP driver](https://github.com/oosexgang/hakios-xnu-kernel/blob/main/xnu/files/bsd/dev/hakios.adsp.c) reports that its LPASS/I2S state is owned by the DSP; use the ADSP's AFE protocol once the APR control plane is understood. Its device-specific constants are not Beryllium values.
 
-The first preflight should produce clear `SWEET ADSP:` logs for firmware-metadata validation and the read-only SMP2P snapshot. A later PAS/GLINK/APR boot can add those stage results after firmware, ownership, power, and transport details are observed. Do not add any analog route or PCM operation to this milestone.
+The first preflight should produce clear `SWEET ADSP:` logs for ELF metadata bounds, embedded versus expected image-wide split non-hash payloads, the unclassified hash-metadata source, and the read-only SMP2P snapshot. An expected `.bNN` sidecar is not evidence that it exists or has the required size. A later PAS/GLINK/APR boot can add those stage results after firmware, ownership, power, and transport details are observed. Do not add any analog route or PCM operation to this milestone.
 
 ## Evidence, inference, and unresolved points
 
@@ -69,7 +69,7 @@ Use Linux and HakiOS to identify protocol behavior, topology, and hardware facts
 ## First-milestone acceptance
 
 - Normal boot without `sweetadsp=1` performs no ADSP operation.
-- An opt-in preflight validates available firmware metadata and reads only the remote-owned SMP2P item, with all lengths and offsets bounded.
+- An opt-in preflight validates ELF header/program-header and declared section-table bounds, classifies the image as embedded or split using the Qualcomm MDT rule, reports expected but unverified `.bNN` sidecars for non-hash payloads, leaves hash-metadata source unclassified, and reads only the remote-owned SMP2P item.
 - No PAS call, memory assignment, SMP2P outbound write, GLINK/APR operation, or LPASS register write occurs in this first implementation.
 - Preflight failures are logged and leave iOS booting; no audio route is claimed to work.
 - Build and device evidence is recorded in `NOTES.md`; firmware and dumps stay outside Git.
