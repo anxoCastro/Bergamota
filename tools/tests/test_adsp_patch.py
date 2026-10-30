@@ -67,6 +67,14 @@ class AdspPatchPlacementTests(unittest.TestCase):
         self.assertLess(set_root, unlock)
         self.assertLess(unlock, probe)
 
+    def test_firmware_path_uses_the_phone_split_mdt_artifact(self):
+        section = diff_section(self.patch, "bsd/dev/beryllium_adsp.c")
+        self.assertIn(
+            '#define ADSP_FW_PATH             "/usr/standalone/firmware/sweet/adsp.mdt"',
+            section,
+        )
+        self.assertIn("adsp.bNN existence/size not checked", section)
+
 
 if __name__ == "__main__":
     unittest.main()

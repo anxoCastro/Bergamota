@@ -48,9 +48,9 @@ new file mode 100644
 + * SMP2P inbound item 443. It never calls PAS, assigns or writes the ADSP
 + * carve-out, allocates/writes outbound item 429, or starts GLINK/APR.
 + *
-+ * The firmware and runtime memory ownership have not yet been inspected on
-+ * the phone. Linux references establish the topology, not that a cold start
-+ * is safe. See docs/audio/BERYLLIUM_ADSP_APR_DESIGN.md.
++ * The phone's split MDT and sidecars have been inspected read-only. Runtime
++ * ADSP state and memory ownership remain unknown; Linux topology does not
++ * establish that a cold start is safe. See docs/audio/BERYLLIUM_ADSP_APR_DESIGN.md.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +#include <sys/param.h>
@@ -69,7 +69,7 @@ new file mode 100644
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 +extern vnode_t rootvnode;
 +
-+#define ADSP_FW_PATH             "/usr/standalone/firmware/sweet/adsp.mbn"
++#define ADSP_FW_PATH             "/usr/standalone/firmware/sweet/adsp.mdt"
 +#define ADSP_FW_MAX_SIZE         0x04000000u     /* 64 MiB hard cap; only metadata is copied */
 +#define ADSP_FW_META_MAX         0x00010000u     /* accept program-header tables in first 64 KiB */
 +#define ADSP_PAS_REGION_PA       0x8c500000ull   /* DTS fact; this read-only file never maps it */
