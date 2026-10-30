@@ -36,10 +36,10 @@
 - Read: `tools/renegade/targets.py`, `tools/renegade/berga_tools.py`, `tools/renegade-rs/README.md`
 - Use: `/home/castro/.ssh/id_ed25519.pub`
 
-- [ ] Confirm the target profile resolves to `iPhone12,1`, iOS `26.6.2`, build `23G90`.
-- [ ] Resolve the official IPSW URL for `iPhone12,1` / `26.6.2` / `23G90`; the Rust builder accepts a file or URL and reads archive members by range, so a full IPSW download is not required.
-- [ ] Fetch a `berga-tools` release with `tools/renegade/berga_tools.py` into the ignored work directory. The current local v1 cache cannot be used for SSH. Require its manifest/hash checks to pass, then create a zip from the verified release directory with `berga-tools.json` and the original relative paths at the archive root.
-- [ ] Preserve the downloaded/verified inputs only under `.superpowers/`; record source/build identifiers and the tools bundle checksum in the handoff.
+- [x] Confirm the target profile resolves to `iPhone12,1`, iOS `26.6.2`, build `23G90`.
+- [x] Resolve the official IPSW URL for `iPhone12,1` / `26.6.2` / `23G90`; the Rust builder accepts a file or URL and reads archive members by range, so a full IPSW download is not required.
+- [x] Fetch a `berga-tools` release with `tools/renegade/berga_tools.py` into the ignored work directory. The current local v1 cache cannot be used for SSH. Require its manifest/hash checks to pass, then create a zip from the verified release directory with `berga-tools.json` and the original relative paths at the archive root.
+- [x] Preserve the downloaded/verified inputs only under `.superpowers/`; record source/build identifiers and the tools bundle checksum in the handoff.
 
 **Check:** target values match exactly; the bundle manifest passes its SHA-256 checks and contains `ssh/dropbear`, `ssh/dash`, and `ssh/toybox`; the public-key fingerprint is `SHA256:01rQdgsXlkx/HtH59xKz3jFXTBJ9DzuRtQOgiFmouvs`.
 
