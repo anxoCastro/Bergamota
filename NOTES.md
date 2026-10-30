@@ -24,6 +24,7 @@
 ### >>> 2026-10-30: prepare temporary TWRP boot for Poco F1 <<<
 * **Observed:** official TWRP for `beryllium` downloaded to ignored `.superpowers/ci/41042687930/twrp-3.7.0_9-0-beryllium.img` (40,161,280 bytes). SHA-256 `04891640b4b53d1f97f031773d0553d8026b8de8e286589a79bc7856b2ff0eb3` matches the official checksum. Source: https://dl.twrp.me/beryllium/twrp-3.7.0_9-0-beryllium.img.html .
 * **Observed:** `fastboot reboot recovery` returned `OKAY`; afterward host ADB and Fastboot both saw zero devices. User reports the phone is at the Fastboot screen. Latest host check: `fastboot devices` count 0 and no Xiaomi/Qualcomm USB VID/PID. No TWRP boot has been sent yet. No partition was flashed or written.
+* **2026-10-30 reconnect attempt:** user reconnected the cable; host polling for 20 seconds still found zero Fastboot devices and no Xiaomi/Qualcomm USB VID/PID. This is a host USB enumeration issue, not a failed TWRP boot; no boot command was issued.
 * **Next:** reconnect the data cable/try another USB port while the phone remains in Fastboot. Once exactly one device enumerates and `fastboot getvar product` is `beryllium`, run `fastboot boot .superpowers/ci/41042687930/twrp-3.7.0_9-0-beryllium.img` (temporary boot only). In TWRP, read only the existing `boot` partition to the host so the Enxerto kernel/DTB can be reused; do not access `userdata` or flash any partition.
 
 ### >>> 2026-10-26: Wi-Fi, PAC fallback and Chlorophyll-on-Turnip merged into develop (user) <<<
