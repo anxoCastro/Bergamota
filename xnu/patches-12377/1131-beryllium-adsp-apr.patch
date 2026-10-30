@@ -22,11 +22,24 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
  	sweet80211_init();          /* boot-arg sweet80211=N (iOS 26 Wi-Fi stand-in), off by default */
 +	beryllium_adsp_probe();	/* boot-arg sweetadsp=1: read-only preflight */
  	return 0;
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -940,5 +940,9 @@
+ 	lck_rw_lock_exclusive(&rootvnode_rw_lock);
+ 	set_rootvnode(init_rootvnode);
+ 	lck_rw_unlock_exclusive(&rootvnode_rw_lock);
+ 	init_rootvnode = NULLVP; /* use rootvnode after this point */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	extern void beryllium_adsp_firmware_probe(void);
++	beryllium_adsp_firmware_probe();
++#endif
+ 	if (!bsd_rooted_ramdisk()) {
 diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/beryllium_adsp.c
-@@ -0,0 +1,465 @@
+@@ -0,0 +1,483 @@
 +/*
 + * Poco F1 (beryllium, SDM845): opt-in, read-only ADSP preflight.
 + *
@@ -90,6 +103,8 @@ new file mode 100644
 +static volatile uint8_t *adsp_smem;
 +static enum beryllium_adsp_state adsp_state = BERYLLIUM_ADSP_OFF;
 +static bool adsp_firmware_metadata_valid;
++static bool adsp_probe_enabled;
++static bool adsp_firmware_probe_done;
 +
 +static uint16_t
 +adsp_u16le(const uint8_t *p)
@@ -459,9 +474,6 @@ new file mode 100644
 +beryllium_adsp_probe(void)
 +{
 +	int mode = 0;
-+	void *metadata = NULL;
-+	size_t metadata_len = 0;
-+	uint64_t file_len = 0;
 +
 +	if (!sweet_board_beryllium()) {
 +		return;
@@ -470,8 +482,28 @@ new file mode 100644
 +	if (mode != 1) {
 +		return;
 +	}
++	adsp_probe_enabled = true;
 +	adsp_state = BERYLLIUM_ADSP_PREFLIGHT;
 +	printf("SWEET ADSP: opt-in read-only preflight (PAS/SMEM writes disabled)\n");
++	adsp_smp2p_readonly_probe();
++	printf("SWEET ADSP: early SMP2P snapshot complete; state=%u\n", (unsigned)adsp_state);
++}
++
++void
++beryllium_adsp_firmware_probe(void)
++{
++	void *metadata = NULL;
++	size_t metadata_len = 0;
++	uint64_t file_len = 0;
++
++	if (!adsp_probe_enabled || adsp_firmware_probe_done) {
++		return;
++	}
++	if (rootvnode == NULLVP) {
++		printf("SWEET ADSP: root vnode unavailable; post-root firmware probe skipped\n");
++		return;
++	}
++	adsp_firmware_probe_done = true;
 +	if (adsp_fw_read_metadata(&metadata, &metadata_len, &file_len)) {
 +		adsp_firmware_metadata_valid = adsp_fw_validate_metadata(metadata, metadata_len, file_len);
 +		kfree_data(metadata, (vm_size_t)metadata_len);
@@ -481,8 +513,7 @@ new file mode 100644
 +	if (!adsp_firmware_metadata_valid) {
 +		printf("SWEET ADSP: firmware metadata unavailable or invalid; no PAS operation attempted\n");
 +	}
-+	adsp_smp2p_readonly_probe();
-+	printf("SWEET ADSP: preflight complete; firmware metadata valid=%u state=%u\n",
++	printf("SWEET ADSP: post-root firmware probe complete; metadata valid=%u state=%u\n",
 +	    (unsigned)adsp_firmware_metadata_valid, (unsigned)adsp_state);
 +}
 +
@@ -496,7 +527,7 @@ diff --git a/bsd/dev/beryllium_adsp.h b/bsd/dev/beryllium_adsp.h
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/beryllium_adsp.h
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,23 @@
 +/*
 + * Read-only Poco F1 ADSP preflight. No PAS/GLINK/audio state is changed here.
 + */
@@ -515,6 +546,7 @@ new file mode 100644
 +};
 +
 +void beryllium_adsp_probe(void);
++void beryllium_adsp_firmware_probe(void);
 +bool beryllium_adsp_is_running_observed(void);
 +#endif
 +
