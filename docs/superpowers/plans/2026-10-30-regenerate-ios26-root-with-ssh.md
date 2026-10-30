@@ -47,17 +47,17 @@
 
 **Output:** `.superpowers/ios26-root-rebuild/ios26-root-ssh.simg`
 
-- [ ] Build `renegade-rs` from `tools/renegade-rs/Cargo.toml` in release mode.
-- [ ] Run `cargo run --release --manifest-path tools/renegade-rs/Cargo.toml -- root-ipsw <23G90 IPSW URL> .superpowers/ios26-root-rebuild/ios26-root-ssh.simg --tools .superpowers/ios26-root-rebuild/berga-tools.zip --ssh-key /home/castro/.ssh/id_ed25519.pub --size 24g`.
-- [ ] Confirm the build log reports the exact target and completes its copy, tweak, Mach-O, cache, and sparse-image stages. Keep the existing device untouched.
+- [x] Build `renegade-rs` from `tools/renegade-rs/Cargo.toml` in release mode.
+- [x] Run `cargo run --release --manifest-path tools/renegade-rs/Cargo.toml -- root-ipsw <23G90 IPSW URL> .superpowers/ios26-root-rebuild/ios26-root-ssh.simg --tools .superpowers/ios26-root-rebuild/berga-tools.zip --ssh-key /home/castro/.ssh/id_ed25519.pub --size 24g`.
+- [x] Confirm the build log reports the exact target and completes its copy, tweak, Mach-O, cache, and sparse-image stages. Keep the existing device untouched.
 
 **Check:** output exists at the new path, is an Android sparse image, and its SHA-256 and byte size are recorded. No output is written to a device partition.
 
 ### Task 3: Inspect the image's SSH setup offline
 
-- [ ] Use `renegade-rs hfs <image> cat private/var/root/.ssh/authorized_keys` to compare the embedded public key with the local `.pub` file.
-- [ ] Use `renegade-rs hfs <image> stat private/var/root/.ssh/authorized_keys` and `ls` on the relevant launch-daemon directory to confirm root ownership/mode and `org.sweet.dropbear.plist` presence.
-- [ ] Record the final image checksum and the offline checks in `NOTES.md`.
+- [x] Use `renegade-rs hfs <image> cat private/var/root/.ssh/authorized_keys` to compare the embedded public key with the local `.pub` file.
+- [x] Use `renegade-rs hfs <image> stat private/var/root/.ssh/authorized_keys` and `ls` on the relevant launch-daemon directory to confirm root ownership/mode and `org.sweet.dropbear.plist` presence.
+- [x] Record the final image checksum and the offline checks in `NOTES.md`.
 
 **Check:** the authorized key fingerprint matches the host key; Dropbear, dash, toybox, and the launch job are present; no private key bytes are in the image or Git.
 
