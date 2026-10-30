@@ -25,16 +25,17 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -940,5 +940,9 @@
+@@ -928,6 +928,10 @@
  	lck_rw_lock_exclusive(&rootvnode_rw_lock);
  	set_rootvnode(init_rootvnode);
  	lck_rw_unlock_exclusive(&rootvnode_rw_lock);
- 	init_rootvnode = NULLVP; /* use rootvnode after this point */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +	extern void beryllium_adsp_firmware_probe(void);
 +	beryllium_adsp_firmware_probe();
 +#endif
- 	if (!bsd_rooted_ramdisk()) {
+ 	init_rootvnode = NULLVP;  /* use rootvnode after this point */
+ 
+ 
 diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 new file mode 100644
 --- /dev/null
