@@ -110,8 +110,48 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertNotIn('adsp_pas_call("GLINK"', self.driver)
         self.assertNotIn('adsp_pas_call("SHUTDOWN"', self.driver)
         self.assertIn("watchdog SPI 162 is not observed", self.driver)
-        self.assertNotIn("ADSP_SMP2P_OUT_ITEM", self.driver)
-        self.assertNotRegex(self.driver, r"adsp_smem\s*\[[^]]+\]\s*=")
+
+    def test_pas_prepare_publishes_adsp_outbound_smp2p_before_init_image(self):
+        start = added_function_body(self.driver, "beryllium_adsp_pas_start")
+        prepare = added_function_body(self.driver, "adsp_smp2p_out_setup")
+        map_ipc = added_function_body(self.driver, "adsp_smp2p_map_ipc")
+        kick = added_function_body(self.driver, "adsp_smp2p_kick")
+        self.assertRegex(self.driver, r"#define ADSP_SMP2P_OUT_ITEM\s+429u")
+        self.assertRegex(self.driver, r"#define ADSP_SMP2P_DOORBELL\s+10u")
+        self.assertLess(start.index("adsp_smp2p_prepare"), start.index('adsp_pas_call("INIT_IMAGE"'))
+        self.assertLess(prepare.index("adsp_smp2p_map_ipc"), prepare.index("adsp_smem_alloc_private_item"))
+        self.assertIn("ADSP_APSS_SHARED_PA", map_ipc)
+        self.assertIn("adsp_smp2p_ipc + 12", kick)
+        self.assertIn("1u << ADSP_SMP2P_DOORBELL", kick)
+        for item in (
+            "ADSP_SMP2P_OUT_ITEM",
+            "ADSP_SMP2P_ITEM_SIZE",
+            "ADSP_LOCAL_PID",
+            "ADSP_REMOTE_PID",
+            '"stop"',
+            "ADSP_SMP2P_MAGIC",
+        ):
+            self.assertIn(item, prepare, item)
+        self.assertIn("adsp_smem_alloc_private_item", self.driver)
+        self.assertNotIn("ADSP_SMP2P_IN_ITEM", prepare)
+        self.assertNotRegex(prepare, r"adsp_smem\s*\[[^]]+\]\s*=")
+
+    def test_pas_refuses_malformed_or_active_smp2p_lifecycle_state(self):
+        start = added_function_body(self.driver, "beryllium_adsp_pas_start")
+        prepare = start.index("adsp_smp2p_prepare")
+        for gate in (
+            "adsp_smp2p_ambiguous",
+            "adsp_state == BERYLLIUM_ADSP_FAILED",
+            "adsp_remote_ready",
+            "adsp_remote_fatal",
+            "adsp_remote_handover",
+            "adsp_remote_stop_ack",
+        ):
+            self.assertLess(start.index(gate), prepare, gate)
+        probe = added_function_body(self.driver, "adsp_smp2p_readonly_probe")
+        self.assertIn("adsp_smp2p_ambiguous = true", probe)
+        self.assertIn("adsp_remote_handover =", probe)
+        self.assertIn("adsp_remote_stop_ack =", probe)
 
     def test_default_and_mode_one_do_not_reach_pas_start(self):
         probe = added_function_body(self.driver, "beryllium_adsp_probe")

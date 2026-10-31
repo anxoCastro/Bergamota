@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 --- a/bsd/dev/beryllium_adsp.c
 +++ b/bsd/dev/beryllium_adsp.c
-@@ -1,109 +1,163 @@
+@@ -1,108 +1,176 @@
  /*
 - * Poco F1 (beryllium, SDM845): opt-in, read-only ADSP preflight.
 + * Poco F1 (beryllium, SDM845): read-only preflight plus explicit PAS mode.
@@ -10,8 +10,8 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 - * SMP2P inbound item 443. It never calls PAS, assigns or writes the ADSP
 - * carve-out, allocates/writes outbound item 429, or starts GLINK/APR.
 + * Default boot does nothing. sweetadsp=1 reads bounded ELF32 metadata and
-+ * remote-owned SMP2P item 443. Only sweetadsp=2 may attempt PAS ID 1 startup.
-+ * No mode writes SMP2P or starts GLINK/APR/audio.
++ * remote-owned SMP2P item 443. sweetadsp=2 may initialize AP-owned item 429
++ * and attempt PAS ID 1 startup. Neither mode writes item 443 or starts GLINK/APR/audio.
   *
   * The phone's split MDT and sidecars have been inspected read-only. Runtime
   * ADSP state and memory ownership remain unknown; Linux topology does not
@@ -60,6 +60,14 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  #define ADSP_SMEM_PA             0x86000000u
  #define ADSP_SMEM_SIZE           0x00200000u
  #define ADSP_SMP2P_IN_ITEM       443u
++#define ADSP_SMP2P_OUT_ITEM      429u
++#define ADSP_SMP2P_DOORBELL      10u
++#define ADSP_SMP2P_ITEM_SIZE     (ADSP_SMP2P_HEADER_BYTES + ADSP_SMP2P_MAX_ENTRY * ADSP_SMP2P_ENTRY_BYTES)
++#define ADSP_SMP2P_VERSION       2u
++#define ADSP_SMP2P_FEATURE_SSR_ACK 1u
++#define ADSP_SMEM_HWLOCK_PA      0x01f40000u
++#define ADSP_SMEM_HWLOCK_ID      3u
++#define ADSP_APSS_SHARED_PA      0x17990000u
  #define ADSP_REMOTE_PID          2u
  #define ADSP_LOCAL_PID           0u
  #define ADSP_SMP2P_MAGIC         0x504d5324u     /* "$SMP" */
@@ -108,7 +116,9 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	bool relocatable, split;
 +};
  
- static volatile uint8_t *adsp_smem;
++static volatile uint8_t *adsp_smem;
++static vm_offset_t adsp_smem_mutex;
++static vm_offset_t adsp_smp2p_ipc;
  static enum beryllium_adsp_state adsp_state = BERYLLIUM_ADSP_OFF;
  static bool adsp_firmware_metadata_valid;
  static bool adsp_probe_enabled;
@@ -117,8 +127,11 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +static bool adsp_smp2p_known;
 +static bool adsp_remote_ready;
 +static bool adsp_remote_fatal;
++static bool adsp_remote_handover;
++static bool adsp_remote_stop_ack;
 +static bool adsp_smp2p_ambiguous;
 +static bool adsp_smp2p_quiet;
++static uint8_t adsp_remote_smp2p_version;
  
  static uint16_t
  adsp_u16le(const uint8_t *p)
@@ -171,7 +184,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  		return false;
  	}
  	error = vnode_size(vp, &size, ctx);
-@@ -248,236 +301,811 @@
+@@ -248,233 +301,1104 @@
  	}
  	p = adsp_smem + off;
  	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -189,6 +202,20 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  	return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
  }
  
++static void
++adsp_smem_wr32(uint32_t off, uint32_t value)
++{
++	volatile uint8_t *p;
++	if (adsp_smem == NULL || off > ADSP_SMEM_SIZE - 4) {
++		return;
++	}
++	p = adsp_smem + off;
++	p[0] = (uint8_t)value;
++	p[1] = (uint8_t)(value >> 8);
++	p[2] = (uint8_t)(value >> 16);
++	p[3] = (uint8_t)(value >> 24);
++}
++
  static bool
  adsp_smem_private_item(uint16_t host_a, uint16_t host_b, uint16_t wanted,
      uint32_t *data_off, uint32_t *data_size)
@@ -286,6 +313,256 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  	return false;
  }
  
++/* Lock TCSR mutex 3 while editing the Apps<->ADSP private SMEM allocation list. */
++static bool
++adsp_smem_lock(void)
++{
++	volatile uint32_t *lock;
++	if (adsp_smem_mutex == 0) {
++		adsp_smem_mutex = ml_io_map(ADSP_SMEM_HWLOCK_PA, 0x4000);
++	}
++	if (adsp_smem_mutex == 0) {
++		printf("SWEET ADSP: SMEM hwlock mapping failed\n");
++		return false;
++	}
++	lock = (volatile uint32_t *)(adsp_smem_mutex + ADSP_SMEM_HWLOCK_ID * 0x1000u);
++	for (unsigned i = 0; i < 1000; i++) {
++		*lock = 1u; /* apps host ID */
++		__asm__ volatile ("dsb sy" ::: "memory");
++		if (*lock == 1u) {
++			return true;
++		}
++		delay(1000);
++	}
++	printf("SWEET ADSP: SMEM hwlock %u busy (owner %#x)\n", ADSP_SMEM_HWLOCK_ID, *lock);
++	return false;
++}
++
++static void
++adsp_smem_unlock(void)
++{
++	volatile uint32_t *lock = (volatile uint32_t *)(adsp_smem_mutex + ADSP_SMEM_HWLOCK_ID * 0x1000u);
++	if (*lock == 1u) {
++		*lock = 0;
++		__asm__ volatile ("dsb sy" ::: "memory");
++	} else {
++		printf("SWEET ADSP: SMEM hwlock ownership changed (%#x)\n", *lock);
++	}
++}
++
++static bool
++adsp_smem_private_partition(uint16_t host_a, uint16_t host_b,
++    uint32_t *part_off_out, uint32_t *part_size_out)
++{
++	const uint32_t top = ADSP_SMEM_SIZE - 0x1000;
++	uint32_t count = adsp_smem_rd32(top + 8);
++	if (adsp_smem_rd32(top) != ADSP_SMEM_TOC_MAGIC || count == 0 ||
++	    count > ADSP_SMEM_MAX_PARTITIONS ||
++	    !adsp_range(ADSP_SMEM_SIZE, top + ADSP_SMEM_TOC_BYTES,
++	    (uint64_t)count * ADSP_SMEM_TOC_ENTRY_BYTES)) {
++		printf("SWEET ADSP: SMEM TOC invalid during outbound allocation\n");
++		return false;
++	}
++	for (uint32_t i = 0; i < count; i++) {
++		uint32_t ent = top + ADSP_SMEM_TOC_BYTES + i * ADSP_SMEM_TOC_ENTRY_BYTES;
++		uint32_t off = adsp_smem_rd32(ent), size = adsp_smem_rd32(ent + 4);
++		uint32_t hosts = adsp_smem_rd32(ent + 12);
++		uint16_t h0 = (uint16_t)hosts, h1 = (uint16_t)(hosts >> 16);
++		if (!off || size < ADSP_SMEM_PART_HDR_BYTES ||
++		    !((h0 == host_a && h1 == host_b) || (h0 == host_b && h1 == host_a))) {
++			continue;
++		}
++		if (!adsp_range(ADSP_SMEM_SIZE, off, size) ||
++		    adsp_smem_rd32(off) != ADSP_SMEM_PART_MAGIC ||
++		    adsp_smem_rd16(off + 4) != h0 || adsp_smem_rd16(off + 6) != h1 ||
++		    adsp_smem_rd32(off + 8) > size) {
++			printf("SWEET ADSP: Apps<->ADSP SMEM partition %u invalid\n", i);
++			return false;
++		}
++		*part_off_out = off;
++		*part_size_out = size;
++		return true;
++	}
++	printf("SWEET ADSP: Apps<->ADSP SMEM partition unavailable\n");
++	return false;
++}
++
++/* qcom_smem_alloc_private() item layout, protected by the Linux-compatible hwspinlock. */
++static bool
++adsp_smem_alloc_private_item(uint16_t host_a, uint16_t host_b, uint16_t wanted,
++    uint32_t size, uint32_t *data_off_out, uint32_t *data_size_out)
++{
++	uint32_t part_off = 0, part_size = 0;
++	uint32_t free_uncached = 0, free_cached = 0, pos = 0, found = 0, found_size = 0;
++	bool walked_to_end = false;
++	if (adsp_smem == NULL ||
++	    !adsp_smem_private_partition(host_a, host_b, &part_off, &part_size) ||
++	    !adsp_smem_lock()) {
++		return false;
++	}
++	free_uncached = adsp_smem_rd32(part_off + 12);
++	free_cached = adsp_smem_rd32(part_off + 16);
++	if (free_uncached < ADSP_SMEM_PART_HDR_BYTES || free_uncached > free_cached ||
++	    free_cached > part_size) {
++		goto out;
++	}
++	pos = part_off + ADSP_SMEM_PART_HDR_BYTES;
++	for (unsigned guard = 0; guard < ADSP_SMEM_MAX_ITEMS && pos < part_off + free_uncached; guard++) {
++		uint32_t w0, raw_size, pads, pad_data, pad_hdr, payload, next;
++		if (!adsp_range(ADSP_SMEM_SIZE, pos, ADSP_SMEM_PRIVATE_HDR) ||
++		    pos + ADSP_SMEM_PRIVATE_HDR > part_off + free_uncached) {
++			goto out;
++		}
++		w0 = adsp_smem_rd32(pos);
++		raw_size = adsp_smem_rd32(pos + 4);
++		pads = adsp_smem_rd32(pos + 8);
++		pad_data = (uint16_t)pads;
++		pad_hdr = (uint16_t)(pads >> 16);
++		if ((uint16_t)w0 != ADSP_SMEM_PRIVATE_CANARY || raw_size > part_size ||
++		    pad_data > raw_size || pad_hdr > part_size - ADSP_SMEM_PRIVATE_HDR) {
++			goto out;
++		}
++		payload = pos + ADSP_SMEM_PRIVATE_HDR + pad_hdr;
++		if (!adsp_range(ADSP_SMEM_SIZE, payload, raw_size) ||
++		    payload + raw_size > part_off + free_uncached) {
++			goto out;
++		}
++		if ((uint16_t)(w0 >> 16) == wanted) {
++			found_size = raw_size - pad_data;
++			if (found_size >= size) {
++				found = payload;
++				walked_to_end = true;
++			}
++			goto out;
++		}
++		next = payload + raw_size;
++		if (next <= pos) {
++			goto out;
++		}
++		pos = next;
++	}
++	if (pos != part_off + free_uncached) {
++		goto out;
++	}
++	walked_to_end = true;
++	{
++		uint32_t alloc_size = (size + 7u) & ~7u;
++		if (pos + ADSP_SMEM_PRIVATE_HDR + alloc_size > part_off + free_cached) {
++			walked_to_end = false;
++			goto out;
++		}
++		adsp_smem_wr32(pos, ADSP_SMEM_PRIVATE_CANARY | ((uint32_t)wanted << 16));
++		adsp_smem_wr32(pos + 4, alloc_size);
++		adsp_smem_wr32(pos + 8, alloc_size - size); /* data padding; header padding is zero */
++		adsp_smem_wr32(pos + 12, 0);
++		__asm__ volatile ("dmb sy" ::: "memory");
++		adsp_smem_wr32(part_off + 12, free_uncached + ADSP_SMEM_PRIVATE_HDR + alloc_size);
++		found = pos + ADSP_SMEM_PRIVATE_HDR;
++		found_size = size;
++	}
++out:
++	adsp_smem_unlock();
++	if (!walked_to_end || !found) {
++		printf("SWEET ADSP: unable to allocate outbound SMEM item %u (free %#x/%#x)\n",
++		    wanted, free_uncached, free_cached);
++		return false;
++	}
++	*data_off_out = found;
++	*data_size_out = found_size;
++	printf("SWEET ADSP: outbound SMEM item %u at +%#x (%u bytes)\n",
++	    wanted, found, found_size);
++	return true;
++}
++
++static bool
++adsp_smp2p_map_ipc(void)
++{
++	if (adsp_smp2p_ipc == 0) {
++		adsp_smp2p_ipc = ml_io_map(ADSP_APSS_SHARED_PA, 0x1000);
++	}
++	if (adsp_smp2p_ipc == 0) {
++		printf("SWEET ADSP: SMP2P mailbox mapping failed\n");
++		return false;
++	}
++	return true;
++}
++
++static bool
++adsp_smp2p_kick(void)
++{
++	if (!adsp_smp2p_map_ipc()) {
++		return false;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	*(volatile uint32_t *)(adsp_smp2p_ipc + 12) = 1u << ADSP_SMP2P_DOORBELL;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return true;
++}
++
++static bool
++adsp_smp2p_out_setup(void)
++{
++	uint32_t data_off = 0, data_size = 0, counts, valid, entry;
++	uint8_t version = adsp_remote_smp2p_version;
++	if (adsp_smem == NULL) {
++		adsp_smem = (volatile uint8_t *)ml_io_map(ADSP_SMEM_PA, ADSP_SMEM_SIZE);
++	}
++	if (adsp_smem == NULL || version > ADSP_SMP2P_VERSION) {
++		printf("SWEET ADSP: outbound SMP2P preflight failed (inbound version %u)\n", version);
++		return false;
++	}
++	if (version == 0) {
++		version = ADSP_SMP2P_VERSION;
++	}
++	/* Verify the doorbell target before changing the AP-owned shared item. */
++	if (!adsp_smp2p_map_ipc()) {
++		return false;
++	}
++	if (!adsp_smem_alloc_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID,
++	    ADSP_SMP2P_OUT_ITEM, ADSP_SMP2P_ITEM_SIZE, &data_off, &data_size) ||
++	    data_size < ADSP_SMP2P_ITEM_SIZE) {
++		return false;
++	}
++	for (uint32_t off = 0; off < ADSP_SMP2P_ITEM_SIZE; off += 4) {
++		adsp_smem_wr32(data_off + off, 0);
++	}
++	adsp_smem_wr32(data_off, ADSP_SMP2P_MAGIC);
++	adsp_smem_wr32(data_off + 4, (ADSP_SMP2P_FEATURE_SSR_ACK << 8)); /* version 0 until header is complete */
++	adsp_smem_wr32(data_off + 8, ADSP_LOCAL_PID | (ADSP_REMOTE_PID << 16));
++	adsp_smem_wr32(data_off + 12, ADSP_SMP2P_MAX_ENTRY);
++	__asm__ volatile ("dmb sy" ::: "memory");
++	adsp_smem_wr32(data_off + 4, (ADSP_SMP2P_FEATURE_SSR_ACK << 8) | version);
++	if (!adsp_smp2p_kick()) {
++		return false;
++	}
++	counts = adsp_smem_rd32(data_off + 12);
++	valid = counts >> 16;
++	if ((counts & 0xffffu) != ADSP_SMP2P_MAX_ENTRY || valid >= ADSP_SMP2P_MAX_ENTRY) {
++		printf("SWEET ADSP: outbound SMP2P header rejected before stop entry\n");
++		return false;
++	}
++	entry = data_off + ADSP_SMP2P_HEADER_BYTES + valid * ADSP_SMP2P_ENTRY_BYTES;
++	adsp_smem_wr32(entry, 0x706f7473u); /* "stop" */
++	for (uint32_t off = 4; off < 16; off += 4) {
++		adsp_smem_wr32(entry + off, 0);
++	}
++	adsp_smem_wr32(entry + 16, 0); /* stop is initially clear for the running remote */
++	__asm__ volatile ("dmb sy" ::: "memory");
++	adsp_smem_wr32(data_off + 12, ADSP_SMP2P_MAX_ENTRY | ((valid + 1) << 16));
++	if (!adsp_smp2p_kick()) {
++		return false;
++	}
++	printf("SWEET ADSP: outbound SMP2P item %u version %u pid %u->%u entry stop=0 doorbell bit %u\n",
++	    ADSP_SMP2P_OUT_ITEM, version, ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_DOORBELL);
++	return true;
++}
++
++static bool
++adsp_smp2p_prepare(void)
++{
++	return adsp_smp2p_out_setup();
++}
++
  static void
 -adsp_smp2p_readonly_probe(void)
 -{
@@ -295,6 +572,10 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	adsp_smp2p_known = false;
 +	adsp_remote_ready = false;
 +	adsp_remote_fatal = false;
++	adsp_remote_handover = false;
++	adsp_remote_stop_ack = false;
++	adsp_smp2p_ambiguous = false;
++	adsp_remote_smp2p_version = 0;
  	uint32_t item_off = 0, item_size = 0, head1, pids, counts, flags;
  	uint16_t total, valid;
  	bool found = false, ready = false, fatal = false;
@@ -304,21 +585,28 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  		if (adsp_smem == NULL) {
 -			printf("SWEET ADSP: read-only SMEM mapping failed\n");
 +			ADSP_SMP2P_LOG("SWEET ADSP: read-only SMEM mapping failed\n");
++			adsp_smp2p_ambiguous = true;
  			adsp_state = BERYLLIUM_ADSP_FAILED;
  			return;
  		}
  	}
  	__asm__ volatile ("dmb sy" ::: "memory");
- 	if (!adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_IN_ITEM, &item_off, &item_size) ||
- 	    item_size < ADSP_SMP2P_HEADER_BYTES) {
--		printf("SWEET ADSP: remote SMP2P inbound item %u unavailable or too small\n", ADSP_SMP2P_IN_ITEM);
-+		ADSP_SMP2P_LOG("SWEET ADSP: remote SMP2P inbound item %u unavailable or too small\n", ADSP_SMP2P_IN_ITEM);
++	if (!adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_IN_ITEM, &item_off, &item_size)) {
++		ADSP_SMP2P_LOG("SWEET ADSP: remote SMP2P inbound item %u unavailable\n", ADSP_SMP2P_IN_ITEM);
  		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
  		return;
  	}
++	if (item_size < ADSP_SMP2P_HEADER_BYTES) {
++		ADSP_SMP2P_LOG("SWEET ADSP: remote SMP2P inbound item %u too small (%u bytes)\n",
++		    ADSP_SMP2P_IN_ITEM, item_size);
++		adsp_smp2p_ambiguous = true;
++		adsp_state = BERYLLIUM_ADSP_FAILED;
++		return;
++	}
  	if (adsp_smem_rd32(item_off) != ADSP_SMP2P_MAGIC) {
 -		printf("SWEET ADSP: SMP2P item %u magic invalid\n", ADSP_SMP2P_IN_ITEM);
 +		ADSP_SMP2P_LOG("SWEET ADSP: SMP2P item %u magic invalid\n", ADSP_SMP2P_IN_ITEM);
++		adsp_smp2p_ambiguous = true;
  		adsp_state = BERYLLIUM_ADSP_FAILED;
  		return;
  	}
@@ -328,6 +616,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  	flags = adsp_smem_rd32(item_off + 16);
  	uint8_t version = (uint8_t)head1;
  	uint16_t local_pid = (uint16_t)pids, remote_pid = (uint16_t)(pids >> 16);
++	adsp_remote_smp2p_version = version;
  	total = (uint16_t)counts;
  	valid = (uint16_t)(counts >> 16);
  	if (version == 0 || version > 2 || local_pid != ADSP_REMOTE_PID || remote_pid != ADSP_LOCAL_PID ||
@@ -336,6 +625,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 -		printf("SWEET ADSP: SMP2P item header invalid (version %u pid %u->%u entries %u/%u size %u)\n",
 +		ADSP_SMP2P_LOG("SWEET ADSP: SMP2P item header invalid (version %u pid %u->%u entries %u/%u size %u)\n",
  		    (unsigned)version, (unsigned)local_pid, (unsigned)remote_pid, (unsigned)valid, (unsigned)total, item_size);
++		adsp_smp2p_ambiguous = true;
  		adsp_state = BERYLLIUM_ADSP_FAILED;
  		return;
  	}
@@ -367,6 +657,8 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +			ready = (value & (1u << 1)) != 0;
 +			adsp_remote_fatal = fatal;
 +			adsp_remote_ready = ready;
++			adsp_remote_handover = (value & (1u << 2)) != 0;
++			adsp_remote_stop_ack = (value & (1u << 3)) != 0;
 +			ADSP_SMP2P_LOG("SWEET ADSP: slave-kernel value %#x fatal=%u ready-bit=%u handover=%u stop-ack=%u (read-only snapshot)\n",
  			    value, (unsigned)!!(value & 1u), (unsigned)!!(value & (1u << 1)),
  			    (unsigned)!!(value & (1u << 2)), (unsigned)!!(value & (1u << 3)));
@@ -379,7 +671,9 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  	if (!found) {
 -		printf("SWEET ADSP: SMP2P inbound item has no slave-kernel entry\n");
 +		ADSP_SMP2P_LOG("SWEET ADSP: SMP2P inbound item has no slave-kernel entry\n");
- 		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
++		adsp_smp2p_ambiguous = true;
+-		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
++		adsp_state = BERYLLIUM_ADSP_FAILED;
  	} else {
  		adsp_state = ready ? BERYLLIUM_ADSP_SMP2P_READY_OBSERVED : BERYLLIUM_ADSP_SMP2P_NOT_READY;
 -		printf("SWEET ADSP: ready %s; this does not authorize PAS, memory assignment, or GLINK writes\n",
@@ -820,10 +1114,14 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +		return false;
 +	}
 +	printf("SWEET ADSP: explicit PAS ID 1 startup requested (sweetadsp=2)\n");
-+	/* Re-read the remote-owned item immediately before PAS; never write item 443/429. */
++	/* Re-read remote-owned item 443 immediately before the explicit start attempt. */
 +	adsp_smp2p_readonly_probe(false);
 +	if (adsp_smp2p_ambiguous) {
 +		printf("SWEET ADSP: conflicting SMP2P state snapshot; refusing PAS reset\n");
++		return false;
++	}
++	if (adsp_state == BERYLLIUM_ADSP_FAILED) {
++		printf("SWEET ADSP: invalid SMP2P state snapshot; refusing PAS reset\n");
 +		return false;
 +	}
 +	if (adsp_remote_ready) {
@@ -832,6 +1130,10 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	}
 +	if (adsp_remote_fatal) {
 +		printf("SWEET ADSP: remote fatal is already asserted; refusing PAS reset\n");
++		return false;
++	}
++	if (adsp_remote_handover || adsp_remote_stop_ack) {
++		printf("SWEET ADSP: remote handover/stop-ack is asserted; refusing PAS reset\n");
 +		return false;
 +	}
 +	if (!adsp_smp2p_known) {
@@ -847,6 +1149,10 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	}
 +	if (!adsp_scm_pas_prerequisites()) {
 +		printf("SWEET ADSP: required SCM PAS startup commands unavailable; no PAS call made\n");
++		goto out;
++	}
++	if (!adsp_smp2p_prepare()) {
++		printf("SWEET ADSP: q6v5_prepare equivalent failed; no PAS call made\n");
 +		goto out;
 +	}
 +	qmp_attempted = true;
