@@ -8,12 +8,12 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 
 ## Constraints
 
-- Never call PAS unless `sweetadsp=2` is present, the board is Beryllium, firmware and memory checks pass, PAS ID 1 is supported, and QMP/XO prerequisites succeed.
+- Call PAS only when `sweetadsp=2` is present, the board is Beryllium, INIT_IMAGE/MEM_SETUP/AUTH_AND_RESET are available, firmware and memory checks pass, and QMP/XO prerequisites succeed. Log PAS_IS_SUPPORTED as diagnostic; Linux Beryllium startup does not gate on it.
 - Parse the entire split MDT; verify every needed sidecar is readable and exactly `p_filesz`; assemble ELF-header-plus-hash metadata as Qualcomm MDT expects.
 - Verify the live ADT's ADSP carveout and its disjointness from XNU-managed RAM before mapping or writing `0x8c500000..0x8e300000`.
 - Use the existing SMC64 SIP convention with bounded interrupted/busy handling. Never reuse GPU PAS ID 13.
 - After successful AUTH_AND_RESET, wait at most five seconds for ready. Patch 1132 does not observe watchdog SPI 162, so it must not issue SHUTDOWN on fatal or timeout; retain QMP/XO and report the unresolved state.
-- Do not write SMP2P item 429/443 or GLINK/APR. Do not modify GPT or flash any partition. Boot test payloads only with `fastboot boot`, without `ufsrw=1` or `rootrw=1`.
+- Do not write SMP2P item 429/443 or GLINK/APR. Do not modify GPT or flash any partition. Boot test payloads only with `fastboot boot`. The user explicitly authorized the tested temporary `ufsrw=1 rootrw=1` mode to let launchd mount the existing userdata root.
 - Keep handset firmware and captures in ignored `.superpowers/` paths. Commit source, tests, plan, design, and handoff only.
 
 ## Review Focus
@@ -68,6 +68,8 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 
 **Check:** local checks pass; diff shows no GLINK/APR, outbound item 429/443 writes, UFS write flags, or firmware artifacts.
 
+**Policy update (2026-10-31):** Beryllium's Linux DTS enables `&adsp_pas`. Its `qcom_pas_start()` path loads and authenticates firmware without calling `qcom_scm_pas_supported()`, so PAS_IS_SUPPORTED is kept as diagnostic only. The XNU stage still checks availability for the mutating startup calls and keeps all other preflight gates.
+
 ### Task 3: Build and test on the phone
 
 **Files:**
@@ -75,7 +77,7 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 
 - [x] Push the feature branch through `b1e2f16` (`f11010c` contains PAS code; `8e0f8cd` handoff). `gh workflow run` was attempted, but GitHub returned HTTP 403 because this account lacks repository admin rights; the attempted branch-filter workaround (`b11caca`) did not trigger from a feature branch and was reverted.
 - [ ] Obtain an official XNU build run after an admin dispatch or approved default-branch integration; record run ID, artifact hash, and warnings.
-- [ ] Verify payload includes `sweetadsp=2` and `--adsp-region 0x8c500000:0x01e00000`, excludes `ufsrw=1`/`rootrw=1`, with no partition-flash command involved.
+- [ ] Verify payload includes `sweetadsp=2`, `--adsp-region 0x8c500000:0x01e00000`, and the user-authorized `ufsrw=1 rootrw=1` mount flags, with no partition-flash command involved.
 - [ ] Start UDP kernel-log capture, verify exactly one Fastboot `beryllium`, and use `fastboot boot` only.
 - [ ] Record PAS call results, Q6V5 ready/fatal result, later mount result, and return phone to Fastboot after the observation.
 - [ ] Commit the exact build/device handoff.
