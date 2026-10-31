@@ -79,6 +79,13 @@ class AdspPasPatchTests(unittest.TestCase):
         ):
             self.assertLess(start.index(gate), init, gate)
 
+    def test_adsp_carveout_uses_unmappable_window_before_unmap(self):
+        start = added_function_body(self.driver, "beryllium_adsp_pas_start")
+        normalized = " ".join(start.split())
+        self.assertIn("ml_io_map_unmappable((vm_offset_t)ADSP_PAS_REGION_PA, ADSP_PAS_REGION_SIZE, VM_WIMG_WCOMB)", normalized)
+        self.assertNotIn("ml_io_map_wcomb(", start)
+        self.assertIn("ml_io_unmap(region, ADSP_PAS_REGION_SIZE)", start)
+
     def test_pas_support_query_is_advisory_and_references_are_read_only(self):
         supported = added_function_body(self.driver, "adsp_scm_pas_prerequisites")
         query = added_function_body(self.driver, "adsp_scm_pas_id_supported")

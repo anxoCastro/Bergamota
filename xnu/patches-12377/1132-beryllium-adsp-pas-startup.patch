@@ -37,7 +37,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  #include "beryllium_adsp.h"
  
  extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
-+extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
++extern vm_offset_t ml_io_map_unmappable(vm_offset_t, vm_size_t, uint32_t);
 +extern ppnum_t pmap_find_phys(pmap_t, addr64_t);
 +extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
 +extern void ml_io_unmap(vm_offset_t, vm_size_t);
@@ -171,7 +171,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  		return false;
  	}
  	error = vnode_size(vp, &size, ctx);
-@@ -248,236 +301,809 @@
+@@ -248,236 +301,811 @@
  	}
  	p = adsp_smem + off;
  	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -871,7 +871,9 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +		printf("SWEET ADSP: PAS MEM_SETUP failed\n");
 +		goto out;
 +	}
-+	region = ml_io_map_wcomb((vm_offset_t)ADSP_PAS_REGION_PA, ADSP_PAS_REGION_SIZE);
++	/* The permanent mapping helper cannot be released with ml_io_unmap(). */
++	region = ml_io_map_unmappable((vm_offset_t)ADSP_PAS_REGION_PA, ADSP_PAS_REGION_SIZE,
++	    VM_WIMG_WCOMB);
 +	if (region == 0) {
 +		printf("SWEET ADSP: ADSP carveout mapping failed after PAS metadata setup\n");
 +		goto out;
