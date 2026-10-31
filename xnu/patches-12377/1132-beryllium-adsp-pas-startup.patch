@@ -171,7 +171,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  		return false;
  	}
  	error = vnode_size(vp, &size, ctx);
-@@ -248,236 +301,794 @@
+@@ -248,236 +301,807 @@
  	}
  	p = adsp_smem + off;
  	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -686,6 +686,20 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +}
 +
 +static bool
++adsp_scm_pas_id_supported(const char *name, uint32_t pas_id)
++{
++	struct adsp_scm_regs out = { { 0 } };
++	const struct adsp_scm_regs initial = { { SCM_64 | SCM_SIP | 0x0200u | 7u, 1,
++	    pas_id, 0, 0, 0, 0 } };
++	bool completed = adsp_scm_call(&initial, false, &out);
++	bool supported = completed && (int32_t)out.a[0] == 0 && out.a[1] != 0;
++	printf("SWEET ADSP: PAS %s id=%u IS_SUPPORTED completed=%u status=%d result=%llu supported=%u\n",
++	    name, pas_id, (unsigned)completed, (int32_t)out.a[0],
++	    (unsigned long long)out.a[1], (unsigned)supported);
++	return supported;
++}
++
++static bool
 +adsp_scm_pas_supported(void)
 +{
 +	static const struct { const char *name; uint32_t cmd; } required[] = {
@@ -697,12 +711,11 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +			return false;
 +		}
 +	}
-+	struct adsp_scm_regs out = { { 0 } };
-+	const struct adsp_scm_regs initial = { { SCM_64 | SCM_SIP | 0x0200u | 7u, 1,
-+	    ADSP_PAS_ID, 0, 0, 0, 0 } };
-+	if (!adsp_scm_call(&initial, false, &out) || (int32_t)out.a[0] != 0 || out.a[1] == 0) {
-+		printf("SWEET ADSP: PAS ID %u is not supported (status %d result %llu)\n", ADSP_PAS_ID,
-+		    (int32_t)out.a[0], (unsigned long long)out.a[1]);
++	if (!adsp_scm_pas_id_supported("ADSP", ADSP_PAS_ID)) {
++		bool mpss_reference = adsp_scm_pas_id_supported("MPSS reference", 4u);
++		bool gpu_reference = adsp_scm_pas_id_supported("GPU reference", 13u);
++		printf("SWEET ADSP: PAS remains disabled; read-only references MPSS=%u GPU=%u\n",
++		    (unsigned)mpss_reference, (unsigned)gpu_reference);
 +		return false;
 +	}
 +	printf("SWEET ADSP: PAS ID %u support confirmed\n", ADSP_PAS_ID);

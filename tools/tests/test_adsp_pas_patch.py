@@ -79,6 +79,16 @@ class AdspPasPatchTests(unittest.TestCase):
         ):
             self.assertLess(start.index(gate), init, gate)
 
+    def test_unsupported_adsp_queries_only_read_only_reference_pas_ids(self):
+        supported = added_function_body(self.driver, "adsp_scm_pas_supported")
+        query = added_function_body(self.driver, "adsp_scm_pas_id_supported")
+        self.assertIn('adsp_scm_pas_id_supported("ADSP", ADSP_PAS_ID)', supported)
+        self.assertIn('adsp_scm_pas_id_supported("MPSS reference", 4u)', supported)
+        self.assertIn('adsp_scm_pas_id_supported("GPU reference", 13u)', supported)
+        self.assertIn("SCM_SIP | 0x0200u | 7u", query)
+        self.assertNotIn("adsp_pas_call", query)
+        self.assertNotIn('adsp_pas_call("INIT_IMAGE"', supported)
+
     def test_pas_sequence_is_scoped_to_id_one_and_stops_before_glink(self):
         self.assertRegex(self.driver, r"#define ADSP_PAS_ID\s+1u")
         self.assertIn('adsp_pas_call("INIT_IMAGE"', self.driver)
