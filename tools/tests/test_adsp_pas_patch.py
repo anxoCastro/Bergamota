@@ -86,6 +86,8 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertIn('adsp_scm_pas_id_supported("MPSS reference", 4u)', supported)
         self.assertIn('adsp_scm_pas_id_supported("GPU reference", 13u)', supported)
         self.assertIn("SCM_SIP | 0x0200u | 7u", query)
+        self.assertIn("x0=%#llx x1=%#llx x2=%#llx x3=%#llx", query)
+        self.assertIn("(unsigned long long)out.a[3]", query)
         self.assertNotIn("adsp_pas_call", query)
         self.assertNotIn('adsp_pas_call("INIT_IMAGE"', supported)
 

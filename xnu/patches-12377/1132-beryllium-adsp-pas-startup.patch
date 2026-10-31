@@ -171,7 +171,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  		return false;
  	}
  	error = vnode_size(vp, &size, ctx);
-@@ -248,236 +301,807 @@
+@@ -248,236 +301,809 @@
  	}
  	p = adsp_smem + off;
  	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -693,8 +693,10 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	    pas_id, 0, 0, 0, 0 } };
 +	bool completed = adsp_scm_call(&initial, false, &out);
 +	bool supported = completed && (int32_t)out.a[0] == 0 && out.a[1] != 0;
-+	printf("SWEET ADSP: PAS %s id=%u IS_SUPPORTED completed=%u status=%d result=%llu supported=%u\n",
-+	    name, pas_id, (unsigned)completed, (int32_t)out.a[0],
++	printf("SWEET ADSP: PAS %s id=%u IS_SUPPORTED completed=%u x0=%#llx x1=%#llx x2=%#llx x3=%#llx status=%d result=%llu supported=%u\n",
++	    name, pas_id, (unsigned)completed,
++	    (unsigned long long)out.a[0], (unsigned long long)out.a[1],
++	    (unsigned long long)out.a[2], (unsigned long long)out.a[3], (int32_t)out.a[0],
 +	    (unsigned long long)out.a[1], (unsigned)supported);
 +	return supported;
 +}
