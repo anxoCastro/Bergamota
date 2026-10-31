@@ -22,7 +22,7 @@ on:
         description: make -k (collect all compile errors in one run)
         default: "true"
   push:
-    branches: [main, develop, xnu11215, ios26]
+    branches: [main, develop, xnu11215, ios26, audio-poco-f1-adsp-bootstrap]
     paths:
       - "xnu/patches/**"
       - "xnu/patches-11215/**"
