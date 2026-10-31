@@ -12,7 +12,7 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 - Parse the entire split MDT; verify every needed sidecar is readable and exactly `p_filesz`; assemble ELF-header-plus-hash metadata as Qualcomm MDT expects.
 - Verify the live ADT's ADSP carveout and its disjointness from XNU-managed RAM before mapping or writing `0x8c500000..0x8e300000`.
 - Use the existing SMC64 SIP convention with bounded interrupted/busy handling. Never reuse GPU PAS ID 13.
-- After successful AUTH_AND_RESET, wait at most five seconds for Q6V5 ready; only shut down an ADSP instance this invocation started, and only on its ready timeout.
+- After successful AUTH_AND_RESET, wait at most five seconds for ready. Patch 1132 does not observe watchdog SPI 162, so it must not issue SHUTDOWN on fatal or timeout; retain QMP/XO and report the unresolved state.
 - Do not write SMP2P item 429/443 or GLINK/APR. Do not modify GPT or flash any partition. Boot test payloads only with `fastboot boot`, without `ufsrw=1` or `rootrw=1`.
 - Keep handset firmware and captures in ignored `.superpowers/` paths. Commit source, tests, plan, design, and handoff only.
 
@@ -22,7 +22,7 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 - `sweetadsp=2` repeats the read-only state check immediately before PAS and aborts on ready/fatal; missing/malformed state is logged as unknown and proceeds only because mode 2 is explicit.
 - Every needed split MDT sidecar and hash metadata byte is validated before the first PAS call. Segment offsets, bounds, and BSS zeroing match Linux's MDT loader.
 - The ADT marker must equal the captured board carveout and be disjoint from XNU RAM before mapping/writing.
-- Interrupted calls preserve original x1-x5 and resume token x6; only successful AUTH_AND_RESET from this invocation can be shut down after ready timeout.
+- Interrupted calls preserve original x1-x5 and resume token x6. No SHUTDOWN is allowed until Q6V5 watchdog SPI 162 is safely observed and handled.
 - No outbound SMP2P writes, GLINK/APR, or audio work.
 - Phone experiment uses only `fastboot boot`, with no filesystem or partition writes.
 
@@ -43,9 +43,9 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 - [x] Run focused tests and observe expected failures before implementation.
 - [x] Implement the marker CLI/helper and rerun focused tests; PAS patch assertions should still fail until Task 2.
 - [x] Update the design to permit explicit mode-2 start with unknown state and remove the stale fail-closed-on-unknown requirement.
-- [ ] Commit the plan/design/test/builder milestone.
+- [x] Commit the plan/design/test/builder milestone (`99e90b1`).
 
-**Check:** default payload build is unchanged; explicit marker contains exactly two little-endian u64 values; other ranges are rejected; remaining red tests name the absent production patch.
+**Check:** default payload build is unchanged; explicit marker contains exactly two little-endian u64 values; other ranges are rejected; the 3 focused marker tests passed before Task 2 implementation.
 
 ### Task 2: Implement and validate the PAS-only stage
 
@@ -58,12 +58,12 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 - Consumes Task 1's exact ADT marker and the reviewed status/resource contracts.
 - Adds narrow QMP and RPMh XO operations to helpers from patches 1106 and 1105.
 
-- [ ] Extend 1131 without changing default or `sweetadsp=1` read-only behavior.
-- [ ] Validate complete MDT, hash metadata, every split sidecar, carveout marker, and XNU RAM bounds before PAS calls.
-- [ ] Implement SCM availability checks and PAS ID 1 INIT_IMAGE → MEM_SETUP → segment copy/zero → AUTH_AND_RESET.
-- [ ] Poll SMP2P read-only for ready/fatal for at most five seconds; SHUTDOWN only after this invocation's successful AUTH_AND_RESET.
-- [ ] Preserve QMP load-state and XO after ready; no handover event is implemented in this stage.
-- [ ] Run focused tests, full Python suite, patch-series application/order checks, and `git diff --check`.
+- [x] Extend 1131 without changing default or `sweetadsp=1` read-only behavior.
+- [x] Validate complete MDT, hash metadata, every split sidecar, carveout marker, and XNU RAM bounds before PAS calls.
+- [x] Implement SCM availability checks and PAS ID 1 INIT_IMAGE → MEM_SETUP → segment copy/zero → AUTH_AND_RESET.
+- [x] Poll SMP2P read-only for ready/fatal for at most five seconds; retain the started instance on timeout because watchdog SPI 162 is not observed, and issue no SHUTDOWN.
+- [x] Preserve QMP load-state and XO after ready; no handover event is implemented in this stage.
+- [x] Run 13 PAS-contract tests, the full 16-test Python suite, synthetic patch application after the 1131/1106/1122 contexts, `git diff --check` on source/docs/tests, and a separate trailing-whitespace check on added patch lines.
 - [ ] Commit source, tests, and design updates.
 
 **Check:** local checks pass; diff shows no GLINK/APR, outbound item 429/443 writes, UFS write flags, or firmware artifacts.
@@ -79,7 +79,7 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 - [ ] Record PAS call results, Q6V5 ready/fatal result, later mount result, and return phone to Fastboot after the observation.
 - [ ] Commit the exact build/device handoff.
 
-**Check:** device reaches Q6V5 ready, or logs a named pre-PAS prerequisite failure; XNU continues booting and no partition is flashed.
+**Check:** device reaches Q6V5 ready, logs a named pre-PAS prerequisite failure, or logs the bounded timeout while retaining QMP/XO and issuing no SHUTDOWN; XNU continues booting and no partition is flashed.
 
 ## Completion criteria
 

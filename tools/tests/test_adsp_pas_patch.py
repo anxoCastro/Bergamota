@@ -26,18 +26,22 @@ def diff_section(patch: str, path: str) -> str:
 
 
 def added_function_body(section: str, name: str) -> str:
-    match = re.search(rf"(?m)^\+{re.escape(name)}\([^\n]*\)$", section)
+    match = re.search(rf"(?m)^[+ ]{re.escape(name)}\([^\n]*\)$", section)
     if not match:
-        raise AssertionError(f"added function {name} not found in patch")
-    body_start = section.find("\n+{", match.end())
-    if body_start < 0:
+        raise AssertionError(f"function {name} not found in patch")
+    body_start = re.search(r"\n[+ ]\{", section[match.end() :])
+    if body_start is None:
         raise AssertionError(f"body for {name} not found in patch")
     depth = 0
     body = []
-    for line in section[body_start + 1 :].splitlines():
-        if not line.startswith("+"):
+    start = match.end() + body_start.start() + 1
+    for line in section[start:].splitlines():
+        if line.startswith(("+", " ")):
+            code = line[1:]
+        elif line.startswith("-") or line.startswith(("@@", "diff --git ")):
             continue
-        code = line[1:]
+        else:
+            continue
         depth += code.count("{") - code.count("}")
         body.append(code)
         if depth == 0:
@@ -76,17 +80,49 @@ class AdspPasPatchTests(unittest.TestCase):
             self.assertLess(start.index(gate), init, gate)
 
     def test_pas_sequence_is_scoped_to_id_one_and_stops_before_glink(self):
-        self.assertIn("#define ADSP_PAS_ID           1u", self.driver)
+        self.assertRegex(self.driver, r"#define ADSP_PAS_ID\s+1u")
         self.assertIn('adsp_pas_call("INIT_IMAGE"', self.driver)
         self.assertIn('adsp_pas_call("MEM_SETUP"', self.driver)
         self.assertIn('adsp_pas_call("AUTH_AND_RESET"', self.driver)
         self.assertNotIn('adsp_pas_call("GLINK"', self.driver)
+        self.assertNotIn('adsp_pas_call("SHUTDOWN"', self.driver)
+        self.assertIn("watchdog SPI 162 is not observed", self.driver)
         self.assertNotIn("ADSP_SMP2P_OUT_ITEM", self.driver)
         self.assertNotRegex(self.driver, r"adsp_smem\s*\[[^]]+\]\s*=")
 
+    def test_default_and_mode_one_do_not_reach_pas_start(self):
+        probe = added_function_body(self.driver, "beryllium_adsp_probe")
+        firmware_probe = added_function_body(self.driver, "beryllium_adsp_firmware_probe")
+        self.assertIn("mode != 1 && mode != 2", probe)
+        self.assertIn("adsp_pas_requested = mode == 2", probe)
+        self.assertNotIn("beryllium_adsp_pas_start", probe)
+        self.assertIn("if (adsp_pas_requested)", firmware_probe)
+        self.assertLess(firmware_probe.index("if (adsp_pas_requested)"),
+                        firmware_probe.index("beryllium_adsp_pas_start()"))
+
+    def test_full_bundle_loader_rejects_short_split_segments(self):
+        loader = added_function_body(self.driver, "adsp_fw_read_full_bundle")
+        self.assertIn("seg_size != filesz", loader)
+        self.assertIn("adsp_fw_read_file", loader)
+        start = added_function_body(self.driver, "beryllium_adsp_pas_start")
+        self.assertLess(start.index("adsp_fw_read_full_bundle"),
+                        start.index('adsp_pas_call("INIT_IMAGE"'))
+
+    def test_adsp_qmp_wrapper_reuses_existing_open_channel(self):
+        wlan = diff_section(self.patch, "bsd/dev/beryllium_wlan.c")
+        qmp = added_function_body(wlan, "beryllium_qmp_set_adsp_load_state")
+        self.assertIn("if (!ms.qmp_open && !ms_qmp_open())", qmp)
+        self.assertIn("name: adsp, val:", qmp)
+
+    def test_xo_clock_helper_votes_exact_verified_on_value(self):
+        rpmh = diff_section(self.patch, "bsd/dev/sweet_rpmh.c")
+        xo = added_function_body(rpmh, "sweet_rpmh_xo_enable")
+        self.assertIn('rh_lookup_slave("xo.lvl", RH_ARC', xo)
+        self.assertIn("const uint32_t value = 3", xo)
+
     def test_scm_interrupted_call_reuses_the_returned_x6_token(self):
         call = added_function_body(self.driver, "adsp_scm_call")
-        self.assertIn("call.a[0] = 1", call)
+        self.assertIn("call.a[0] = SCM_INTERRUPTED", call)
         self.assertIn("call.a[6] = out->a[6]", call)
         self.assertIn("SCM_RESUME_LIMIT", call)
 

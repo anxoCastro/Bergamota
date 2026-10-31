@@ -1,0 +1,1072 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -1,109 +1,162 @@
+ /*
+- * Poco F1 (beryllium, SDM845): opt-in, read-only ADSP preflight.
++ * Poco F1 (beryllium, SDM845): read-only preflight plus explicit PAS mode.
+  *
+- * sweetadsp=1 reads bounded ELF32 firmware metadata and the remote-owned
+- * SMP2P inbound item 443. It never calls PAS, assigns or writes the ADSP
+- * carve-out, allocates/writes outbound item 429, or starts GLINK/APR.
++ * Default boot does nothing. sweetadsp=1 reads bounded ELF32 metadata and
++ * remote-owned SMP2P item 443. Only sweetadsp=2 may attempt PAS ID 1 startup.
++ * No mode writes SMP2P or starts GLINK/APR/audio.
+  *
+  * The phone's split MDT and sidecars have been inspected read-only. Runtime
+  * ADSP state and memory ownership remain unknown; Linux topology does not
+  * establish that a cold start is safe. See docs/audio/BERYLLIUM_ADSP_APR_DESIGN.md.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <sys/errno.h>
+ #include <sys/vnode.h>
+ #include <sys/vnode_internal.h>
+ #include <sys/kauth.h>
+ #include <sys/uio.h>
++#include <kern/clock.h>
+ #include <kern/kalloc.h>
+ #include <machine/machine_routines.h>
++#include <pexpert/device_tree.h>
+ #include <pexpert/pexpert.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
+ #include "sweet_board.h"
+ #include "beryllium_adsp.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
++extern ppnum_t pmap_find_phys(pmap_t, addr64_t);
++extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
++extern void ml_io_unmap(vm_offset_t, vm_size_t);
++extern void sweet_dma_sync_va(const void *, vm_size_t);
++extern void sweet_log_sync(void);
++extern bool beryllium_qmp_set_adsp_load_state(bool);
++extern int sweet_rpmh_xo_enable(void);
++extern unsigned long gPhysBase, gPhysSize;
+ extern vnode_t rootvnode;
+ 
+ #define ADSP_FW_PATH             "/usr/standalone/firmware/sweet/adsp.mdt"
+-#define ADSP_FW_MAX_SIZE         0x04000000u     /* 64 MiB hard cap; only metadata is copied */
++#define ADSP_FW_MAX_SIZE         0x04000000u     /* 64 MiB per-file cap */
++#define ADSP_FW_BUNDLE_MAX_SIZE  0x08000000u     /* 128 MiB aggregate input cap */
+ #define ADSP_FW_META_MAX         0x00010000u     /* accept program-header tables in first 64 KiB */
+-#define ADSP_PAS_REGION_PA       0x8c500000ull   /* DTS fact; this read-only file never maps it */
++#define ADSP_PAS_REGION_PA       0x8c500000ull
+ #define ADSP_PAS_REGION_SIZE     0x01e00000u
++#define ADSP_PAS_ID              1u
+ #define ADSP_SMEM_PA             0x86000000u
+ #define ADSP_SMEM_SIZE           0x00200000u
+ #define ADSP_SMP2P_IN_ITEM       443u
+ #define ADSP_REMOTE_PID          2u
+ #define ADSP_LOCAL_PID           0u
+ #define ADSP_SMP2P_MAGIC         0x504d5324u     /* "$SMP" */
+ #define ADSP_SMEM_TOC_MAGIC      0x434f5424u     /* "$TOC" */
+ #define ADSP_SMEM_PART_MAGIC     0x54525024u     /* "$PRT" */
+ #define ADSP_SMEM_PRIVATE_CANARY 0xa5a5u
+ #define ADSP_SMP2P_MAX_ENTRY      16u
+ #define ADSP_SMP2P_ENTRY_BYTES    20u
+ #define ADSP_SMP2P_HEADER_BYTES   20u
+ #define ADSP_SMEM_TOC_BYTES       32u
+ #define ADSP_SMEM_TOC_ENTRY_BYTES 48u
+ #define ADSP_SMEM_PART_HDR_BYTES  32u
+ #define ADSP_SMEM_PRIVATE_HDR     16u
+ #define ADSP_SMEM_MAX_PARTITIONS  32u
+ #define ADSP_SMEM_MAX_ITEMS       512u
+ #define ADSP_ELF32_EHDR_BYTES     52u
+ #define ADSP_ELF32_PHDR_BYTES     32u
+ #define ADSP_ELF32_SHDR_BYTES     40u
+ #define ADSP_ELF32_MAX_PHDRS      64u
+ #define ADSP_PT_LOAD              1u
+ #define ADSP_QCOM_MDT_TYPE_MASK   (7u << 24)
+ #define ADSP_QCOM_MDT_TYPE_HASH   (2u << 24)
+ #define ADSP_QCOM_MDT_RELOCATABLE (1u << 27)
++#define SCM_SIP                  0x02000000u
++#define SCM_64                   0x40000000u
++#define SCM_INFO_AVAIL           (SCM_SIP | 0x0601u)
++#define SCM_INTERRUPTED          1
++#define SCM_BUSY                 (-12)
++#define SCM_RESUME_LIMIT         64u
++#define SCM_BUSY_LIMIT           3u
++
++struct adsp_scm_regs { uint64_t a[7]; };
++struct adsp_full_segment {
++	uint32_t index, paddr, filesz, memsz, flags;
++	const uint8_t *data;
++	void *owned_data;
++};
++struct adsp_full_bundle {
++	uint8_t *mdt;
++	size_t mdt_size;
++	uint8_t *metadata;
++	size_t metadata_size;
++	unsigned phnum, segment_count;
++	struct adsp_full_segment segments[ADSP_ELF32_MAX_PHDRS];
++	uint64_t min_addr, max_addr;
++	bool relocatable, split;
++};
+ 
+ static volatile uint8_t *adsp_smem;
+ static enum beryllium_adsp_state adsp_state = BERYLLIUM_ADSP_OFF;
+ static bool adsp_firmware_metadata_valid;
+ static bool adsp_probe_enabled;
+ static bool adsp_firmware_probe_done;
++static bool adsp_pas_requested;
++static bool adsp_smp2p_known;
++static bool adsp_remote_ready;
++static bool adsp_remote_fatal;
++static bool adsp_smp2p_ambiguous;
++static bool adsp_smp2p_quiet;
+ 
+ static uint16_t
+ adsp_u16le(const uint8_t *p)
+ {
+ 	return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+ }
+ 
+ static uint32_t
+ adsp_u32le(const uint8_t *p)
+ {
+ 	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+ 	    ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+ }
+ 
+ static bool
+ adsp_range(size_t total, uint64_t off, uint64_t len)
+ {
+ 	return off <= total && len <= (uint64_t)total - off;
+ }
++
++static uint64_t
++adsp_u64le(const uint8_t *p)
++{
++	return (uint64_t)adsp_u32le(p) | ((uint64_t)adsp_u32le(p + 4) << 32);
++}
++
++#define ADSP_SMP2P_LOG(...) do { if (!adsp_smp2p_quiet) printf(__VA_ARGS__); } while (0)
+ 
+ /* Read at most the ELF header and a bounded program-header prefix. */
+ static bool
+ adsp_fw_read_metadata(void **out, size_t *out_len, uint64_t *file_len)
+ {
+ 	vnode_t vp = NULLVP;
+ 	off_t size = 0;
+ 	int error, resid = 0;
+ 	vfs_context_t ctx;
+ 	vm_size_t read_len;
+ 	void *copy;
+ 
+ 	*out = NULL;
+ 	*out_len = 0;
+ 	*file_len = 0;
+ 	if (rootvnode == NULLVP) {
+ 		printf("SWEET ADSP: root vnode unavailable; firmware preflight skipped\n");
+ 		return false;
+ 	}
+ 	ctx = vfs_context_kernel();
+ 	if (vnode_lookup(ADSP_FW_PATH, 0, &vp, ctx) != 0 || vp == NULLVP) {
+ 		printf("SWEET ADSP: firmware missing: %s\n", ADSP_FW_PATH);
+ 		return false;
+ 	}
+ 	error = vnode_size(vp, &size, ctx);
+@@ -248,236 +301,794 @@
+ 	}
+ 	p = adsp_smem + off;
+ 	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+ 	    ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+ }
+ 
+ static uint16_t
+ adsp_smem_rd16(uint32_t off)
+ {
+ 	volatile uint8_t *p;
+ 	if (adsp_smem == NULL || off > ADSP_SMEM_SIZE - 2) {
+ 		return 0;
+ 	}
+ 	p = adsp_smem + off;
+ 	return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+ }
+ 
+ static bool
+ adsp_smem_private_item(uint16_t host_a, uint16_t host_b, uint16_t wanted,
+     uint32_t *data_off, uint32_t *data_size)
+ {
+ 	const uint32_t top = ADSP_SMEM_SIZE - 0x1000;
+ 	uint32_t count;
+ 
+ 	if (adsp_smem_rd32(top) != ADSP_SMEM_TOC_MAGIC) {
+-		printf("SWEET ADSP: SMEM TOC magic invalid\n");
++		ADSP_SMP2P_LOG("SWEET ADSP: SMEM TOC magic invalid\n");
+ 		return false;
+ 	}
+ 	count = adsp_smem_rd32(top + 8);
+ 	if (count == 0 || count > ADSP_SMEM_MAX_PARTITIONS ||
+ 	    !adsp_range(ADSP_SMEM_SIZE, top + ADSP_SMEM_TOC_BYTES,
+ 	    (uint64_t)count * ADSP_SMEM_TOC_ENTRY_BYTES)) {
+-		printf("SWEET ADSP: SMEM partition count invalid (%u)\n", count);
++		ADSP_SMP2P_LOG("SWEET ADSP: SMEM partition count invalid (%u)\n", count);
+ 		return false;
+ 	}
+ 	for (uint32_t i = 0; i < count; i++) {
+ 		uint32_t ent = top + ADSP_SMEM_TOC_BYTES + i * ADSP_SMEM_TOC_ENTRY_BYTES;
+ 		uint32_t part_off = adsp_smem_rd32(ent), part_size = adsp_smem_rd32(ent + 4);
+ 		uint32_t hosts = adsp_smem_rd32(ent + 12);
+ 		uint16_t h0 = (uint16_t)hosts, h1 = (uint16_t)(hosts >> 16);
+ 		uint32_t free_uncached, pos;
+ 		if (!part_off || part_size < ADSP_SMEM_PART_HDR_BYTES ||
+ 		    !((h0 == host_a && h1 == host_b) || (h0 == host_b && h1 == host_a))) {
+ 			continue;
+ 		}
+ 		if (!adsp_range(ADSP_SMEM_SIZE, part_off, part_size) ||
+ 		    adsp_smem_rd32(part_off) != ADSP_SMEM_PART_MAGIC ||
+ 		    adsp_smem_rd16(part_off + 4) != h0 || adsp_smem_rd16(part_off + 6) != h1 ||
+ 		    adsp_smem_rd32(part_off + 8) > part_size) {
+-			printf("SWEET ADSP: SMEM private partition %u has invalid bounds/header\n", i);
++			ADSP_SMP2P_LOG("SWEET ADSP: SMEM private partition %u has invalid bounds/header\n", i);
+ 			return false;
+ 		}
+ 		free_uncached = adsp_smem_rd32(part_off + 12);
+ 		if (free_uncached < ADSP_SMEM_PART_HDR_BYTES || free_uncached > part_size) {
+-			printf("SWEET ADSP: SMEM private partition free offset invalid (%#x/%#x)\n", free_uncached, part_size);
++			ADSP_SMP2P_LOG("SWEET ADSP: SMEM private partition free offset invalid (%#x/%#x)\n", free_uncached, part_size);
+ 			return false;
+ 		}
+ 		pos = part_off + ADSP_SMEM_PART_HDR_BYTES;
+ 		for (unsigned guard = 0; guard < ADSP_SMEM_MAX_ITEMS && pos < part_off + free_uncached; guard++) {
+ 			uint32_t w0, item_size, pads, pad_data, pad_hdr, next, payload;
+ 			uint16_t item;
+ 			if (!adsp_range(ADSP_SMEM_SIZE, pos, ADSP_SMEM_PRIVATE_HDR) ||
+ 			    pos + ADSP_SMEM_PRIVATE_HDR > part_off + free_uncached) {
+-				printf("SWEET ADSP: SMEM private item header truncated\n");
++				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header truncated\n");
+ 				return false;
+ 			}
+ 			w0 = adsp_smem_rd32(pos);
+ 			item = (uint16_t)(w0 >> 16);
+ 			item_size = adsp_smem_rd32(pos + 4);
+ 			pads = adsp_smem_rd32(pos + 8);
+ 			pad_data = (uint16_t)pads;
+ 			pad_hdr = (uint16_t)(pads >> 16);
+ 			if ((uint16_t)w0 != ADSP_SMEM_PRIVATE_CANARY || item_size > part_size || pad_data > item_size ||
+ 			    pad_hdr > part_size - ADSP_SMEM_PRIVATE_HDR) {
+-				printf("SWEET ADSP: SMEM private item header malformed at %#x\n", pos);
++				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header malformed at %#x\n", pos);
+ 				return false;
+ 			}
+ 			payload = pos + ADSP_SMEM_PRIVATE_HDR + pad_hdr;
+ 			if (!adsp_range(ADSP_SMEM_SIZE, payload, item_size) ||
+ 			    payload + item_size > part_off + free_uncached) {
+-				printf("SWEET ADSP: SMEM private item payload outside used partition\n");
++				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item payload outside used partition\n");
+ 				return false;
+ 			}
+ 			if (item == wanted) {
+ 				*data_off = payload;
+ 				*data_size = item_size - pad_data;
+ 				return true;
+ 			}
+ 			next = payload + item_size;
+ 			if (next <= pos) {
+-				printf("SWEET ADSP: SMEM item walk did not advance\n");
++				ADSP_SMP2P_LOG("SWEET ADSP: SMEM item walk did not advance\n");
+ 				return false;
+ 			}
+ 			pos = next;
+ 		}
+-		printf("SWEET ADSP: ADSP private SMEM partition has no item %u\n", (unsigned)wanted);
+-		return false;
+-	}
+-		printf("SWEET ADSP: SMEM partition for hosts %u<->%u not found\n", (unsigned)host_a, (unsigned)host_b);
++		ADSP_SMP2P_LOG("SWEET ADSP: ADSP private SMEM partition has no item %u\n", (unsigned)wanted);
++		return false;
++	}
++		ADSP_SMP2P_LOG("SWEET ADSP: SMEM partition for hosts %u<->%u not found\n", (unsigned)host_a, (unsigned)host_b);
+ 	return false;
+ }
+ 
+ static void
+-adsp_smp2p_readonly_probe(void)
+-{
++adsp_smp2p_readonly_probe(bool quiet)
++{
++	adsp_smp2p_quiet = quiet;
++	adsp_smp2p_known = false;
++	adsp_remote_ready = false;
++	adsp_remote_fatal = false;
+ 	uint32_t item_off = 0, item_size = 0, head1, pids, counts, flags;
+ 	uint16_t total, valid;
+ 	bool found = false, ready = false, fatal = false;
+ 
+ 	if (adsp_smem == NULL) {
+ 		adsp_smem = (volatile uint8_t *)ml_io_map(ADSP_SMEM_PA, ADSP_SMEM_SIZE);
+ 		if (adsp_smem == NULL) {
+-			printf("SWEET ADSP: read-only SMEM mapping failed\n");
++			ADSP_SMP2P_LOG("SWEET ADSP: read-only SMEM mapping failed\n");
+ 			adsp_state = BERYLLIUM_ADSP_FAILED;
+ 			return;
+ 		}
+ 	}
+ 	__asm__ volatile ("dmb sy" ::: "memory");
+ 	if (!adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_IN_ITEM, &item_off, &item_size) ||
+ 	    item_size < ADSP_SMP2P_HEADER_BYTES) {
+-		printf("SWEET ADSP: remote SMP2P inbound item %u unavailable or too small\n", ADSP_SMP2P_IN_ITEM);
++		ADSP_SMP2P_LOG("SWEET ADSP: remote SMP2P inbound item %u unavailable or too small\n", ADSP_SMP2P_IN_ITEM);
+ 		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
+ 		return;
+ 	}
+ 	if (adsp_smem_rd32(item_off) != ADSP_SMP2P_MAGIC) {
+-		printf("SWEET ADSP: SMP2P item %u magic invalid\n", ADSP_SMP2P_IN_ITEM);
++		ADSP_SMP2P_LOG("SWEET ADSP: SMP2P item %u magic invalid\n", ADSP_SMP2P_IN_ITEM);
+ 		adsp_state = BERYLLIUM_ADSP_FAILED;
+ 		return;
+ 	}
+ 	head1 = adsp_smem_rd32(item_off + 4);
+ 	pids = adsp_smem_rd32(item_off + 8);
+ 	counts = adsp_smem_rd32(item_off + 12);
+ 	flags = adsp_smem_rd32(item_off + 16);
+ 	uint8_t version = (uint8_t)head1;
+ 	uint16_t local_pid = (uint16_t)pids, remote_pid = (uint16_t)(pids >> 16);
+ 	total = (uint16_t)counts;
+ 	valid = (uint16_t)(counts >> 16);
+ 	if (version == 0 || version > 2 || local_pid != ADSP_REMOTE_PID || remote_pid != ADSP_LOCAL_PID ||
+ 	    total == 0 || total > ADSP_SMP2P_MAX_ENTRY || valid > total ||
+ 	    item_size < ADSP_SMP2P_HEADER_BYTES + (uint32_t)valid * ADSP_SMP2P_ENTRY_BYTES) {
+-		printf("SWEET ADSP: SMP2P item header invalid (version %u pid %u->%u entries %u/%u size %u)\n",
++		ADSP_SMP2P_LOG("SWEET ADSP: SMP2P item header invalid (version %u pid %u->%u entries %u/%u size %u)\n",
+ 		    (unsigned)version, (unsigned)local_pid, (unsigned)remote_pid, (unsigned)valid, (unsigned)total, item_size);
+ 		adsp_state = BERYLLIUM_ADSP_FAILED;
+ 		return;
+ 	}
+-	printf("SWEET ADSP: SMP2P inbound item %u: remote PID %u -> AP PID %u, version %u, entries %u/%u, flags %#x\n",
++	ADSP_SMP2P_LOG("SWEET ADSP: SMP2P inbound item %u: remote PID %u -> AP PID %u, version %u, entries %u/%u, flags %#x\n",
+ 	    ADSP_SMP2P_IN_ITEM, (unsigned)local_pid, (unsigned)remote_pid, (unsigned)version, (unsigned)valid, (unsigned)total, flags);
+ 	for (uint16_t i = 0; i < valid; i++) {
+ 		uint32_t ent = item_off + ADSP_SMP2P_HEADER_BYTES + (uint32_t)i * ADSP_SMP2P_ENTRY_BYTES;
+ 		char name[17];
+ 		uint32_t value;
+ 		for (unsigned c = 0; c < 16; c++) {
+ 			name[c] = (char)adsp_smem[ent + c];
+ 		}
+ 		name[16] = '\0';
+ 		value = adsp_smem_rd32(ent + 16);
+ 		if (strcmp(name, "slave-kernel") == 0) {
+ 			if (found) {
+-				printf("SWEET ADSP: duplicate slave-kernel SMP2P entry; rejecting snapshot\n");
++				ADSP_SMP2P_LOG("SWEET ADSP: duplicate slave-kernel SMP2P entry; rejecting snapshot\n");
++				adsp_smp2p_ambiguous = true;
+ 				adsp_state = BERYLLIUM_ADSP_FAILED;
+ 				return;
+ 			}
+ 			found = true;
++			adsp_smp2p_known = true;
+ 			fatal = (value & 1u) != 0;
+-			ready = (value & (1u << 1)) != 0 && !fatal;
+-			printf("SWEET ADSP: slave-kernel value %#x fatal=%u ready-bit=%u handover=%u stop-ack=%u (read-only snapshot)\n",
++			ready = (value & (1u << 1)) != 0;
++			adsp_remote_fatal = fatal;
++			adsp_remote_ready = ready;
++			ADSP_SMP2P_LOG("SWEET ADSP: slave-kernel value %#x fatal=%u ready-bit=%u handover=%u stop-ack=%u (read-only snapshot)\n",
+ 			    value, (unsigned)!!(value & 1u), (unsigned)!!(value & (1u << 1)),
+ 			    (unsigned)!!(value & (1u << 2)), (unsigned)!!(value & (1u << 3)));
+ 			if (fatal) {
+-				printf("SWEET ADSP: remote reports fatal state\n");
++				ADSP_SMP2P_LOG("SWEET ADSP: remote reports fatal state\n");
+ 			}
+ 		}
+ 	}
+ 	if (!found) {
+-		printf("SWEET ADSP: SMP2P inbound item has no slave-kernel entry\n");
++		ADSP_SMP2P_LOG("SWEET ADSP: SMP2P inbound item has no slave-kernel entry\n");
+ 		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
+ 	} else {
+ 		adsp_state = ready ? BERYLLIUM_ADSP_SMP2P_READY_OBSERVED : BERYLLIUM_ADSP_SMP2P_NOT_READY;
+-		printf("SWEET ADSP: ready %s; this does not authorize PAS, memory assignment, or GLINK writes\n",
++		ADSP_SMP2P_LOG("SWEET ADSP: ready %s (read-only observation)\n",
+ 		    ready ? "observed" : "not observed");
+ 	}
++}
++
++static bool
++adsp_fw_read_file(const char *path, uint64_t exact_size, void **out, size_t *out_size)
++{
++	vnode_t vp = NULLVP;
++	off_t size = 0;
++	int error, resid = 0;
++	vfs_context_t ctx;
++	void *copy;
++
++	*out = NULL;
++	*out_size = 0;
++	if (rootvnode == NULLVP || vnode_lookup(path, 0, &vp, vfs_context_kernel()) != 0 || vp == NULLVP) {
++		printf("SWEET ADSP: firmware file unavailable: %s\n", path);
++		return false;
++	}
++	ctx = vfs_context_kernel();
++	error = vnode_size(vp, &size, ctx);
++	if (error || size <= 0 || (uint64_t)size > ADSP_FW_MAX_SIZE ||
++	    (exact_size != 0 && (uint64_t)size != exact_size)) {
++		printf("SWEET ADSP: firmware size invalid for %s: %lld expected %llu error %d\n",
++		    path, (long long)size, (unsigned long long)exact_size, error);
++		vnode_put(vp);
++		return false;
++	}
++	copy = kalloc_data((vm_size_t)size, Z_WAITOK | Z_ZERO);
++	if (copy == NULL) {
++		printf("SWEET ADSP: firmware allocation failed for %s (%lld bytes)\n", path, (long long)size);
++		vnode_put(vp);
++		return false;
++	}
++	error = vn_rdwr(UIO_READ, vp, (caddr_t)copy, (int)size, 0, UIO_SYSSPACE,
++	    IO_NODELOCKED | IO_UNIT, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++	vnode_put(vp);
++	if (error || resid) {
++		printf("SWEET ADSP: firmware read failed for %s (%d, resid %d)\n", path, error, resid);
++		kfree_data(copy, (vm_size_t)size);
++		return false;
++	}
++	*out = copy;
++	*out_size = (size_t)size;
++	return true;
++}
++
++static void
++adsp_fw_release_full_bundle(struct adsp_full_bundle *bundle)
++{
++	for (unsigned i = 0; i < bundle->segment_count; i++) {
++		if (bundle->segments[i].owned_data != NULL) {
++			kfree_data(bundle->segments[i].owned_data, bundle->segments[i].filesz);
++		}
++	}
++	if (bundle->metadata != NULL) {
++		kfree_data(bundle->metadata, bundle->metadata_size);
++	}
++	if (bundle->mdt != NULL) {
++		kfree_data(bundle->mdt, bundle->mdt_size);
++	}
++	memset(bundle, 0, sizeof(*bundle));
++}
++
++/* Read and validate every byte needed by PAS before any PAS/QMP/RPMh mutation. */
++static bool
++adsp_fw_read_full_bundle(struct adsp_full_bundle *bundle)
++{
++	uint32_t phoff;
++	uint16_t phnum;
++	const uint8_t *phdrs;
++	uint32_t hash_index = UINT32_MAX, ehdr_size = 0, hash_size = 0, hash_offset = 0;
++	uint64_t total_input = 0;
++	bool split = false, hash_from_mdt = false;
++	void *hash_sidecar = NULL;
++	size_t hash_sidecar_size = 0;
++	static const uint32_t four_k = 0x1000u;
++
++	memset(bundle, 0, sizeof(*bundle));
++	bundle->min_addr = UINT64_MAX;
++	if (!adsp_fw_read_file(ADSP_FW_PATH, 0, (void **)&bundle->mdt, &bundle->mdt_size)) {
++		return false;
++	}
++	total_input = bundle->mdt_size;
++	if (!adsp_fw_validate_metadata(bundle->mdt, bundle->mdt_size, bundle->mdt_size)) {
++		goto fail;
++	}
++	phoff = adsp_u32le(bundle->mdt + 28);
++	phnum = adsp_u16le(bundle->mdt + 44);
++	phdrs = bundle->mdt + phoff;
++	bundle->phnum = phnum;
++	if (phnum < 2 || phnum > ADSP_ELF32_MAX_PHDRS || phoff < ADSP_ELF32_EHDR_BYTES ||
++	    !adsp_range(bundle->mdt_size, phoff, (uint64_t)phnum * ADSP_ELF32_PHDR_BYTES) ||
++	    adsp_u32le(phdrs) == ADSP_PT_LOAD) {
++		printf("SWEET ADSP: full MDT program-header prefix is invalid\n");
++		goto fail;
++	}
++	ehdr_size = adsp_u32le(phdrs + 16);
++	for (unsigned i = 1; i < phnum; i++) {
++		const uint8_t *p = phdrs + i * ADSP_ELF32_PHDR_BYTES;
++		if ((adsp_u32le(p + 24) & ADSP_QCOM_MDT_TYPE_MASK) == ADSP_QCOM_MDT_TYPE_HASH) {
++			hash_index = i;
++			hash_size = adsp_u32le(p + 16);
++			break;
++		}
++	}
++	if (hash_index == UINT32_MAX || ehdr_size < ADSP_ELF32_EHDR_BYTES ||
++	    ehdr_size < (uint64_t)phoff + (uint64_t)phnum * ADSP_ELF32_PHDR_BYTES ||
++	    !adsp_range(bundle->mdt_size, 0, ehdr_size) || hash_size == 0 ||
++	    (uint64_t)ehdr_size + hash_size > ADSP_FW_MAX_SIZE) {
++		printf("SWEET ADSP: full MDT has no bounded hash metadata segment\n");
++		goto fail;
++	}
++	bundle->metadata_size = (size_t)ehdr_size + hash_size;
++	bundle->metadata = kalloc_data(bundle->metadata_size, Z_WAITOK | Z_ZERO);
++	if (bundle->metadata == NULL) {
++		printf("SWEET ADSP: PAS metadata allocation failed (%lu bytes)\n", (unsigned long)bundle->metadata_size);
++		goto fail;
++	}
++	memcpy(bundle->metadata, bundle->mdt, ehdr_size);
++	const uint8_t *hash_phdr = phdrs + hash_index * ADSP_ELF32_PHDR_BYTES;
++	uint32_t hash_file_offset = adsp_u32le(hash_phdr + 4);
++	if ((uint64_t)ehdr_size + hash_size == bundle->mdt_size) {
++		/* qcom_mdt_read_metadata(): split MDT stores hashes immediately after the first p_filesz bytes. */
++		hash_offset = ehdr_size;
++		hash_from_mdt = true;
++	} else if (adsp_range(bundle->mdt_size, hash_file_offset, hash_size)) {
++		hash_offset = hash_file_offset;
++		hash_from_mdt = true;
++	} else {
++		char path[sizeof(ADSP_FW_PATH) + 8];
++		snprintf(path, sizeof(path), "/usr/standalone/firmware/sweet/adsp.b%02u", hash_index);
++		if (!adsp_fw_read_file(path, hash_size, &hash_sidecar, &hash_sidecar_size) || hash_sidecar_size != hash_size) {
++			printf("SWEET ADSP: hash sidecar %s is missing or short\n", path);
++			goto fail;
++		}
++		if (total_input + hash_sidecar_size > ADSP_FW_BUNDLE_MAX_SIZE) {
++			printf("SWEET ADSP: firmware input exceeds aggregate size limit\n");
++			goto fail;
++		}
++		total_input += hash_sidecar_size;
++		memcpy(bundle->metadata + ehdr_size, hash_sidecar, hash_size);
++		kfree_data(hash_sidecar, hash_sidecar_size);
++		hash_sidecar = NULL;
++	}
++	if (hash_from_mdt) {
++		if (hash_offset < ehdr_size || !adsp_range(bundle->mdt_size, hash_offset, hash_size)) {
++			printf("SWEET ADSP: hash bytes are outside the MDT file\n");
++			goto fail;
++		}
++		memcpy(bundle->metadata + ehdr_size, bundle->mdt + hash_offset, hash_size);
++	}
++
++	for (unsigned i = 0; i < phnum; i++) {
++		const uint8_t *p = phdrs + i * ADSP_ELF32_PHDR_BYTES;
++		uint32_t type = adsp_u32le(p), file_offset = adsp_u32le(p + 4);
++		uint32_t paddr = adsp_u32le(p + 12), filesz = adsp_u32le(p + 16);
++		uint32_t memsz = adsp_u32le(p + 20), flags = adsp_u32le(p + 24);
++		uint64_t end = (uint64_t)paddr + memsz;
++		if (filesz != 0 && ((uint64_t)file_offset > bundle->mdt_size ||
++		    (uint64_t)file_offset + filesz > bundle->mdt_size)) {
++			split = true;
++		}
++		if (type != ADSP_PT_LOAD || (flags & ADSP_QCOM_MDT_TYPE_MASK) == ADSP_QCOM_MDT_TYPE_HASH || memsz == 0) {
++			continue;
++		}
++		if (filesz > memsz || end > 0x100000000ull || bundle->segment_count == ADSP_ELF32_MAX_PHDRS) {
++			printf("SWEET ADSP: full MDT load segment %u has invalid bounds\n", i);
++			goto fail;
++		}
++		struct adsp_full_segment *seg = &bundle->segments[bundle->segment_count++];
++		seg->index = i;
++		seg->paddr = paddr;
++		seg->filesz = filesz;
++		seg->memsz = memsz;
++		seg->flags = flags;
++		bundle->relocatable |= !!(flags & ADSP_QCOM_MDT_RELOCATABLE);
++		bundle->min_addr = MIN(bundle->min_addr, paddr);
++		bundle->max_addr = MAX(bundle->max_addr, (end + four_k - 1u) & ~((uint64_t)four_k - 1u));
++	}
++	if (bundle->segment_count == 0 || bundle->max_addr <= bundle->min_addr ||
++	    bundle->max_addr - bundle->min_addr > ADSP_PAS_REGION_SIZE) {
++		printf("SWEET ADSP: full MDT image extent does not fit the ADSP carveout\n");
++		goto fail;
++	}
++	if ((!bundle->relocatable &&
++	    (bundle->min_addr < ADSP_PAS_REGION_PA || bundle->max_addr > ADSP_PAS_REGION_PA + ADSP_PAS_REGION_SIZE)) ||
++	    (bundle->relocatable && bundle->min_addr < ADSP_PAS_REGION_PA)) {
++		printf("SWEET ADSP: full MDT image addresses do not fit the Beryllium carveout\n");
++		goto fail;
++	}
++	bundle->split = split;
++	for (unsigned i = 0; i < bundle->segment_count; i++) {
++		struct adsp_full_segment *seg = &bundle->segments[i];
++		uint32_t filesz = seg->filesz;
++		if (filesz == 0) {
++			continue;
++		}
++		if (split) {
++			char path[sizeof(ADSP_FW_PATH) + 8];
++			size_t seg_size = 0;
++			snprintf(path, sizeof(path), "/usr/standalone/firmware/sweet/adsp.b%02u", seg->index);
++			if (!adsp_fw_read_file(path, filesz, &seg->owned_data, &seg_size) || seg_size != filesz) {
++				printf("SWEET ADSP: split segment %u is missing or not exactly p_filesz bytes\n", seg->index);
++				goto fail;
++			}
++			seg->data = seg->owned_data;
++			total_input += filesz;
++			if (total_input > ADSP_FW_BUNDLE_MAX_SIZE) {
++				printf("SWEET ADSP: firmware input exceeds aggregate size limit\n");
++				goto fail;
++			}
++		} else {
++			uint32_t file_offset = adsp_u32le(phdrs + seg->index * ADSP_ELF32_PHDR_BYTES + 4);
++			if (!adsp_range(bundle->mdt_size, file_offset, seg->filesz)) {
++				printf("SWEET ADSP: embedded segment %u lies outside the MDT file\n", seg->index);
++				goto fail;
++			}
++			seg->data = bundle->mdt + file_offset;
++		}
++	}
++	printf("SWEET ADSP: full firmware bundle valid: MDT %lu bytes, %u program headers, %u load segments, %s, extent %#llx+%#llx, metadata %lu bytes\n",
++	    (unsigned long)bundle->mdt_size, bundle->phnum, bundle->segment_count,
++	    split ? "split sidecars exact" : "embedded payloads", (unsigned long long)bundle->min_addr,
++	    (unsigned long long)(bundle->max_addr - bundle->min_addr), (unsigned long)bundle->metadata_size);
++	return true;
++fail:
++	if (hash_sidecar != NULL) {
++		kfree_data(hash_sidecar, hash_sidecar_size);
++	}
++	adsp_fw_release_full_bundle(bundle);
++	return false;
++}
++
++static void
++adsp_scm_smccc(struct adsp_scm_regs *r)
++{
++	register uint64_t x0 __asm__("x0") = r->a[0];
++	register uint64_t x1 __asm__("x1") = r->a[1];
++	register uint64_t x2 __asm__("x2") = r->a[2];
++	register uint64_t x3 __asm__("x3") = r->a[3];
++	register uint64_t x4 __asm__("x4") = r->a[4];
++	register uint64_t x5 __asm__("x5") = r->a[5];
++	register uint64_t x6 __asm__("x6") = r->a[6];
++	register uint64_t x7 __asm__("x7") = 0;
++	__asm__ volatile ("smc #0"
++	    : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7)
++	    : : "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
++	*r = (struct adsp_scm_regs) { { x0, x1, x2, x3, x4, x5, x6 } };
++}
++
++/* Resume interrupted SIP calls with original x1-x5 and the returned token in x6. */
++static bool
++adsp_scm_call(const struct adsp_scm_regs *initial, bool fast, struct adsp_scm_regs *out)
++{
++	for (unsigned busy = 0; busy <= SCM_BUSY_LIMIT; busy++) {
++		struct adsp_scm_regs call = *initial;
++		for (unsigned resume = 0;; resume++) {
++			adsp_scm_smccc(&call);
++			if ((int32_t)call.a[0] == SCM_INTERRUPTED) {
++				*out = call;
++				if (resume == SCM_RESUME_LIMIT) {
++					printf("SWEET ADSP: SCM interrupted call did not complete\n");
++					return false;
++				}
++				call = *initial;
++				call.a[0] = SCM_INTERRUPTED;
++				call.a[6] = out->a[6];
++				continue;
++			}
++			break;
++		}
++		*out = call;
++		if ((int32_t)out->a[0] != SCM_BUSY) {
++			return true;
++		}
++		if (fast || busy == SCM_BUSY_LIMIT) {
++			printf("SWEET ADSP: SCM busy; refusing further retries\n");
++			return false;
++		}
++		delay(30000);
++	}
++	return false;
++}
++
++static bool
++adsp_scm_call_available(const char *name, uint32_t cmd)
++{
++	struct adsp_scm_regs out;
++	const struct adsp_scm_regs initial = { { SCM_64 | SCM_INFO_AVAIL, 1,
++	    SCM_SIP | 0x0200u | cmd, 0, 0, 0, 0 } };
++	if (!adsp_scm_call(&initial, false, &out)) {
++		printf("SWEET ADSP: SCM availability query failed for %s\n", name);
++		return false;
++	}
++	bool available = (int32_t)out.a[0] == 0 && out.a[1] != 0;
++	printf("SWEET ADSP: SCM PAS %s call available=%u result=%llu\n", name, (unsigned)available,
++	    (unsigned long long)out.a[1]);
++	return available;
++}
++
++static bool
++adsp_scm_pas_supported(void)
++{
++	static const struct { const char *name; uint32_t cmd; } required[] = {
++		{ "INIT_IMAGE", 1 }, { "MEM_SETUP", 2 }, { "AUTH_AND_RESET", 5 },
++		{ "IS_SUPPORTED", 7 },
++	};
++	for (unsigned i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
++		if (!adsp_scm_call_available(required[i].name, required[i].cmd)) {
++			return false;
++		}
++	}
++	struct adsp_scm_regs out = { { 0 } };
++	const struct adsp_scm_regs initial = { { SCM_64 | SCM_SIP | 0x0200u | 7u, 1,
++	    ADSP_PAS_ID, 0, 0, 0, 0 } };
++	if (!adsp_scm_call(&initial, false, &out) || (int32_t)out.a[0] != 0 || out.a[1] == 0) {
++		printf("SWEET ADSP: PAS ID %u is not supported (status %d result %llu)\n", ADSP_PAS_ID,
++		    (int32_t)out.a[0], (unsigned long long)out.a[1]);
++		return false;
++	}
++	printf("SWEET ADSP: PAS ID %u support confirmed\n", ADSP_PAS_ID);
++	return true;
++}
++
++static bool
++adsp_pas_call(const char *name, uint32_t cmd, uint32_t arginfo, uint64_t arg1, uint64_t arg2)
++{
++	struct adsp_scm_regs out;
++	const struct adsp_scm_regs initial = { { SCM_64 | SCM_SIP | 0x0200u | cmd, arginfo,
++	    ADSP_PAS_ID, arg1, arg2, 0, 0 } };
++	printf("SWEET ADSP: SCM PAS %s id=%u args=%#llx/%#llx\n", name, ADSP_PAS_ID,
++	    (unsigned long long)arg1, (unsigned long long)arg2);
++	sweet_log_sync();
++	__asm__ volatile ("dsb sy" ::: "memory");
++	bool completed = adsp_scm_call(&initial, false, &out);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	printf("SWEET ADSP: SCM PAS %s completed=%u status=%d result=%d\n", name, (unsigned)completed,
++	    (int32_t)out.a[0], (int32_t)out.a[1]);
++	sweet_log_sync();
++	return completed && (int32_t)out.a[0] == 0 && (int32_t)out.a[1] == 0;
++}
++
++static bool
++adsp_check_carveout_marker(void)
++{
++	DTEntry chosen = NULL;
++	void const *prop = NULL;
++	unsigned size = 0;
++	uint8_t marker[16];
++	uint64_t ram_base = (uint64_t)gPhysBase, ram_size = (uint64_t)gPhysSize;
++	uint64_t ram_end, carveout_end = ADSP_PAS_REGION_PA + ADSP_PAS_REGION_SIZE;
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "sweet-adsp-region", &prop, &size) != kSuccess || prop == NULL || size != sizeof(marker)) {
++		printf("SWEET ADSP: exact /chosen/sweet-adsp-region marker missing; carveout not mapped\n");
++		return false;
++	}
++	memcpy(marker, prop, sizeof(marker));
++	if (adsp_u64le(marker) != ADSP_PAS_REGION_PA || adsp_u64le(marker + 8) != ADSP_PAS_REGION_SIZE ||
++	    ram_size == 0 || ram_base > UINT64_MAX - ram_size || ADSP_PAS_REGION_PA > UINT64_MAX - ADSP_PAS_REGION_SIZE) {
++		printf("SWEET ADSP: ADT carveout marker or managed RAM bounds invalid\n");
++		return false;
++	}
++	ram_end = ram_base + ram_size;
++	if (ADSP_PAS_REGION_PA < ram_end && ram_base < carveout_end) {
++		printf("SWEET ADSP: ADSP carveout overlaps XNU RAM %#llx+%#llx; refusing PAS\n",
++		    (unsigned long long)ram_base, (unsigned long long)ram_size);
++		return false;
++	}
++	printf("SWEET ADSP: ADT carveout %#llx+%#x disjoint from XNU RAM %#llx+%#llx\n",
++	    ADSP_PAS_REGION_PA, ADSP_PAS_REGION_SIZE, (unsigned long long)ram_base, (unsigned long long)ram_size);
++	return true;
++}
++
++static bool
++adsp_metadata_alloc_contig(const struct adsp_full_bundle *bundle, vm_offset_t *kva_out, uint64_t *pa_out)
++{
++	vm_offset_t kva = 0;
++	vm_size_t size = round_page(bundle->metadata_size);
++	if (kmem_alloc_contig(kernel_map, &kva, size, PAGE_MASK, 0, 0,
++	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("SWEET ADSP: contiguous PAS metadata allocation failed\n");
++		return false;
++	}
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)kva);
++	if (pn == 0) {
++		printf("SWEET ADSP: PAS metadata page has no physical address\n");
++		return false;
++	}
++	for (unsigned i = 1; i < size / PAGE_SIZE; i++) {
++		if (pmap_find_phys(kernel_pmap, (addr64_t)(kva + i * PAGE_SIZE)) != pn + i) {
++			printf("SWEET ADSP: PAS metadata pages are not physically contiguous\n");
++			return false;
++		}
++	}
++	memcpy((void *)kva, bundle->metadata, bundle->metadata_size);
++	sweet_dma_sync_va((const void *)kva, size);
++	for (unsigned i = 0; i < size / PAGE_SIZE; i++) {
++		pmap_set_cache_attributes(pn + i, VM_WIMG_WCOMB);
++	}
++	sweet_dma_sync_va((const void *)kva, size);
++	*kva_out = kva;
++	*pa_out = ptoa_64(pn);
++	printf("SWEET ADSP: PAS metadata %lu bytes at PA %#llx, contiguous and non-cacheable\n",
++	    (unsigned long)bundle->metadata_size, (unsigned long long)*pa_out);
++	return true;
++}
++
++static bool
++beryllium_adsp_pas_start(void)
++{
++	struct adsp_full_bundle bundle;
++	vm_offset_t metadata_kva = 0, region = 0;
++	uint64_t metadata_pa = 0;
++	bool qmp_attempted = false, auth_attempted = false, region_mapped = false;
++	bool ready = false, fatal = false, result = false;
++
++	if (!adsp_pas_requested || !sweet_board_beryllium()) {
++		return false;
++	}
++	printf("SWEET ADSP: explicit PAS ID 1 startup requested (sweetadsp=2)\n");
++	/* Re-read the remote-owned item immediately before PAS; never write item 443/429. */
++	adsp_smp2p_readonly_probe(false);
++	if (adsp_smp2p_ambiguous) {
++		printf("SWEET ADSP: conflicting SMP2P state snapshot; refusing PAS reset\n");
++		return false;
++	}
++	if (adsp_remote_ready) {
++		printf("SWEET ADSP: remote ready is already asserted; refusing PAS reset\n");
++		return false;
++	}
++	if (adsp_remote_fatal) {
++		printf("SWEET ADSP: remote fatal is already asserted; refusing PAS reset\n");
++		return false;
++	}
++	if (!adsp_smp2p_known) {
++		printf("SWEET ADSP: physical state unknown; continuing only under explicit sweetadsp=2 request\n");
++	}
++	printf("SWEET ADSP: Q6V5 watchdog SPI 162 is not observed by this stage; no timeout SHUTDOWN will be issued\n");
++	if (!adsp_fw_read_full_bundle(&bundle)) {
++		printf("SWEET ADSP: complete firmware bundle invalid; no PAS call made\n");
++		return false;
++	}
++	if (!adsp_check_carveout_marker()) {
++		goto out;
++	}
++	if (!adsp_scm_pas_supported()) {
++		printf("SWEET ADSP: SCM PAS ID 1 unavailable or unsupported; no PAS call made\n");
++		goto out;
++	}
++	qmp_attempted = true;
++	if (!beryllium_qmp_set_adsp_load_state(true)) {
++		printf("SWEET ADSP: AOSS QMP load_state=on failed\n");
++		goto out;
++	}
++	/* SDM845 RPMH_CXO_CLK uses xo.lvl=3; this vote is retained for the DSP lifetime. */
++	if (sweet_rpmh_xo_enable() != 0) {
++		printf("SWEET ADSP: RPMh xo.lvl=3 vote failed\n");
++		goto out;
++	}
++	if (!adsp_metadata_alloc_contig(&bundle, &metadata_kva, &metadata_pa)) {
++		goto out;
++	}
++	if (!adsp_pas_call("INIT_IMAGE", 1, 0x82, metadata_pa, 0)) {
++		printf("SWEET ADSP: PAS INIT_IMAGE failed\n");
++		goto out;
++	}
++	if (bundle.relocatable && !adsp_pas_call("MEM_SETUP", 2, 3, ADSP_PAS_REGION_PA,
++	    bundle.max_addr - bundle.min_addr)) {
++		printf("SWEET ADSP: PAS MEM_SETUP failed\n");
++		goto out;
++	}
++	region = ml_io_map_wcomb((vm_offset_t)ADSP_PAS_REGION_PA, ADSP_PAS_REGION_SIZE);
++	if (region == 0) {
++		printf("SWEET ADSP: ADSP carveout mapping failed after PAS metadata setup\n");
++		goto out;
++	}
++	region_mapped = true;
++	for (uint32_t off = 0; off < ADSP_PAS_REGION_SIZE; off += sizeof(uint32_t)) {
++		*(volatile uint32_t *)(region + off) = 0;
++	}
++	for (unsigned i = 0; i < bundle.segment_count; i++) {
++		const struct adsp_full_segment *seg = &bundle.segments[i];
++		uint64_t reloc_base = bundle.relocatable ? bundle.min_addr : ADSP_PAS_REGION_PA;
++		uint64_t off = (uint64_t)seg->paddr - reloc_base;
++		if (seg->filesz == 0) {
++			continue;
++		}
++		if (seg->data == NULL || seg->filesz > seg->memsz || off + seg->memsz > ADSP_PAS_REGION_SIZE) {
++			printf("SWEET ADSP: validated segment %u failed final carveout bounds check\n", seg->index);
++			goto out;
++		}
++		uint32_t j = 0;
++		for (; j + sizeof(uint32_t) <= seg->filesz; j += sizeof(uint32_t)) {
++			uint32_t word;
++			memcpy(&word, seg->data + j, sizeof(word));
++			*(volatile uint32_t *)(region + off + j) = word;
++		}
++		for (; j < seg->filesz; j++) {
++			*(volatile uint8_t *)(region + off + j) = seg->data[j];
++		}
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	ml_io_unmap(region, ADSP_PAS_REGION_SIZE);
++	region = 0;
++	region_mapped = false;
++	auth_attempted = true;
++	if (!adsp_pas_call("AUTH_AND_RESET", 5, 1, 0, 0)) {
++		printf("SWEET ADSP: PAS AUTH_AND_RESET failed; QMP/XO retained because final remote state is unknown\n");
++		goto out;
++	}
++	printf("SWEET ADSP: PAS AUTH_AND_RESET succeeded; polling read-only Q6V5 SMP2P for up to 5 seconds\n");
++	for (unsigned i = 0; i < 500; i++) {
++		adsp_smp2p_readonly_probe(true);
++		if (adsp_remote_fatal) {
++			fatal = true;
++			break;
++		}
++		if (adsp_remote_ready) {
++			ready = true;
++			break;
++		}
++		delay(10000);
++	}
++	if (ready) {
++		printf("SWEET ADSP: Q6V5 ready observed; stopped before GLINK/APR/audio; QMP/XO retained\n");
++		result = true;
++		goto out;
++	}
++	if (fatal) {
++		printf("SWEET ADSP: Q6V5 SMP2P fatal observed after authentication; instance and QMP/XO retained\n");
++		goto out;
++	}
++	printf("SWEET ADSP: Q6V5 ready timeout; watchdog is unobserved, so no SHUTDOWN is issued and QMP/XO remain on\n");
++out:
++	if (region_mapped) {
++		ml_io_unmap(region, ADSP_PAS_REGION_SIZE);
++	}
++	if (qmp_attempted && !auth_attempted) {
++		(void)beryllium_qmp_set_adsp_load_state(false);
++	}
++	adsp_fw_release_full_bundle(&bundle);
++	return result;
+ }
+ 
+ void
+ beryllium_adsp_probe(void)
+ {
+ 	int mode = 0;
+ 
+ 	if (!sweet_board_beryllium()) {
+ 		return;
+ 	}
+ 	(void)PE_parse_boot_argn("sweetadsp", &mode, sizeof(mode));
+-	if (mode != 1) {
++	if (mode != 1 && mode != 2) {
+ 		return;
+ 	}
+ 	adsp_probe_enabled = true;
++	adsp_pas_requested = mode == 2;
+ 	adsp_state = BERYLLIUM_ADSP_PREFLIGHT;
+-	printf("SWEET ADSP: opt-in read-only preflight (PAS/SMEM writes disabled)\n");
+-	adsp_smp2p_readonly_probe();
++	printf("SWEET ADSP: opt-in %s\n", adsp_pas_requested ?
++	    "PAS startup mode requested; early SMP2P probe remains read-only" : "read-only preflight (PAS/SMEM writes disabled)");
++	adsp_smp2p_readonly_probe(false);
+ 	printf("SWEET ADSP: early SMP2P snapshot complete; state=%u\n", (unsigned)adsp_state);
+ }
+ 
+ void
+ beryllium_adsp_firmware_probe(void)
+ {
+ 	void *metadata = NULL;
+ 	size_t metadata_len = 0;
+ 	uint64_t file_len = 0;
+ 
+ 	if (!adsp_probe_enabled || adsp_firmware_probe_done) {
+ 		return;
+ 	}
+ 	if (rootvnode == NULLVP) {
+ 		printf("SWEET ADSP: root vnode unavailable; post-root firmware probe skipped\n");
+ 		return;
+ 	}
+ 	adsp_firmware_probe_done = true;
+ 	if (adsp_fw_read_metadata(&metadata, &metadata_len, &file_len)) {
+ 		adsp_firmware_metadata_valid = adsp_fw_validate_metadata(metadata, metadata_len, file_len);
+ 		kfree_data(metadata, (vm_size_t)metadata_len);
+ 	} else {
+ 		adsp_firmware_metadata_valid = false;
+ 	}
+ 	if (!adsp_firmware_metadata_valid) {
+ 		printf("SWEET ADSP: firmware metadata unavailable or invalid; no PAS operation attempted\n");
+ 	}
+ 	printf("SWEET ADSP: post-root firmware probe complete; metadata valid=%u state=%u\n",
+ 	    (unsigned)adsp_firmware_metadata_valid, (unsigned)adsp_state);
++	if (adsp_pas_requested) {
++		if (!adsp_firmware_metadata_valid) {
++			printf("SWEET ADSP: PAS stage skipped because bounded MDT metadata preflight failed\n");
++			return;
++		}
++		(void)beryllium_adsp_pas_start();
++	}
+ }
+ 
+ bool
+ beryllium_adsp_is_running_observed(void)
+ {
+ 	return adsp_state == BERYLLIUM_ADSP_SMP2P_READY_OBSERVED;
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/beryllium_wlan.c b/bsd/dev/beryllium_wlan.c
+--- a/bsd/dev/beryllium_wlan.c
++++ b/bsd/dev/beryllium_wlan.c
+@@ -1185,4 +1185,30 @@
+ 	return ok;
+ }
+ 
++bool
++beryllium_qmp_set_adsp_load_state(bool on)
++{
++	if (!sweet_board_beryllium()) {
++		return false;
++	}
++	if (ms.qmp == 0) {
++		ms.qmp = ml_io_map(MSS_QMP_PA, 0x1000);
++	}
++	if (ms.ipc == 0) {
++		ms.ipc = ml_io_map(MSS_APSS_SHARED_PA, 0x1000);
++	}
++	if (ms.qmp == 0 || ms.ipc == 0) {
++		printf("SWEET MSS: ADSP QMP/IPC mapping failed\n");
++		return false;
++	}
++	if (!ms.qmp_open && !ms_qmp_open()) {
++		printf("SWEET MSS: ADSP QMP channel open failed\n");
++		return false;
++	}
++	const char *msg = on ?
++	    "{class: image, res: load_state, name: adsp, val: on}" :
++	    "{class: image, res: load_state, name: adsp, val: off}";
++	return ms_qmp_send(msg);
++}
++
+ /* ---- clocks, resets, AXI halt */
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -18,3 +18,4 @@
+ int sweet_rpmh_rfclk_enable(const char *res);
++int sweet_rpmh_xo_enable(void);
+ 
+ /* Live downstream DT has two positional reg entries, no reg-names. */
+@@ -428,1 +428,34 @@
++/* Beryllium ADSP RPMH_CXO_CLK uses the xo.lvl ARC resource at exact value 3. */
++int
++sweet_rpmh_xo_enable(void)
++{
++	if (!sweet_board_beryllium()) {
++		return ENXIO;
++	}
++	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
++		return EBUSY;
++	}
++	int error = EIO;
++	uint32_t address = 0;
++	if (rh_poisoned) {
++		printf("SWEET RPMH: previous uncertain transaction; refusing XO vote\n");
++		goto out;
++	}
++	error = rh_map();
++	if (!error) {
++		error = rh_lookup_slave("xo.lvl", RH_ARC, &address, NULL, NULL);
++	}
++	if (!error) {
++		const uint32_t value = 3;
++		printf("SWEET RPMH: ADSP xo.lvl ARC %#x value %u\n", address, value);
++		error = rh_cmds(&address, &value, 1);
++	}
++out:
++	if (error) {
++		printf("SWEET RPMH: ADSP xo.lvl vote failed errno=%d\n", error);
++	}
++	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
++	return error;
++}
++
+ /* Read-only: RSC geometry check, cmd-db lookup, no TCS access. */
