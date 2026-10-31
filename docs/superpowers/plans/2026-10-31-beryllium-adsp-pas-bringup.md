@@ -76,8 +76,8 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 - Modify: `NOTES.md`
 
 - [x] Push the feature branch through `b1e2f16` (`f11010c` contains PAS code; `8e0f8cd` handoff). `gh workflow run` was attempted, but GitHub returned HTTP 403 because this account lacks repository admin rights; the attempted branch-filter workaround (`b11caca`) did not trigger from a feature branch and was reverted.
-- [ ] Obtain an official XNU build run after an admin dispatch or approved default-branch integration; record run ID, artifact hash, and warnings.
-- [ ] Verify payload includes `sweetadsp=2`, `--adsp-region 0x8c500000:0x01e00000`, and the user-authorized `ufsrw=1 rootrw=1` mount flags, with no partition-flash command involved.
+- [x] Official XNU 26.5 build run [41212300472](https://github.com/anxoCastro/Bergamota/actions/runs/41212300472), commit `1c4844cf9a7760ea0a02d87f02d10401c0bdd8b0`, success in 20m15s; kernel SHA-256 `b18b7d8c513ea297f53c17058062e779fc002fbd0f7ac61ea76b94dab8d70c62`, artifact ZIP SHA-256 `a60b27c4eafc5633275967684aad90885e5c1658af6ffe95927c33c07b1d6716`, `errors.txt` empty. Linker warnings: duplicate `-lfirehose_kernel`, incomplete `-segment_order`; actions warn Node.js 20 is deprecated.
+- [x] Verified payload includes `sweetadsp=2`, `/chosen/sweet-adsp-region=0x8c500000+0x01e00000`, and user-authorized `ufsrw=1 rootrw=1`; boot image ramdisk matches payload byte-for-byte. No partition was flashed.
 - [ ] Start UDP kernel-log capture, verify exactly one Fastboot `beryllium`, and use `fastboot boot` only.
 - [ ] Record PAS call results, Q6V5 ready/fatal result, later mount result, and return phone to Fastboot after the observation.
 - [ ] Commit the exact build/device handoff.
