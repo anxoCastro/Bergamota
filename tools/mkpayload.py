@@ -40,6 +40,7 @@ PAGE = 0x4000
 BOOT_LINE_LENGTH = 608
 CMDLINE = 0x48
 SEG_TABLE = CMDLINE + BOOT_LINE_LENGTH	# 0x2a8
+ADSP_REGION = (0x8c500000, 0x01e00000)
 
 
 def parse_macho(buf):
@@ -136,6 +137,39 @@ def add_ramdisk_to_adt(adt_blob, phys, size):
     return adt.serialize(root)
 
 
+def add_adsp_region_to_adt(adt_blob, base, size):
+    """Opt in to the captured Beryllium ADSP carveout marker in /chosen."""
+    if base is None and size is None:
+        return adt_blob
+    if (base, size) != ADSP_REGION:
+        raise ValueError('only the verified Beryllium ADSP region 0x8c500000:0x01e00000 is accepted')
+    root, _ = adt.parse(adt_blob)
+    chosen = next((c for c in root.children if c.name == 'chosen'), None)
+    if chosen is None:
+        raise ValueError('ADT has no /chosen node')
+    expected = struct.pack('<2Q', base, size)
+    current = chosen.prop('sweet-adsp-region')
+    if current is not None and current != expected:
+        raise ValueError('/chosen/sweet-adsp-region conflicts with the verified Beryllium region')
+    if current is None:
+        chosen.props.append(('sweet-adsp-region', 0, expected))
+    return adt.serialize(root)
+
+
+def parse_adsp_region(value):
+    """Parse the only currently verified ADSP reservation for a test payload."""
+    try:
+        parts = value.split(':')
+        if len(parts) != 2:
+            raise ValueError
+        region = tuple(int(part, 0) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('expected BASE:SIZE (for example 0x8c500000:0x01e00000)') from exc
+    if region != ADSP_REGION:
+        raise argparse.ArgumentTypeError('only verified Beryllium range 0x8c500000:0x01e00000 is accepted')
+    return region
+
+
 # libimage4 (the Image4 runtime inside cryptexd, MobileStorageMounter, ...) builds its AP "environment" in a
 # dispatch_once and PANICS (brk #1 via _os_crash, SIGTRAP code 0x600000001) when
 # IORegistryEntryFromPath("IODeviceTree:/chosen/manifest-properties") finds nothing: "panic: failed to get
@@ -178,7 +212,7 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
-def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img4_nodes=True):
+def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img4_nodes=True, adsp_region=None):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -194,6 +228,8 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img
     adt_blob = open(adt_path, 'rb').read()
     if img4_nodes:
         adt_blob = add_img4_nodes(adt_blob)
+    if adsp_region is not None:
+        adt_blob = add_adsp_region_to_adt(adt_blob, *adsp_region)
     # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
@@ -248,8 +284,10 @@ if __name__ == '__main__':
     ap.add_argument('--compress', action='store_true', help='deflate big segments (payload v2)')
     ap.add_argument('--no-img4-nodes', action='store_true',
                     help='do not add /chosen/manifest-properties (cryptexd then traps in libimage4 again)')
+    ap.add_argument('--adsp-region', type=parse_adsp_region,
+                    help='opt in to the verified Beryllium ADSP region marker (0x8c500000:0x01e00000)')
     a = ap.parse_args()
-    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.compress, not a.no_img4_nodes)
+    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.compress, not a.no_img4_nodes, a.adsp_region)
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':
