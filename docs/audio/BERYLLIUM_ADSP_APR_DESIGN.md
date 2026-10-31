@@ -2,7 +2,7 @@
 
 ## Purpose and first milestone
 
-This design records the target first kernel-side audio milestone for ios-beryllium: start the SDM845 ADSP safely, establish its GLINK endpoint, open the APR audio service, and query the ADSP core service version. The first implementation is narrower: an opt-in, read-only ADSP preflight. It does not create PCM streams, drive the WCD9340 or TAS2559/2560, or expose audio to iOS yet.
+This design records the kernel-side audio milestone for ios-beryllium: start the SDM845 ADSP safely, establish its GLINK endpoint, open the APR audio service, and query the ADSP core service version. The initial patch added an opt-in, read-only ADSP preflight; patch 1132 now extends that path through PAS authentication and a Q6V5-ready check. It does not create PCM streams, drive the WCD9340 or TAS2559/2560, or expose audio to iOS yet.
 
 The later route work remains: Q6 AFE/ASM/ADM, WCD9340 over SLIMbus, QUAT MI2S and TAS amps, microphone selection/capture, jack events, call audio, and the iOS 26 audio provider. The Beryllium route inventory is in `NOTES.md`.
 
@@ -69,7 +69,7 @@ The implementation belongs in `bsd/dev/beryllium_adsp.c`, registered through `bs
 
 The driver now owns bounded firmware probing, PAS, SMP2P inspection, AP-owned outbound-item setup and diagnostics. It does not access LPASS registers directly. [HakiOS's ADSP driver](https://github.com/oosexgang/hakios-xnu-kernel/blob/main/xnu/files/bsd/dev/hakios.adsp.c) reports that its LPASS/I2S state is owned by the DSP; use the ADSP's AFE protocol once the APR control plane is understood. Its device-specific constants are not Beryllium values.
 
-The early hook should log the read-only SMP2P snapshot; the post-root hook should log ELF metadata bounds, embedded versus expected image-wide split non-hash payloads, and the unclassified hash-metadata source. An expected `.bNN` sidecar is not evidence that it exists or has the required size. A later PAS/GLINK/APR boot can add those stage results after firmware, ownership, power, and transport details are observed. Do not add any analog route or PCM operation to this milestone.
+The early hook logs the read-only SMP2P snapshot; the post-root hook logs ELF metadata bounds, embedded versus expected image-wide split non-hash payloads, and the unclassified hash-metadata source. Mode 2 validates the complete bundle, initializes AP-owned SMP2P item 429, and records PAS/Q6V5 results. An expected `.bNN` sidecar is not evidence that it exists or has the required size. Proceed to GLINK/APR only after Q6V5 ready is observed and current remote state is known. Do not add any analog route or PCM operation to this milestone.
 
 ## Evidence, inference, and unresolved points
 

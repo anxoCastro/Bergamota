@@ -5,12 +5,15 @@ from pathlib import Path
 import argparse
 import re
 import struct
+import subprocess
 import sys
+import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / "xnu/patches-12377/1132-beryllium-adsp-pas-startup.patch"
+PREFLIGHT_PATCH = ROOT / "xnu/patches-12377/1131-beryllium-adsp-apr.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -26,10 +29,10 @@ def diff_section(patch: str, path: str) -> str:
 
 
 def added_function_body(section: str, name: str) -> str:
-    match = re.search(rf"(?m)^[+ ]{re.escape(name)}\([^\n]*\)$", section)
+    match = re.search(rf"(?m)^[+ ]?{re.escape(name)}\([^\n]*\)$", section)
     if not match:
         raise AssertionError(f"function {name} not found in patch")
-    body_start = re.search(r"\n[+ ]\{", section[match.end() :])
+    body_start = re.search(r"\n[+ ]?\{", section[match.end() :])
     if body_start is None:
         raise AssertionError(f"body for {name} not found in patch")
     depth = 0
@@ -41,7 +44,7 @@ def added_function_body(section: str, name: str) -> str:
         elif line.startswith("-") or line.startswith(("@@", "diff --git ")):
             continue
         else:
-            continue
+            code = line
         depth += code.count("{") - code.count("}")
         body.append(code)
         if depth == 0:
@@ -53,7 +56,17 @@ class AdspPasPatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.patch = PATCH.read_text() if PATCH.exists() else ""
-        cls.driver = diff_section(cls.patch, "bsd/dev/beryllium_adsp.c")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--include=bsd/dev/beryllium_adsp.c",
+                            str(PREFLIGHT_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--include=bsd/dev/beryllium_adsp.c",
+                            str(PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            cls.driver = (work / "bsd/dev/beryllium_adsp.c").read_text()
 
     def test_pas_start_has_an_explicit_mode_two_gate(self):
         probe = added_function_body(self.driver, "beryllium_adsp_probe")
@@ -226,6 +239,31 @@ class AdspPasPatchTests(unittest.TestCase):
     def test_payload_builder_accepts_only_the_verified_cli_range(self):
         self.assertEqual(mkpayload.parse_adsp_region('0x8c500000:0x01e00000'),
                          (0x8c500000, 0x01e00000))
+
+    def test_startup_patch_applies_after_preflight_patch(self):
+        self.assertIn("adsp_smp2p_readonly_probe(bool quiet)", self.driver)
+        self.assertIn("beryllium_adsp_pas_start(void)", self.driver)
+        targets = (
+            "bsd/dev/beryllium_adsp.c",
+            "bsd/dev/beryllium_wlan.c",
+            "bsd/dev/sweet_rpmh.c",
+        )
+        patch_dir = PATCH.parent
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            for target in targets:
+                for earlier in sorted(patch_dir.glob("*.patch")):
+                    if earlier.name.startswith("1132-"):
+                        continue
+                    marker = f"diff --git a/{target} b/{target}"
+                    if marker not in earlier.read_text(errors="replace"):
+                        continue
+                    subprocess.run(["git", "apply", f"--include={target}", str(earlier)],
+                                   cwd=work, check=True, capture_output=True, text=True)
+                subprocess.run(["git", "apply", "--check", f"--include={target}", str(PATCH)],
+                               cwd=work, check=True, capture_output=True, text=True)
 
 
 if __name__ == "__main__":

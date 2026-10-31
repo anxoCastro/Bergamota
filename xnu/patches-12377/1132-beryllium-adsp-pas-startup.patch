@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 --- a/bsd/dev/beryllium_adsp.c
 +++ b/bsd/dev/beryllium_adsp.c
-@@ -1,108 +1,176 @@
+@@ -1,96 +1,163 @@
  /*
 - * Poco F1 (beryllium, SDM845): opt-in, read-only ADSP preflight.
 + * Poco F1 (beryllium, SDM845): read-only preflight plus explicit PAS mode.
@@ -116,7 +116,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	bool relocatable, split;
 +};
  
-+static volatile uint8_t *adsp_smem;
+ static volatile uint8_t *adsp_smem;
 +static vm_offset_t adsp_smem_mutex;
 +static vm_offset_t adsp_smp2p_ipc;
  static enum beryllium_adsp_state adsp_state = BERYLLIUM_ADSP_OFF;
@@ -171,25 +171,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  	vm_size_t read_len;
  	void *copy;
  
- 	*out = NULL;
- 	*out_len = 0;
- 	*file_len = 0;
- 	if (rootvnode == NULLVP) {
- 		printf("SWEET ADSP: root vnode unavailable; firmware preflight skipped\n");
- 		return false;
- 	}
- 	ctx = vfs_context_kernel();
- 	if (vnode_lookup(ADSP_FW_PATH, 0, &vp, ctx) != 0 || vp == NULLVP) {
- 		printf("SWEET ADSP: firmware missing: %s\n", ADSP_FW_PATH);
- 		return false;
- 	}
- 	error = vnode_size(vp, &size, ctx);
-@@ -248,233 +301,1104 @@
- 	}
- 	p = adsp_smem + off;
- 	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
- 	    ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
- }
+@@ -253,206 +320,1067 @@
  
  static uint16_t
  adsp_smem_rd16(uint32_t off)
@@ -338,7 +320,9 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	return false;
 +}
 +
-+static void
+ static void
+-adsp_smp2p_readonly_probe(void)
+-{
 +adsp_smem_unlock(void)
 +{
 +	volatile uint32_t *lock = (volatile uint32_t *)(adsp_smem_mutex + ADSP_SMEM_HWLOCK_ID * 0x1000u);
@@ -563,9 +547,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	return adsp_smp2p_out_setup();
 +}
 +
- static void
--adsp_smp2p_readonly_probe(void)
--{
++static void
 +adsp_smp2p_readonly_probe(bool quiet)
 +{
 +	adsp_smp2p_quiet = quiet;
@@ -591,6 +573,9 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  		}
  	}
  	__asm__ volatile ("dmb sy" ::: "memory");
+-	if (!adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_IN_ITEM, &item_off, &item_size) ||
+-	    item_size < ADSP_SMP2P_HEADER_BYTES) {
+-		printf("SWEET ADSP: remote SMP2P inbound item %u unavailable or too small\n", ADSP_SMP2P_IN_ITEM);
 +	if (!adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_IN_ITEM, &item_off, &item_size)) {
 +		ADSP_SMP2P_LOG("SWEET ADSP: remote SMP2P inbound item %u unavailable\n", ADSP_SMP2P_IN_ITEM);
  		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
@@ -670,9 +655,9 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  	}
  	if (!found) {
 -		printf("SWEET ADSP: SMP2P inbound item has no slave-kernel entry\n");
+-		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
 +		ADSP_SMP2P_LOG("SWEET ADSP: SMP2P inbound item has no slave-kernel entry\n");
 +		adsp_smp2p_ambiguous = true;
--		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
 +		adsp_state = BERYLLIUM_ADSP_FAILED;
  	} else {
  		adsp_state = ready ? BERYLLIUM_ADSP_SMP2P_READY_OBSERVED : BERYLLIUM_ADSP_SMP2P_NOT_READY;
@@ -1285,11 +1270,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
  
  	if (!adsp_probe_enabled || adsp_firmware_probe_done) {
  		return;
- 	}
- 	if (rootvnode == NULLVP) {
- 		printf("SWEET ADSP: root vnode unavailable; post-root firmware probe skipped\n");
- 		return;
- 	}
+@@ -464,20 +1392,27 @@
  	adsp_firmware_probe_done = true;
  	if (adsp_fw_read_metadata(&metadata, &metadata_len, &file_len)) {
  		adsp_firmware_metadata_valid = adsp_fw_validate_metadata(metadata, metadata_len, file_len);
