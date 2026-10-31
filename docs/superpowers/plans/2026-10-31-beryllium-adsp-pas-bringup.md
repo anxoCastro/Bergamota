@@ -73,7 +73,8 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 **Files:**
 - Modify: `NOTES.md`
 
-- [ ] Push the feature branch and use `gh` to run the repository's kernel workflow; record run ID, artifact hash, and warnings.
+- [x] Push the feature branch through `b1e2f16` (`f11010c` contains PAS code; `8e0f8cd` handoff). `gh workflow run` was attempted, but GitHub returned HTTP 403 because this account lacks repository admin rights; the attempted branch-filter workaround (`b11caca`) did not trigger from a feature branch and was reverted.
+- [ ] Obtain an official XNU build run after an admin dispatch or approved default-branch integration; record run ID, artifact hash, and warnings.
 - [ ] Verify payload includes `sweetadsp=2` and `--adsp-region 0x8c500000:0x01e00000`, excludes `ufsrw=1`/`rootrw=1`, with no partition-flash command involved.
 - [ ] Start UDP kernel-log capture, verify exactly one Fastboot `beryllium`, and use `fastboot boot` only.
 - [ ] Record PAS call results, Q6V5 ready/fatal result, later mount result, and return phone to Fastboot after the observation.
@@ -84,5 +85,5 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 ## Completion criteria
 
 - A default boot and mode 1 remain free of PAS calls and writes.
-- Mode 2 either aborts before the first mutating PAS call on a named failed prerequisite, or reaches PAS ID 1 authentication and reports whether Q6V5 ready arrived within five seconds.
+- Mode 2 either aborts before the first mutating PAS call on a named failed prerequisite, reaches PAS ID 1 authentication and reports Q6V5 ready within five seconds, or logs the timeout while retaining QMP/XO and issuing no SHUTDOWN.
 - The commit and `NOTES.md` handoff state exact evidence separately from inference. The stage remains independent of GLINK/APR and audio routing.
