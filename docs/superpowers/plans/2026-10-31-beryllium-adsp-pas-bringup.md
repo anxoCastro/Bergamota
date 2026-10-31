@@ -64,7 +64,7 @@ The user authorized temporary phone experiments on 2026-10-31. `sweetadsp=2` is 
 - [x] Poll SMP2P read-only for ready/fatal for at most five seconds; retain the started instance on timeout because watchdog SPI 162 is not observed, and issue no SHUTDOWN.
 - [x] Preserve QMP load-state and XO after ready; no handover event is implemented in this stage.
 - [x] Run 13 PAS-contract tests, the full 16-test Python suite, synthetic patch application after the 1131/1106/1122 contexts, `git diff --check` on source/docs/tests, and a separate trailing-whitespace check on added patch lines.
-- [ ] Commit source, tests, and design updates.
+- [x] Commit source, tests, and design updates (`f11010c`).
 
 **Check:** local checks pass; diff shows no GLINK/APR, outbound item 429/443 writes, UFS write flags, or firmware artifacts.
 
