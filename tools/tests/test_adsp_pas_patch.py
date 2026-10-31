@@ -73,18 +73,22 @@ class AdspPasPatchTests(unittest.TestCase):
         for gate in (
             "adsp_fw_read_full_bundle",
             "adsp_check_carveout_marker",
-            "adsp_scm_pas_supported",
+            "adsp_scm_pas_prerequisites",
             "beryllium_qmp_set_adsp_load_state",
             "sweet_rpmh_xo_enable",
         ):
             self.assertLess(start.index(gate), init, gate)
 
-    def test_unsupported_adsp_queries_only_read_only_reference_pas_ids(self):
-        supported = added_function_body(self.driver, "adsp_scm_pas_supported")
+    def test_pas_support_query_is_advisory_and_references_are_read_only(self):
+        supported = added_function_body(self.driver, "adsp_scm_pas_prerequisites")
         query = added_function_body(self.driver, "adsp_scm_pas_id_supported")
         self.assertIn('adsp_scm_pas_id_supported("ADSP", ADSP_PAS_ID)', supported)
         self.assertIn('adsp_scm_pas_id_supported("MPSS reference", 4u)', supported)
         self.assertIn('adsp_scm_pas_id_supported("GPU reference", 13u)', supported)
+        self.assertNotIn('{ "IS_SUPPORTED", 7 }', supported)
+        diagnostic = supported[supported.index('if (!adsp_scm_pas_id_supported("ADSP"'):]
+        self.assertNotIn("return false", diagnostic)
+        self.assertIn("IS_SUPPORTED is advisory", diagnostic)
         self.assertIn("SCM_SIP | 0x0200u | 7u", query)
         self.assertIn("x0=%#llx x1=%#llx x2=%#llx x3=%#llx", query)
         self.assertIn("(unsigned long long)out.a[3]", query)

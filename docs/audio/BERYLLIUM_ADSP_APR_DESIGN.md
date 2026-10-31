@@ -6,6 +6,10 @@ This design records the target first kernel-side audio milestone for ios-berylli
 
 The later route work remains: Q6 AFE/ASM/ADM, WCD9340 over SLIMbus, QUAT MI2S and TAS amps, microphone selection/capture, jack events, call audio, and the iOS 26 audio provider. The Beryllium route inventory is in `NOTES.md`.
 
+## Current implementation status (2026-10-31)
+
+Patch 1132 keeps ordinary boot and `sweetadsp=1` read-only and adds an explicit `sweetadsp=2` PAS ID 1 startup stage. Its first hardware runs validated firmware and carveout bounds but stopped before INIT_IMAGE because PAS_IS_SUPPORTED returned false. Mainline Beryllium enables the generic `adsp_pas` remoteproc; its startup path does not call `qcom_scm_pas_supported()`. The next revision treats that query as diagnostic while retaining SCM call-availability, firmware, carveout, SMP2P, QMP, and XO gates. No mutating ADSP PAS call has yet been observed, and the stage still stops before GLINK/APR/audio.
+
 ## Confirmed Beryllium topology
 
 The facts below come from the upstream SDM845 and Beryllium device trees. They describe Linux's device configuration; the XNU implementation must still confirm the running device's memory and firmware state before writing or assigning anything.

@@ -702,11 +702,10 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +}
 +
 +static bool
-+adsp_scm_pas_supported(void)
++adsp_scm_pas_prerequisites(void)
 +{
 +	static const struct { const char *name; uint32_t cmd; } required[] = {
 +		{ "INIT_IMAGE", 1 }, { "MEM_SETUP", 2 }, { "AUTH_AND_RESET", 5 },
-+		{ "IS_SUPPORTED", 7 },
 +	};
 +	for (unsigned i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
 +		if (!adsp_scm_call_available(required[i].name, required[i].cmd)) {
@@ -716,11 +715,12 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	if (!adsp_scm_pas_id_supported("ADSP", ADSP_PAS_ID)) {
 +		bool mpss_reference = adsp_scm_pas_id_supported("MPSS reference", 4u);
 +		bool gpu_reference = adsp_scm_pas_id_supported("GPU reference", 13u);
-+		printf("SWEET ADSP: PAS remains disabled; read-only references MPSS=%u GPU=%u\n",
++		printf("SWEET ADSP: PAS IS_SUPPORTED is advisory; reference results MPSS=%u GPU=%u\n",
 +		    (unsigned)mpss_reference, (unsigned)gpu_reference);
-+		return false;
++	} else {
++		printf("SWEET ADSP: PAS ID %u IS_SUPPORTED query returned true\n", ADSP_PAS_ID);
 +	}
-+	printf("SWEET ADSP: PAS ID %u support confirmed\n", ADSP_PAS_ID);
++	/* Linux Beryllium PAS startup does not gate on this optional query. */
 +	return true;
 +}
 +
@@ -845,8 +845,8 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +	if (!adsp_check_carveout_marker()) {
 +		goto out;
 +	}
-+	if (!adsp_scm_pas_supported()) {
-+		printf("SWEET ADSP: SCM PAS ID 1 unavailable or unsupported; no PAS call made\n");
++	if (!adsp_scm_pas_prerequisites()) {
++		printf("SWEET ADSP: required SCM PAS startup commands unavailable; no PAS call made\n");
 +		goto out;
 +	}
 +	qmp_attempted = true;
