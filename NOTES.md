@@ -2,6 +2,13 @@
 
 ## Agent handoff / active work (2026-11-01, latest)
 
+### >>> 2026-11-01: SPI 162 GIC readback patch 1136; CI pending <<<
+* **Patch (observed):** commit `e57924123670794d0b0d6df9bb0fdefbb9db90c1` adds read-only SPI 162 readback for `GICD_IGROUPR`, `GICD_IGRPMODR`, `GICD_ICFGR`, `GICD_CTLR`, `ICC_IGRPEN1_EL1`, `GICD_IROUTER`, and current MPIDR. Before PAS it refuses startup unless readback confirms Group 1 non-secure, rising edge, distributor Group 1 enable and CPU Group 1 enable. It does not change the route or Group1 modifier.
+* **Patch validation:** patch 1136 parses and applies byte-for-byte on the exact post-1135 source files in CI run 41302309171's `xnu-buildtree` artifact. Added lines have no trailing whitespace. This host has no local `clang`; no compile has yet been claimed for 1136.
+* **CI status (observed):** run [41304641154](https://github.com/anxoCastro/Bergamota/actions/runs/41304641154) is correctly on branch `audio-poco-f1-adsp-bootstrap`, head `e57924123670794d0b0d6df9bb0fdefbb9db90c1`, and is still in `Build`. An initial dispatch without `--ref` targeted `develop` (run 41304596959, head `37a7a7a917fc09945ed2f7d1ae68b84d4525b4cb`) and was cancelled before using its kernel.
+* **Device status (observed):** the host sees one Fastboot target; `fastboot getvar product` returns `beryllium`. No 1136 image has been booted. No partition/GPT writes have been made.
+* **Next:** wait for run 41304641154. If it succeeds, verify the kernel/artifact and build a temporary image from the known Enxerto envelope; boot it with `fastboot boot` and capture the GIC config readback and Q6V5/SMP2P outcome.
+
 ### >>> 2026-11-01: SPI 162 observer enabled, no IRQ, Q6V5 ready still absent <<<
 * **Patch 1135 build (observed):** commit `e89a38e7f29ed9df2f8972d40ba44c93c9c6180b`; GitHub Actions [41302309171](https://github.com/anxoCastro/Bergamota/actions/runs/41302309171) succeeded on XNU 26.5 / Xcode 26.1.1 / DEVELOPMENT-SWEET. `errors.txt` is empty. The 22,231,000-byte arm64 kernel SHA-256 is `75815dcc8e7f3fe3e604c4c04bf5c25e6ab7451d3e4dd7cd545c3d3bedcc34f5` and matches `SHA256SUMS`. The rootrw payload SHA-256 is `1ec7d9138d68ac004cd1537be7fdb273ca406168b2b65ea3ef2d1c8fec29fcd6`; temporary Enxerto image SHA-256 is `4de823fe1e0dc4ab5c8d048c7d5f15fd3d5f24872c288819a2b16a06e31a6614` (21,454,848 bytes).
 * **Temporary hardware boot (observed):** one Fastboot target returned `product=beryllium`. `fastboot boot .superpowers/ci/41302309171/enxerto-adsp-passive-irq-rootrw.img` returned send `OKAY` in 0.487 s and boot `OKAY` in 0.088 s (0.595 s total). No partition or GPT was flashed. The user later returned the phone to Fastboot; the host again sees one `beryllium` target.
