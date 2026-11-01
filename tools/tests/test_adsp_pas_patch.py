@@ -67,6 +67,24 @@ class AdspPasPatchTests(unittest.TestCase):
                             str(PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             cls.driver = (work / "bsd/dev/beryllium_adsp.c").read_text()
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            for later in sorted(PATCH.parent.glob("*.patch")):
+                try:
+                    number = int(later.name.split("-", 1)[0])
+                except ValueError:
+                    continue
+                if not 1131 <= number <= 1141:
+                    continue
+                marker = "diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c"
+                if marker not in later.read_text(errors="replace"):
+                    continue
+                subprocess.run(["git", "apply", "--include=bsd/dev/beryllium_adsp.c",
+                                str(later)], cwd=work,
+                               check=True, capture_output=True, text=True)
+            cls.latest_driver = (work / "bsd/dev/beryllium_adsp.c").read_text()
 
     def test_pas_start_has_an_explicit_mode_two_gate(self):
         probe = added_function_body(self.driver, "beryllium_adsp_probe")
@@ -184,6 +202,19 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertLess(start.index("adsp_fw_read_full_bundle"),
                         start.index('adsp_pas_call("INIT_IMAGE"'))
 
+    def test_loaded_segments_are_verified_before_pas_authentication(self):
+        start = added_function_body(self.latest_driver, "beryllium_adsp_pas_start")
+        verifier = added_function_body(self.latest_driver, "adsp_verify_loaded_segments")
+        self.assertLess(start.index("adsp_verify_loaded_segments"),
+                        start.index('adsp_pas_call("AUTH_AND_RESET"'))
+        self.assertIn("if (!adsp_verify_loaded_segments", start)
+        self.assertIn("PAS AUTH_AND_RESET not attempted", start)
+        self.assertIn("seg->filesz", verifier)
+        self.assertIn("seg->memsz", verifier)
+        self.assertIn("region[off + j] != seg->data[j]", verifier)
+        self.assertIn("region[off + j] != 0", verifier)
+        self.assertIn("readback mismatch", verifier)
+
     def test_adsp_qmp_wrapper_reuses_existing_open_channel(self):
         wlan = diff_section(self.patch, "bsd/dev/beryllium_wlan.c")
         qmp = added_function_body(wlan, "beryllium_qmp_set_adsp_load_state")
@@ -255,7 +286,12 @@ class AdspPasPatchTests(unittest.TestCase):
                            check=True, capture_output=True, text=True)
             for target in targets:
                 for earlier in sorted(patch_dir.glob("*.patch")):
-                    if earlier.name.startswith("1132-"):
+                    try:
+                        earlier_number = int(earlier.name.split("-", 1)[0])
+                        target_number = int(PATCH.name.split("-", 1)[0])
+                    except ValueError:
+                        continue
+                    if earlier_number >= target_number:
                         continue
                     marker = f"diff --git a/{target} b/{target}"
                     if marker not in earlier.read_text(errors="replace"):

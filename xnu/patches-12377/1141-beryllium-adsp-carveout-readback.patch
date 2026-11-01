@@ -1,0 +1,76 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 2b38e06..a88bdc3 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -1109,6 +1109,60 @@ fail:
+ 	return false;
+ }
+ 
++static bool
++adsp_verify_loaded_segments(const struct adsp_full_bundle *bundle, volatile uint8_t *region)
++{
++	uint64_t reloc_base = bundle->relocatable ? bundle->min_addr : ADSP_PAS_REGION_PA;
++	bool all_match = true;
++
++	for (unsigned i = 0; i < bundle->segment_count; i++) {
++		const struct adsp_full_segment *seg = &bundle->segments[i];
++		uint64_t off;
++		uint32_t mismatches = 0, first_mismatch = UINT32_MAX;
++
++		if ((uint64_t)seg->paddr < reloc_base) {
++			printf("SWEET ADSP: carveout readback segment %u has address below relocation base\n",
++			    seg->index);
++			return false;
++		}
++		off = (uint64_t)seg->paddr - reloc_base;
++		if (seg->filesz > seg->memsz || off + seg->memsz > ADSP_PAS_REGION_SIZE ||
++		    (seg->filesz != 0 && seg->data == NULL)) {
++			printf("SWEET ADSP: carveout readback segment %u failed bounds validation\n",
++			    seg->index);
++			return false;
++		}
++
++		for (uint32_t j = 0; j < seg->filesz; j++) {
++			if (region[off + j] != seg->data[j]) {
++				if (first_mismatch == UINT32_MAX) {
++					first_mismatch = j;
++				}
++				mismatches++;
++			}
++		}
++		for (uint32_t j = seg->filesz; j < seg->memsz; j++) {
++			if (region[off + j] != 0) {
++				if (first_mismatch == UINT32_MAX) {
++					first_mismatch = j;
++				}
++				mismatches++;
++			}
++		}
++
++		if (mismatches != 0) {
++			printf("SWEET ADSP: carveout readback mismatch segment %u count=%u first-offset=%#x\n",
++			    seg->index, mismatches, first_mismatch);
++			all_match = false;
++		} else {
++			printf("SWEET ADSP: carveout readback segment %u verified file=%u zero-tail=%u\n",
++			    seg->index, seg->filesz, seg->memsz - seg->filesz);
++		}
++	}
++
++	return all_match;
++}
++
+ static void
+ adsp_scm_smccc(struct adsp_scm_regs *r)
+ {
+@@ -1408,6 +1462,10 @@ beryllium_adsp_pas_start(void)
+ 		}
+ 	}
+ 	__asm__ volatile ("dsb sy" ::: "memory");
++	if (!adsp_verify_loaded_segments(&bundle, (volatile uint8_t *)region)) {
++		printf("SWEET ADSP: carveout readback failed; PAS AUTH_AND_RESET not attempted\n");
++		goto out;
++	}
+ 	ml_io_unmap(region, ADSP_PAS_REGION_SIZE);
+ 	region = 0;
+ 	region_mapped = false;
