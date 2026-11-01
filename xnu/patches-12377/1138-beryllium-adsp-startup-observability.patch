@@ -1,0 +1,80 @@
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -128,7 +128,11 @@
+ static bool adsp_remote_stop_ack;
+ static bool adsp_smp2p_ambiguous;
+ static bool adsp_smp2p_quiet;
++static bool adsp_smp2p_header_valid;
+ static uint8_t adsp_remote_smp2p_version;
++static uint16_t adsp_remote_smp2p_total_entries;
++static uint16_t adsp_remote_smp2p_valid_entries;
++static uint32_t adsp_remote_smp2p_flags;
+ 
+ static uint16_t
+ adsp_u16le(const uint8_t *p)
+@@ -695,7 +699,11 @@
+ 	adsp_remote_handover = false;
+ 	adsp_remote_stop_ack = false;
+ 	adsp_smp2p_ambiguous = false;
++	adsp_smp2p_header_valid = false;
+ 	adsp_remote_smp2p_version = 0;
++	adsp_remote_smp2p_total_entries = 0;
++	adsp_remote_smp2p_valid_entries = 0;
++	adsp_remote_smp2p_flags = 0;
+ 	uint32_t item_off = 0, item_size = 0, head1, pids, counts, flags;
+ 	uint16_t total, valid;
+ 	bool found = false, ready = false, fatal = false;
+@@ -746,6 +754,10 @@
+ 		adsp_state = BERYLLIUM_ADSP_FAILED;
+ 		return;
+ 	}
++	adsp_smp2p_header_valid = true;
++	adsp_remote_smp2p_total_entries = total;
++	adsp_remote_smp2p_valid_entries = valid;
++	adsp_remote_smp2p_flags = flags;
+ 	ADSP_SMP2P_LOG("SWEET ADSP: SMP2P inbound item %u: remote PID %u -> AP PID %u, version %u, entries %u/%u, flags %#x\n",
+ 	    ADSP_SMP2P_IN_ITEM, (unsigned)local_pid, (unsigned)remote_pid, (unsigned)version, (unsigned)valid, (unsigned)total, flags);
+ 	for (uint16_t i = 0; i < valid; i++) {
+@@ -801,7 +813,7 @@
+ 	char reason[129];
+ 	bool terminated = false;
+ 
+-	printf("SWEET ADSP: read-only post-start snapshot (%s)\n", stage);
++	printf("SWEET ADSP: read-only ADSP snapshot (%s)\n", stage);
+ 	if (adsp_smem == NULL) {
+ 		adsp_smem = (volatile uint8_t *)ml_io_map(ADSP_SMEM_PA, ADSP_SMEM_SIZE);
+ 	}
+@@ -1420,6 +1432,7 @@
+ 		printf("SWEET ADSP: watchdog SPI 162 changed during setup; refusing PAS reset\n");
+ 		goto out;
+ 	}
++	adsp_post_start_diagnostics("pre-PAS baseline");
+ 	auth_attempted = true;
+ 	if (!adsp_pas_call("AUTH_AND_RESET", 5, 1, 0, 0)) {
+ 		printf("SWEET ADSP: PAS AUTH_AND_RESET failed; QMP/XO retained because final remote state is unknown\n");
+@@ -1428,8 +1441,15 @@
+ 		goto out;
+ 	}
+ 	printf("SWEET ADSP: PAS AUTH_AND_RESET succeeded; polling read-only Q6V5 SMP2P for up to 5 seconds\n");
++	bool smp2p_header_reported = false;
+ 	for (unsigned i = 0; i < 500; i++) {
+ 		adsp_smp2p_readonly_probe(true);
++		if (!smp2p_header_reported && adsp_smp2p_header_valid) {
++			printf("SWEET ADSP: SMP2P item 443 valid header first observed at %u ms: version %u entries %u/%u flags %#x\n",
++			    i * 10u, adsp_remote_smp2p_version, adsp_remote_smp2p_valid_entries,
++			    adsp_remote_smp2p_total_entries, adsp_remote_smp2p_flags);
++			smp2p_header_reported = true;
++		}
+ 		if (adsp_remote_fatal) {
+ 			fatal = true;
+ 			break;
+@@ -1440,6 +1460,9 @@
+ 		}
+ 		delay(10000);
+ 	}
++	if (!smp2p_header_reported) {
++		printf("SWEET ADSP: SMP2P item 443 valid header was not observed during the 5-second window\n");
++	}
+ 	printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n",
+ 	    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+ 	if (ready) {
