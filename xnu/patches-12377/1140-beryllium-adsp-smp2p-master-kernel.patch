@@ -1,6 +1,7 @@
 --- a/bsd/dev/beryllium_adsp.c
 +++ b/bsd/dev/beryllium_adsp.c
-@@ -671,4 +671,4 @@
+@@ -670,7 +670,7 @@
+ 	entry = data_off + ADSP_SMP2P_HEADER_BYTES + valid * ADSP_SMP2P_ENTRY_BYTES;
 -	adsp_smem_wr32(entry, 0x706f7473u); /* "stop" */
 -	for (uint32_t off = 4; off < 16; off += 4) {
 -		adsp_smem_wr32(entry + off, 0);
@@ -9,6 +10,11 @@
 +	for (uint32_t off = 0; off < sizeof(master_kernel_name); off++) {
 +		adsp_smem[entry + off] = (uint8_t)master_kernel_name[off];
 +	}
-@@ -681,1 +681,1 @@
+ 	adsp_smem_wr32(entry + 16, 0); /* stop is initially clear for the running remote */
+ 	__asm__ volatile ("dmb sy" ::: "memory");
+@@ -681,4 +681,4 @@
 -	printf("SWEET ADSP: outbound SMP2P item %u version %u pid %u->%u entry stop=0 doorbell bit %u\n",
 +	printf("SWEET ADSP: outbound SMP2P item %u version %u pid %u->%u entry master-kernel value=0 (stop bit 0), doorbell bit %u\n",
+ 	    ADSP_SMP2P_OUT_ITEM, version, ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_DOORBELL);
+ 	return true;
+ }

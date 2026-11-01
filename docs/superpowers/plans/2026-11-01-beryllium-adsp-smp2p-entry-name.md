@@ -33,7 +33,7 @@
 - Modify: `NOTES.md`
 
 - [x] Encode `master-kernel` in item 429 and label the clear bit as `stop bit 0` in the log.
-- [x] Apply patch 1140 to the saved post-1139 XNU source; the hunk applies without fuzz and changes only the outbound name and log label.
+- [x] Validate the revised hunks with `git apply --check` and apply them to the saved post-1139 XNU source; only the outbound name and log label change.
 - [ ] Dispatch the KDK-enabled XNU 26.5 GitHub Actions build and record exact run ID, kernel hash and result.
 - [ ] If Fastboot enumerates `product=beryllium`, boot the generated image temporarily; never flash a partition or GPT.
 - [ ] Record boot evidence or the absent-device result, update the handoff, and commit/push without co-author trailers.
