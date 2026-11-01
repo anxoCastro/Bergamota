@@ -1,0 +1,157 @@
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -3188,13 +3188,15 @@
+ 
+ 	if (intid >= 1020 && intid <= 1023) {
+ 		return; /* spurious */
+ 	}
+ 	if (intid == 162u) {
++		/* Passive Q6V5 watchdog observer: count and EOI; do not touch SMEM. */
+ 		os_atomic_inc(&sweet_q6v5_wdog_irq_count, relaxed);
+-	}
+-	if (intid == sweet_vtimer_intid) {
++		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
++		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++	} else if (intid == sweet_vtimer_intid) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
+ 		cdp->cpu_decrementer = -1; /* Large */
+ 		ml_interrupt_masked_debug_start(rtclock_intr, DBG_INTR_TYPE_TIMER);
+ 		rtclock_intr(TRUE);
+ 		ml_interrupt_masked_debug_end();
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -65,10 +65,51 @@
+ 	*enabled = (gicd_read32(0x100u + offset) & mask) != 0;
+ 	*pending = (gicd_read32(0x200u + offset) & mask) != 0;
+ 	*active = (gicd_read32(0x300u + offset) & mask) != 0;
+ 	return 1;
+ }
++
++/* Enable one non-secure, edge-triggered Group 1 SPI for a passive observer. */
++int
++sweet_gic_spi_enable_group1_edge(unsigned int intid)
++{
++	if (!gicd_base || intid < 32 || intid >= 1020) {
++		return 0;
++	}
++	uint32_t offset = (intid / 32u) * sizeof(uint32_t);
++	uint32_t mask = 1u << (intid % 32u);
++	if ((gicd_read32(0x200u + offset) | gicd_read32(0x300u + offset)) & mask) {
++		return 0; /* Refuse a stale or active interrupt before enabling it. */
++	}
++	uint32_t group_offset = 0x080u + offset;
++	gicd_write32(group_offset, gicd_read32(group_offset) | mask);
++	uint32_t config_offset = 0xC00u + (intid / 16u) * sizeof(uint32_t);
++	uint32_t config_shift = (intid % 16u) * 2u;
++	uint32_t config = gicd_read32(config_offset);
++	config = (config & ~(3u << config_shift)) | (2u << config_shift); /* rising edge */
++	gicd_write32(config_offset, config);
++	uint32_t priority_offset = 0x400u + (intid & ~3u);
++	uint32_t priority_shift = (intid % 4u) * 8u;
++	uint32_t priority = gicd_read32(priority_offset);
++	priority = (priority & ~(0xFFu << priority_shift)) | (0xA0u << priority_shift);
++	gicd_write32(priority_offset, priority);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	gicd_write32(0x100u + offset, mask); /* GICD_ISENABLER is write-one-to-set. */
++	for (unsigned int i = 0; i < 1000000u; i++) {
++		if (!(gicd_read32(GICD_CTLR) & GICD_CTLR_RWP)) {
++			if (gicd_read32(0x100u + offset) & mask) {
++				return 1;
++			}
++			gicd_write32(0x180u + offset, mask); /* Roll back a rejected enable. */
++			__asm__ volatile ("dsb sy" ::: "memory");
++			return 0;
++		}
++	}
++	gicd_write32(0x180u + offset, mask); /* Roll back if the distributor never quiesces. */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return 0;
++}
+ #endif
+ 
+ static vm_offset_t
+ find_gicr_pe_base()
+ {
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -37,10 +37,11 @@
+ extern void sweet_log_sync(void);
+ extern bool beryllium_qmp_set_adsp_load_state(bool);
+ extern int sweet_rpmh_xo_enable(void);
+ extern unsigned long gPhysBase, gPhysSize;
+ extern int sweet_gic_spi_snapshot(unsigned int, uint32_t *, uint32_t *, uint32_t *);
++extern int sweet_gic_spi_enable_group1_edge(unsigned int);
+ extern uint32_t sweet_q6v5_wdog_irq_count_get(void);
+ extern vnode_t rootvnode;
+ 
+ #define ADSP_FW_PATH             "/usr/standalone/firmware/sweet/adsp.mdt"
+ #define ADSP_FW_MAX_SIZE         0x04000000u     /* 64 MiB per-file cap */
+@@ -1365,13 +1366,37 @@
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	ml_io_unmap(region, ADSP_PAS_REGION_SIZE);
+ 	region = 0;
+ 	region_mapped = false;
+ 	wdog_irq_count_before = sweet_q6v5_wdog_irq_count_get();
++	if (!sweet_gic_spi_enable_group1_edge(ADSP_Q6V5_WDOG_SPI)) {
++		uint32_t enabled = 0, pending = 0, active = 0;
++		if (sweet_gic_spi_snapshot(ADSP_Q6V5_WDOG_SPI, &enabled, &pending, &active)) {
++			printf("SWEET ADSP: watchdog SPI 162 GIC setup refused; enabled=%u pending=%u active=%u; PAS not attempted\n",
++			    enabled, pending, active);
++		} else {
++			printf("SWEET ADSP: watchdog SPI 162 GIC setup refused; distributor unavailable; PAS not attempted\n");
++		}
++		goto out;
++	}
++	uint32_t wdog_enabled = 0, wdog_pending = 0, wdog_active = 0;
++	if (!sweet_gic_spi_snapshot(ADSP_Q6V5_WDOG_SPI, &wdog_enabled, &wdog_pending, &wdog_active)) {
++		printf("SWEET ADSP: watchdog SPI 162 GIC snapshot unavailable after setup; PAS not attempted\n");
++		goto out;
++	}
++	printf("SWEET ADSP: watchdog SPI 162 armed Group 1 edge; enabled=%u pending=%u active=%u\n",
++	    wdog_enabled, wdog_pending, wdog_active);
++	if (!wdog_enabled || wdog_pending || wdog_active ||
++	    sweet_q6v5_wdog_irq_count_get() != wdog_irq_count_before) {
++		printf("SWEET ADSP: watchdog SPI 162 changed during setup; refusing PAS reset\n");
++		goto out;
++	}
+ 	auth_attempted = true;
+ 	if (!adsp_pas_call("AUTH_AND_RESET", 5, 1, 0, 0)) {
+ 		printf("SWEET ADSP: PAS AUTH_AND_RESET failed; QMP/XO retained because final remote state is unknown\n");
++		printf("SWEET ADSP: watchdog SPI 162 IRQ delta through PAS call=%u\n",
++		    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+ 		goto out;
+ 	}
+ 	printf("SWEET ADSP: PAS AUTH_AND_RESET succeeded; polling read-only Q6V5 SMP2P for up to 5 seconds\n");
+ 	for (unsigned i = 0; i < 500; i++) {
+ 		adsp_smp2p_readonly_probe(true);
+@@ -1383,28 +1408,26 @@
+ 			ready = true;
+ 			break;
+ 		}
+ 		delay(10000);
+ 	}
++	printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n",
++	    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+ 	if (ready) {
+ 		printf("SWEET ADSP: Q6V5 ready observed; stopped before GLINK/APR/audio; QMP/XO retained\n");
+ 		result = true;
+ 		goto out;
+ 	}
+ 	if (fatal) {
+ 		printf("SWEET ADSP: Q6V5 SMP2P fatal observed after authentication; instance and QMP/XO retained\n");
+ 		adsp_smp2p_readonly_probe(false);
+ 		adsp_post_start_diagnostics("SMP2P fatal");
+-		printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n",
+-		    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+ 		goto out;
+ 	}
+ 	printf("SWEET ADSP: Q6V5 ready timeout; no SHUTDOWN is issued and QMP/XO remain on\n");
+ 	adsp_smp2p_readonly_probe(false);
+ 	adsp_post_start_diagnostics("ready timeout");
+-	printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n",
+-	    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+ out:
+ 	if (region_mapped) {
+ 		ml_io_unmap(region, ADSP_PAS_REGION_SIZE);
+ 	}
+ 	if (qmp_attempted && !auth_attempted) {
