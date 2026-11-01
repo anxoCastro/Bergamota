@@ -1,7 +1,56 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 9651d9d..d10e28d 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -39,6 +39,7 @@ extern bool beryllium_qmp_set_adsp_load_state(bool);
+ extern int sweet_rpmh_xo_enable(void);
+ extern unsigned long gPhysBase, gPhysSize;
+ extern int sweet_gic_spi_snapshot(unsigned int, uint32_t *, uint32_t *, uint32_t *);
++extern uint32_t sweet_q6v5_wdog_irq_count_get(void);
+ extern vnode_t rootvnode;
+ 
+ #define ADSP_FW_PATH             "/usr/standalone/firmware/sweet/adsp.mdt"
+@@ -1260,6 +1261,7 @@ beryllium_adsp_pas_start(void)
+ 	uint64_t metadata_pa = 0;
+ 	bool qmp_attempted = false, auth_attempted = false, region_mapped = false;
+ 	bool ready = false, fatal = false, result = false;
++	uint32_t wdog_irq_count_before = 0;
+ 
+ 	if (!adsp_pas_requested || !sweet_board_beryllium()) {
+ 		return false;
+@@ -1364,6 +1366,7 @@ beryllium_adsp_pas_start(void)
+ 	ml_io_unmap(region, ADSP_PAS_REGION_SIZE);
+ 	region = 0;
+ 	region_mapped = false;
++	wdog_irq_count_before = sweet_q6v5_wdog_irq_count_get();
+ 	auth_attempted = true;
+ 	if (!adsp_pas_call("AUTH_AND_RESET", 5, 1, 0, 0)) {
+ 		printf("SWEET ADSP: PAS AUTH_AND_RESET failed; QMP/XO retained because final remote state is unknown\n");
+@@ -1391,11 +1394,15 @@ beryllium_adsp_pas_start(void)
+ 		printf("SWEET ADSP: Q6V5 SMP2P fatal observed after authentication; instance and QMP/XO retained\n");
+ 		adsp_smp2p_readonly_probe(false);
+ 		adsp_post_start_diagnostics("SMP2P fatal");
++		printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n",
++		    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+ 		goto out;
+ 	}
+-	printf("SWEET ADSP: Q6V5 ready timeout; watchdog is unobserved, so no SHUTDOWN is issued and QMP/XO remain on\n");
++	printf("SWEET ADSP: Q6V5 ready timeout; no SHUTDOWN is issued and QMP/XO remain on\n");
+ 	adsp_smp2p_readonly_probe(false);
+ 	adsp_post_start_diagnostics("ready timeout");
++	printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n",
++	    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+ out:
+ 	if (region_mapped) {
+ 		ml_io_unmap(region, ADSP_PAS_REGION_SIZE);
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index d87e7f5..5401d0a 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -3161,0 +3162,10 @@
+@@ -3159,6 +3159,16 @@ handle_simd_trap(arm_saved_state_t *state, uint64_t esr)
+ 	__builtin_unreachable();
+ }
+ 
 +#if defined(SWEET)
 +static uint32_t sweet_q6v5_wdog_irq_count;
 +
@@ -12,19 +61,16 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 +}
 +#endif
 +
-@@ -3180,0 +3191,3 @@
-+	}
+ void
+ sleh_irq(arm_saved_state_t *state)
+ {
+@@ -3179,6 +3189,9 @@ sleh_irq(arm_saved_state_t *state)
+ 	if (intid >= 1020 && intid <= 1023) {
+ 		return; /* spurious */
+ 	}
 +	if (intid == 162u) {
 +		os_atomic_inc(&sweet_q6v5_wdog_irq_count, relaxed);
-diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
---- a/bsd/dev/beryllium_adsp.c
-+++ b/bsd/dev/beryllium_adsp.c
-@@ -39,0 +40 @@
-+extern uint32_t sweet_q6v5_wdog_irq_count_get(void);
-@@ -1260,0 +1262 @@
-+	uint32_t wdog_irq_count_before = 0, wdog_irq_delta = 0;
-@@ -1366,0 +1369 @@
-+	wdog_irq_count_before = sweet_q6v5_wdog_irq_count_get();
-@@ -1384,0 +1388,2 @@
-+	wdog_irq_delta = sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before;
-+	printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n", wdog_irq_delta);
++	}
+ 	if (intid == sweet_vtimer_intid) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
+ 		cdp->cpu_decrementer = -1; /* Large */
