@@ -1,0 +1,127 @@
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -803,45 +803,64 @@
+ 	}
+ }
+ 
++static bool
++adsp_crash_reason_read(char *reason, uint32_t *item_size, bool *truncated)
++{
++	uint32_t reason_off = 0, reason_size = 0;
++	uint32_t count;
++	bool terminated = false;
++
++	if (reason == NULL || item_size == NULL || truncated == NULL) {
++		return false;
++	}
++	reason[0] = '\0';
++	*item_size = 0;
++	*truncated = false;
++	if (adsp_smem == NULL) {
++		adsp_smem = (volatile uint8_t *)ml_io_map(ADSP_SMEM_PA, ADSP_SMEM_SIZE);
++	}
++	if (adsp_smem == NULL ||
++	    !adsp_smem_private_item(0xfffeu, 0xfffeu, ADSP_CRASH_REASON_ITEM,
++	    &reason_off, &reason_size) || reason_size == 0) {
++		return false;
++	}
++	count = MIN(reason_size, (uint32_t)128);
++	__asm__ volatile ("dmb sy" ::: "memory");
++	for (uint32_t i = 0; i < count; i++) {
++		uint8_t ch = adsp_smem[reason_off + i];
++		if (ch == 0) {
++			reason[i] = '\0';
++			terminated = true;
++			break;
++		}
++		reason[i] = (ch >= 0x20 && ch <= 0x7e) ? (char)ch : '.';
++	}
++	if (!terminated) {
++		reason[count] = '\0';
++	}
++	*item_size = reason_size;
++	*truncated = !terminated && count < reason_size;
++	return true;
++}
++
+ static void
+ adsp_post_start_diagnostics(const char *stage)
+ {
+-	uint32_t reason_off = 0, reason_size = 0;
++	uint32_t reason_size = 0;
+ 	uint32_t enabled = 0, pending = 0, active = 0;
+ 	uint32_t trigger = 0, dist_ctlr = 0, dist_group1_enabled = 0;
+ 	uint64_t cpu_igrpen1 = 0, route = 0, mpidr = 0;
+ 	char reason[129];
+-	bool terminated = false;
++	bool truncated = false;
+ 
+ 	printf("SWEET ADSP: read-only ADSP snapshot (%s)\n", stage);
+-	if (adsp_smem == NULL) {
+-		adsp_smem = (volatile uint8_t *)ml_io_map(ADSP_SMEM_PA, ADSP_SMEM_SIZE);
+-	}
+-	if (adsp_smem == NULL) {
+-		printf("SWEET ADSP: crash reason SMEM item %u unavailable (SMEM mapping failed)\n",
+-		    ADSP_CRASH_REASON_ITEM);
+-	} else if (!adsp_smem_private_item(0xfffeu, 0xfffeu, ADSP_CRASH_REASON_ITEM,
+-	    &reason_off, &reason_size) || reason_size == 0) {
+-		printf("SWEET ADSP: crash reason SMEM item %u unavailable or empty\n",
+-		    ADSP_CRASH_REASON_ITEM);
++	if (!adsp_crash_reason_read(reason, &reason_size, &truncated)) {
++		printf("SWEET ADSP: crash reason SMEM item %u unavailable%s\n",
++		    ADSP_CRASH_REASON_ITEM, adsp_smem == NULL ? " (SMEM mapping failed)" : " or empty");
+ 	} else {
+-		uint32_t count = MIN(reason_size, (uint32_t)sizeof(reason) - 1);
+-		__asm__ volatile ("dmb sy" ::: "memory");
+-		for (uint32_t i = 0; i < count; i++) {
+-			uint8_t ch = adsp_smem[reason_off + i];
+-			if (ch == 0) {
+-				reason[i] = '\0';
+-				terminated = true;
+-				break;
+-			}
+-			reason[i] = (ch >= 0x20 && ch <= 0x7e) ? (char)ch : '.';
+-		}
+-		if (!terminated) {
+-			reason[count] = '\0';
+-		}
+ 		printf("SWEET ADSP: crash reason SMEM item %u size=%u text=\"%s\"%s (snapshot may be stale)\n",
+ 		    ADSP_CRASH_REASON_ITEM, reason_size, reason,
+-		    (!terminated && count < reason_size) ? " [truncated]" : "");
++		    truncated ? " [truncated]" : "");
+ 	}
+ 	if (sweet_gic_spi_snapshot(ADSP_Q6V5_WDOG_SPI, &enabled, &pending, &active)) {
+ 		printf("SWEET ADSP: watchdog SPI %u GIC enabled=%u pending=%u active=%u (read-only)\n",
+@@ -1442,8 +1461,32 @@
+ 	}
+ 	printf("SWEET ADSP: PAS AUTH_AND_RESET succeeded; polling read-only Q6V5 SMP2P for up to 5 seconds\n");
+ 	bool smp2p_header_reported = false;
++	bool crash_reason_seen = false, crash_reason_change_reported = false;
++	uint32_t previous_crash_reason_size = 0;
++	char previous_crash_reason[129] = { 0 };
+ 	for (unsigned i = 0; i < 500; i++) {
++		char crash_reason[129];
++		uint32_t crash_reason_size = 0;
++		bool crash_reason_truncated = false;
+ 		adsp_smp2p_readonly_probe(true);
++		if (adsp_smem != NULL &&
++		    adsp_crash_reason_read(crash_reason, &crash_reason_size, &crash_reason_truncated)) {
++			if (!crash_reason_seen) {
++				printf("SWEET ADSP: crash reason item %u first observed at %u ms size=%u text=\"%s\"%s\n",
++				    ADSP_CRASH_REASON_ITEM, i * 10u, crash_reason_size, crash_reason,
++				    crash_reason_truncated ? " [truncated]" : "");
++				strlcpy(previous_crash_reason, crash_reason, sizeof(previous_crash_reason));
++				previous_crash_reason_size = crash_reason_size;
++				crash_reason_seen = true;
++			} else if (!crash_reason_change_reported &&
++			    (crash_reason_size != previous_crash_reason_size ||
++			    strcmp(crash_reason, previous_crash_reason) != 0)) {
++				printf("SWEET ADSP: crash reason item %u changed by %u ms size=%u text=\"%s\"%s\n",
++				    ADSP_CRASH_REASON_ITEM, i * 10u, crash_reason_size, crash_reason,
++				    crash_reason_truncated ? " [truncated]" : "");
++				crash_reason_change_reported = true;
++			}
++		}
+ 		if (!smp2p_header_reported && adsp_smp2p_header_valid) {
+ 			printf("SWEET ADSP: SMP2P item 443 valid header first observed at %u ms: version %u entries %u/%u flags %#x\n",
+ 			    i * 10u, adsp_remote_smp2p_version, adsp_remote_smp2p_valid_entries,
