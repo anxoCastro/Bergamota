@@ -1,0 +1,140 @@
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -70,24 +70,22 @@
+ }
+ 
+ int
+-sweet_gic_spi_config_snapshot(unsigned int intid, uint32_t *group, uint32_t *modifier,
+-    uint32_t *trigger, uint32_t *dist_ctlr, uint32_t *dist_group1_enabled,
+-    uint64_t *cpu_igrpen1, uint64_t *route, uint64_t *mpidr)
+-{
+-	if (!gicd_base || intid < 32 || intid >= 1020 || group == NULL || modifier == NULL ||
+-	    trigger == NULL || dist_ctlr == NULL || dist_group1_enabled == NULL ||
+-	    cpu_igrpen1 == NULL || route == NULL || mpidr == NULL) {
++sweet_gic_spi_config_snapshot(unsigned int intid, uint32_t *trigger, uint32_t *dist_ctlr,
++    uint32_t *dist_group1_enabled, uint64_t *cpu_igrpen1, uint64_t *route, uint64_t *mpidr)
++{
++	if (!gicd_base || intid < 32 || intid >= 1020 || trigger == NULL || dist_ctlr == NULL ||
++	    dist_group1_enabled == NULL || cpu_igrpen1 == NULL || route == NULL || mpidr == NULL) {
+ 		return 0;
+ 	}
+-	uint32_t offset = (intid / 32u) * sizeof(uint32_t);
+-	uint32_t mask = 1u << (intid % 32u);
+ 	uint32_t config_offset = 0xC00u + (intid / 16u) * sizeof(uint32_t);
+ 	uint32_t config_shift = (intid % 16u) * 2u;
+-	*group = (gicd_read32(0x080u + offset) & mask) != 0;
+-	*modifier = (gicd_read32(0xD00u + offset) & mask) != 0;
+ 	*trigger = (gicd_read32(config_offset) >> config_shift) & 3u;
+ 	*dist_ctlr = gicd_read32(GICD_CTLR);
+-	*dist_group1_enabled = (*dist_ctlr & GICD_CTLR_ENABLEGRP1) != 0;
++	/* TrustZone owns IGROUPR/IGRPMODR; they are RAZ/WI from this Non-secure view. */
++	/* In the Non-secure view, EnableGrp1NS aliases bit 1 when ARE_NS is set. */
++	uint32_t group1_mask = (*dist_ctlr & GICD_CTLR_ARE_NS) ?
++	    GICD_CTLR_ENABLEGRP1A : GICD_CTLR_ENABLEGRP1;
++	*dist_group1_enabled = (*dist_ctlr & group1_mask) != 0;
+ 	*cpu_igrpen1 = __builtin_arm_rsr64("ICC_IGRPEN1_EL1");
+ 	/* Linux uses GICD_IROUTER + INTID * 8; SPI 32 is at 0x6100. */
+ 	*route = gicd_read64(0x6000u + (uint64_t)intid * sizeof(uint64_t));
+@@ -95,9 +93,9 @@
+ 	return 1;
+ }
+ 
+-/* Enable one non-secure, edge-triggered Group 1 SPI for a passive observer. */
++/* Configure an edge-triggered SPI; TrustZone owns its Group assignment. */
+ int
+-sweet_gic_spi_enable_group1_edge(unsigned int intid)
++sweet_gic_spi_enable_edge(unsigned int intid)
+ {
+ 	if (!gicd_base || intid < 32 || intid >= 1020) {
+ 		return 0;
+@@ -107,8 +105,6 @@
+ 	if ((gicd_read32(0x200u + offset) | gicd_read32(0x300u + offset)) & mask) {
+ 		return 0; /* Refuse a stale or active interrupt before enabling it. */
+ 	}
+-	uint32_t group_offset = 0x080u + offset;
+-	gicd_write32(group_offset, gicd_read32(group_offset) | mask);
+ 	uint32_t config_offset = 0xC00u + (intid / 16u) * sizeof(uint32_t);
+ 	uint32_t config_shift = (intid % 16u) * 2u;
+ 	uint32_t config = gicd_read32(config_offset);
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -40,8 +40,8 @@
+ extern unsigned long gPhysBase, gPhysSize;
+ extern int sweet_gic_spi_snapshot(unsigned int, uint32_t *, uint32_t *, uint32_t *);
+ extern int sweet_gic_spi_config_snapshot(unsigned int, uint32_t *, uint32_t *,
+-    uint32_t *, uint32_t *, uint32_t *, uint64_t *, uint64_t *, uint64_t *);
+-extern int sweet_gic_spi_enable_group1_edge(unsigned int);
++    uint32_t *, uint64_t *, uint64_t *, uint64_t *);
++extern int sweet_gic_spi_enable_edge(unsigned int);
+ extern uint32_t sweet_q6v5_wdog_irq_count_get(void);
+ extern vnode_t rootvnode;
+ 
+@@ -796,7 +796,7 @@
+ {
+ 	uint32_t reason_off = 0, reason_size = 0;
+ 	uint32_t enabled = 0, pending = 0, active = 0;
+-	uint32_t group = 0, modifier = 0, trigger = 0, dist_ctlr = 0, dist_group1_enabled = 0;
++	uint32_t trigger = 0, dist_ctlr = 0, dist_group1_enabled = 0;
+ 	uint64_t cpu_igrpen1 = 0, route = 0, mpidr = 0;
+ 	char reason[129];
+ 	bool terminated = false;
+@@ -837,11 +837,11 @@
+ 	} else {
+ 		printf("SWEET ADSP: watchdog SPI %u GIC snapshot unavailable\n", ADSP_Q6V5_WDOG_SPI);
+ 	}
+-	if (sweet_gic_spi_config_snapshot(ADSP_Q6V5_WDOG_SPI, &group, &modifier, &trigger,
++	if (sweet_gic_spi_config_snapshot(ADSP_Q6V5_WDOG_SPI, &trigger,
+ 	    &dist_ctlr, &dist_group1_enabled, &cpu_igrpen1, &route, &mpidr)) {
+-		printf("SWEET ADSP: watchdog SPI 162 GIC config read-only group=%u modifier=%u trigger=%u "
+-		    "dist_ctlr=%#x dist_group1=%u cpu_igrpen1=%#llx route=%#llx mpidr=%#llx\n",
+-		    group, modifier, trigger, dist_ctlr, dist_group1_enabled,
++		printf("SWEET ADSP: watchdog SPI 162 GIC config read-only trigger=%u dist_ctlr=%#x "
++		    "dist_group1_ns=%u cpu_igrpen1=%#llx route=%#llx mpidr=%#llx\n",
++		    trigger, dist_ctlr, dist_group1_enabled,
+ 		    (unsigned long long)cpu_igrpen1, (unsigned long long)route, (unsigned long long)mpidr);
+ 	} else {
+ 		printf("SWEET ADSP: watchdog SPI 162 GIC config readback unavailable\n");
+@@ -1381,7 +1381,7 @@
+ 	region = 0;
+ 	region_mapped = false;
+ 	wdog_irq_count_before = sweet_q6v5_wdog_irq_count_get();
+-	if (!sweet_gic_spi_enable_group1_edge(ADSP_Q6V5_WDOG_SPI)) {
++	if (!sweet_gic_spi_enable_edge(ADSP_Q6V5_WDOG_SPI)) {
+ 		uint32_t enabled = 0, pending = 0, active = 0;
+ 		if (sweet_gic_spi_snapshot(ADSP_Q6V5_WDOG_SPI, &enabled, &pending, &active)) {
+ 			printf("SWEET ADSP: watchdog SPI 162 GIC setup refused; enabled=%u pending=%u active=%u; PAS not attempted\n",
+@@ -1396,24 +1396,23 @@
+ 		printf("SWEET ADSP: watchdog SPI 162 GIC snapshot unavailable after setup; PAS not attempted\n");
+ 		goto out;
+ 	}
+-	printf("SWEET ADSP: watchdog SPI 162 armed Group 1 edge; enabled=%u pending=%u active=%u\n",
++	printf("SWEET ADSP: watchdog SPI 162 configured edge (group assignment is Secure firmware-owned); "
++	    "enabled=%u pending=%u active=%u\n",
+ 	    wdog_enabled, wdog_pending, wdog_active);
+-	uint32_t wdog_group = 0, wdog_modifier = 0, wdog_trigger = 0;
+-	uint32_t wdog_dist_ctlr = 0, wdog_dist_group1 = 0;
++	uint32_t wdog_trigger = 0, wdog_dist_ctlr = 0, wdog_dist_group1 = 0;
+ 	uint64_t wdog_cpu_igrpen1 = 0, wdog_route = 0, wdog_mpidr = 0;
+-	if (!sweet_gic_spi_config_snapshot(ADSP_Q6V5_WDOG_SPI, &wdog_group, &wdog_modifier,
+-	    &wdog_trigger, &wdog_dist_ctlr, &wdog_dist_group1, &wdog_cpu_igrpen1, &wdog_route, &wdog_mpidr)) {
++	if (!sweet_gic_spi_config_snapshot(ADSP_Q6V5_WDOG_SPI, &wdog_trigger,
++	    &wdog_dist_ctlr, &wdog_dist_group1, &wdog_cpu_igrpen1, &wdog_route, &wdog_mpidr)) {
+ 		printf("SWEET ADSP: watchdog SPI 162 GIC config readback unavailable; PAS not attempted\n");
+ 		goto out;
+ 	}
+-	printf("SWEET ADSP: watchdog SPI 162 GIC config before PAS group=%u modifier=%u trigger=%u "
+-	    "dist_ctlr=%#x dist_group1=%u cpu_igrpen1=%#llx route=%#llx mpidr=%#llx\n",
+-	    wdog_group, wdog_modifier, wdog_trigger, wdog_dist_ctlr, wdog_dist_group1,
++	printf("SWEET ADSP: watchdog SPI 162 GIC config before PAS trigger=%u dist_ctlr=%#x "
++	    "dist_group1_ns=%u cpu_igrpen1=%#llx route=%#llx mpidr=%#llx\n",
++	    wdog_trigger, wdog_dist_ctlr, wdog_dist_group1,
+ 	    (unsigned long long)wdog_cpu_igrpen1, (unsigned long long)wdog_route,
+ 	    (unsigned long long)wdog_mpidr);
+-	if (!wdog_group || wdog_modifier || wdog_trigger != 2u || !wdog_dist_group1 ||
+-	    !(wdog_cpu_igrpen1 & 1u)) {
+-		printf("SWEET ADSP: watchdog SPI 162 GIC Group 1 NS edge path not confirmed; PAS not attempted\n");
++	if (wdog_trigger != 2u || !wdog_dist_group1 || !(wdog_cpu_igrpen1 & 1u)) {
++		printf("SWEET ADSP: watchdog SPI 162 GIC Group 1 NS delivery path not enabled; PAS not attempted\n");
+ 		goto out;
+ 	}
+ 	if (!wdog_enabled || wdog_pending || wdog_active ||
