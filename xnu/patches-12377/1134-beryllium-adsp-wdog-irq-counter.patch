@@ -1,0 +1,30 @@
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -3161,0 +3162,10 @@
++#if defined(SWEET)
++static uint32_t sweet_q6v5_wdog_irq_count;
++
++uint32_t
++sweet_q6v5_wdog_irq_count_get(void)
++{
++	return os_atomic_load(&sweet_q6v5_wdog_irq_count, relaxed);
++}
++#endif
++
+@@ -3180,0 +3191,3 @@
++	}
++	if (intid == 162u) {
++		os_atomic_inc(&sweet_q6v5_wdog_irq_count, relaxed);
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -39,0 +40 @@
++extern uint32_t sweet_q6v5_wdog_irq_count_get(void);
+@@ -1260,0 +1262 @@
++	uint32_t wdog_irq_count_before = 0, wdog_irq_delta = 0;
+@@ -1366,0 +1369 @@
++	wdog_irq_count_before = sweet_q6v5_wdog_irq_count_get();
+@@ -1384,0 +1388,2 @@
++	wdog_irq_delta = sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before;
++	printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n", wdog_irq_delta);

@@ -1137,7 +1137,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +		goto out;
 +	}
 +	if (!adsp_smp2p_prepare()) {
-+		printf("SWEET ADSP: q6v5_prepare equivalent failed; no PAS call made\n");
++		printf("SWEET ADSP: outbound SMP2P preparation failed; no PAS call made\n");
 +		goto out;
 +	}
 +	qmp_attempted = true;
