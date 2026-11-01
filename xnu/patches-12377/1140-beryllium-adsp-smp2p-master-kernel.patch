@@ -1,0 +1,14 @@
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -671,4 +671,4 @@
+-	adsp_smem_wr32(entry, 0x706f7473u); /* "stop" */
+-	for (uint32_t off = 4; off < 16; off += 4) {
+-		adsp_smem_wr32(entry + off, 0);
+-	}
++	static const char master_kernel_name[16] = "master-kernel";
++	for (uint32_t off = 0; off < sizeof(master_kernel_name); off++) {
++		adsp_smem[entry + off] = (uint8_t)master_kernel_name[off];
++	}
+@@ -681,1 +681,1 @@
+-	printf("SWEET ADSP: outbound SMP2P item %u version %u pid %u->%u entry stop=0 doorbell bit %u\n",
++	printf("SWEET ADSP: outbound SMP2P item %u version %u pid %u->%u entry master-kernel value=0 (stop bit 0), doorbell bit %u\n",
