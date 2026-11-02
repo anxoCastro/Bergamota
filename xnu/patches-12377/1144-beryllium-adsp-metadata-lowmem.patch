@@ -1,8 +1,8 @@
 diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
-index 50b3b76..517b49d 100644
+index cc53674..440f052 100644
 --- a/bsd/dev/beryllium_adsp.c
 +++ b/bsd/dev/beryllium_adsp.c
-@@ -49,6 +49,10 @@ extern vnode_t rootvnode;
+@@ -52,6 +52,10 @@ extern vnode_t rootvnode;
  #define ADSP_PAS_REGION_PA       0x8c500000ull
  #define ADSP_PAS_REGION_SIZE     0x01e00000u
  #define ADSP_PAS_METADATA_DMA_LIMIT 0x100000000ull
@@ -13,7 +13,7 @@ index 50b3b76..517b49d 100644
  #define ADSP_PAS_ID              1u
  #define ADSP_SMEM_PA             0x86000000u
  #define ADSP_SMEM_SIZE           0x00200000u
-@@ -1274,49 +1278,105 @@ adsp_check_carveout_marker(void)
+@@ -1319,49 +1323,105 @@ adsp_check_carveout_marker(void)
  	return true;
  }
  
@@ -145,9 +145,9 @@ index 50b3b76..517b49d 100644
  	return true;
  }
  
-@@ -1475,6 +1535,9 @@ beryllium_adsp_pas_start(void)
- 	printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n",
- 	    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+@@ -1594,6 +1654,9 @@ beryllium_adsp_pas_start(void)
+ 	adsp_smp2p_readonly_probe(false);
+ 	adsp_post_start_diagnostics("ready timeout");
  out:
 +	if (metadata_kva != 0) {
 +		ml_io_unmap(metadata_kva, round_page(bundle.metadata_size));

@@ -78,8 +78,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     continue
                 if not 1131 <= number <= 1144:
                     continue
-                marker = "diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c"
-                if marker not in later.read_text(errors="replace"):
+                if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
                 subprocess.run(["git", "apply", "--include=bsd/dev/beryllium_adsp.c",
                                 str(later)], cwd=work,
