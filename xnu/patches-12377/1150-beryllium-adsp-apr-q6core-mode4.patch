@@ -1,0 +1,942 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index d36ad16..8327168 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -29,6 +29,7 @@
+ #include "beryllium_adsp.h"
+ #include "beryllium_adsp_glink_survey.h"
+ #include "beryllium_adsp_glink_start.h"
++#include "beryllium_adsp_apr_probe.h"
+ #include "beryllium_smp2p_negotiation.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+@@ -67,6 +68,11 @@ extern vnode_t rootvnode;
+ #define ADSP_GLINK_TX_FIFO_SIZE  0x4000u
+ #define ADSP_GLINK_DOORBELL      8u
+ #define ADSP_GLINK_POLL_MS       2000u
++#define ADSP_APR_OPEN_POLL_MS    3000u
++#define ADSP_APR_INTENT_POLL_MS  3000u
++#define ADSP_APR_POLL_MS         3000u
++#define ADSP_APR_LOCAL_CHANNEL   1u
++#define ADSP_APR_GLINK_FRAME_MAX 528u
+ #define ADSP_SMP2P_OUT_ITEM      429u
+ #define ADSP_SMP2P_DOORBELL      10u
+ #define ADSP_SMP2P_ITEM_SIZE     (ADSP_SMP2P_HEADER_BYTES + ADSP_SMP2P_MAX_ENTRY * ADSP_SMP2P_ENTRY_BYTES)
+@@ -132,6 +138,8 @@ static bool adsp_probe_enabled;
+ static bool adsp_firmware_probe_done;
+ static bool adsp_pas_requested;
+ static bool adsp_glink_requested;
++static bool adsp_apr_requested;
++static uint8_t adsp_apr_rx_buffers[BERYLLIUM_ADSP_APR_INTENT_COUNT][BERYLLIUM_ADSP_APR_INTENT_BYTES];
+ static bool adsp_smp2p_known;
+ static bool adsp_remote_ready;
+ static bool adsp_remote_ready_entry_valid;
+@@ -2230,35 +2238,534 @@ adsp_glink_poll_version(const struct adsp_glink_survey_items *items)
+ 	return false;
+ }
+ 
+-static void
++static bool
+ adsp_glink_mode3_start(void)
+ {
+ 	struct adsp_glink_survey_items baseline, current;
+ 	struct beryllium_adsp_glink_indices indices;
+ 	uint32_t tx_off, tx_size;
+ 
+-	printf("SWEET ADSP: explicit GLINK-only startup requested (sweetadsp=3)\n");
++	printf("SWEET ADSP: explicit GLINK base startup requested (sweetadsp=%d)\n",
++	    adsp_apr_requested ? 4 : 3);
+ 	if (!adsp_glink_cold_preflight(&baseline)) {
+-		return;
++		return false;
+ 	}
+ 	if (!adsp_glink_tx_fifo_prepare(&tx_off, &tx_size)) {
+-		return;
++		return false;
+ 	}
+ 	if (!adsp_glink_survey_read_items(3, &current) ||
+ 	    !adsp_glink_items_match_baseline(&baseline, &current) ||
+ 	    current.tx_fifo.off != tx_off || current.tx_fifo.size != tx_size ||
+ 	    !adsp_glink_cold_indices_after_allocation(&current, &indices)) {
+ 		printf("SWEET ADSP: GLINK mode 3 stopped: post-allocation metadata or zero-index check failed\n");
+-		return;
++		return false;
+ 	}
+ 	if (!adsp_glink_send_version(&current)) {
+ 		printf("SWEET ADSP: GLINK mode 3 VERSION request was not sent\n");
+-		return;
++		return false;
+ 	}
+ 	if (adsp_glink_poll_version(&current)) {
+-		printf("SWEET ADSP: GLINK mode 3 complete; stopped before APR/channel/audio startup\n");
++		printf("SWEET ADSP: GLINK base negotiation complete\n");
++		return true;
+ 	} else {
+ 		printf("SWEET ADSP: GLINK mode 3 ended without VERSION_ACK; QMP/XO remain on\n");
++		return false;
++	}
++}
++
++struct adsp_apr_channel_state {
++	uint16_t remote_channel_id;
++	struct beryllium_adsp_glink_intent remote_intents[BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS];
++	size_t remote_intent_count;
++	uint32_t request_intent_id;
++};
++
++static bool
++adsp_glink_send_frame(const struct adsp_glink_survey_items *items,
++	const uint8_t *frame, size_t frame_bytes)
++{
++	struct beryllium_adsp_glink_indices indices;
++	uint32_t padded_bytes, available, next;
++	if (items == NULL || frame == NULL || frame_bytes == 0 ||
++	    frame_bytes > ADSP_APR_GLINK_FRAME_MAX ||
++	    !adsp_glink_start_items_valid(items, true) ||
++	    !adsp_glink_survey_read_indices(items->descriptor.off, &indices) ||
++	    !beryllium_adsp_glink_indices_valid(&indices,
++	    items->tx_fifo.size, items->rx_fifo.size)) {
++		printf("SWEET ADSP: APR GLINK TX stopped: invalid frame, item, or indices\n");
++		return false;
++	}
++	padded_bytes = (uint32_t)((frame_bytes + 7u) & ~(size_t)7u);
++	if (padded_bytes > items->tx_fifo.size - BERYLLIUM_ADSP_GLINK_TX_RESERVE ||
++	    !beryllium_adsp_glink_ring_available(indices.tx_head, indices.tx_tail,
++	    items->tx_fifo.size, &available) || available < padded_bytes ||
++	    !beryllium_adsp_glink_ring_advance(indices.tx_head, padded_bytes,
++	    items->tx_fifo.size, &next)) {
++		printf("SWEET ADSP: APR GLINK TX stopped: insufficient bounded ring space\n");
++		return false;
++	}
++	for (uint32_t i = 0; i < padded_bytes; i += 4) {
++		uint32_t word = 0;
++		for (uint32_t byte = 0; byte < 4 && i + byte < frame_bytes; byte++) {
++			word |= (uint32_t)frame[i + byte] << (byte * 8);
++		}
++		uint32_t pos = indices.tx_head + i;
++		if (pos >= items->tx_fifo.size) {
++			pos -= items->tx_fifo.size;
++		}
++		adsp_smem_wr32(items->tx_fifo.off + pos, word);
++	}
++	__asm__ volatile ("dmb sy" ::: "memory");
++	if (adsp_smem_rd32(items->descriptor.off + 4) != indices.tx_head) {
++		printf("SWEET ADSP: APR GLINK TX stopped: AP-owned TX head changed before publication\n");
++		return false;
++	}
++	adsp_smem_wr32(items->descriptor.off + 4, next); /* AP-owned TX head */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	if (!adsp_glink_kick()) {
++		printf("SWEET ADSP: APR GLINK TX head published but mailbox client %u mapping failed\n",
++		    ADSP_GLINK_DOORBELL);
++		return false;
++	}
++	return true;
++}
++
++static void
++adsp_glink_rx_copy_frame(const struct adsp_glink_survey_item *rx_fifo,
++	uint32_t tail, uint8_t *frame, size_t frame_bytes)
++{
++	for (uint32_t i = 0; i < frame_bytes; i += 4) {
++		uint32_t pos = tail + i;
++		if (pos >= rx_fifo->size) {
++			pos -= rx_fifo->size;
++		}
++		uint32_t word = adsp_smem_rd32(rx_fifo->off + pos);
++		frame[i + 0] = (uint8_t)word;
++		frame[i + 1] = (uint8_t)(word >> 8);
++		frame[i + 2] = (uint8_t)(word >> 16);
++		frame[i + 3] = (uint8_t)(word >> 24);
++	}
++}
++
++static bool
++adsp_glink_rx_snapshot(const struct adsp_glink_survey_items *items,
++	uint32_t *head_out, uint32_t *tail_out, uint32_t *used_out)
++{
++	uint32_t head, tail, head_again, tail_again, used;
++	if (items == NULL || head_out == NULL || tail_out == NULL || used_out == NULL) {
++		return false;
++	}
++	__asm__ volatile ("dmb sy" ::: "memory");
++	head = adsp_smem_rd32(items->descriptor.off + 12); /* remote-owned RX head */
++	tail = adsp_smem_rd32(items->descriptor.off + 8); /* AP-owned RX tail */
++	__asm__ volatile ("dmb sy" ::: "memory");
++	head_again = adsp_smem_rd32(items->descriptor.off + 12);
++	tail_again = adsp_smem_rd32(items->descriptor.off + 8);
++	if (head != head_again || tail != tail_again ||
++	    !beryllium_adsp_glink_ring_used(head, tail,
++	    items->rx_fifo.size, &used)) {
++		return false;
++	}
++	*head_out = head;
++	*tail_out = tail;
++	*used_out = used;
++	return true;
++}
++
++static bool
++adsp_glink_rx_consume_frame(const struct adsp_glink_survey_items *items,
++	uint32_t expected_head, uint32_t tail, size_t frame_bytes)
++{
++	uint32_t used, next;
++	if (items == NULL || frame_bytes == 0 || (frame_bytes & 7u) != 0 ||
++	    frame_bytes > items->rx_fifo.size ||
++	    adsp_smem_rd32(items->descriptor.off + 12) != expected_head ||
++	    adsp_smem_rd32(items->descriptor.off + 8) != tail ||
++	    !beryllium_adsp_glink_ring_used(expected_head, tail,
++	    items->rx_fifo.size, &used) || used < frame_bytes ||
++	    !beryllium_adsp_glink_ring_advance(tail, (uint32_t)frame_bytes,
++	    items->rx_fifo.size, &next)) {
++		return false;
++	}
++	__asm__ volatile ("dmb sy" ::: "memory");
++	adsp_smem_wr32(items->descriptor.off + 8, next); /* AP-owned RX tail */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return true;
++}
++
++static bool
++adsp_apr_send_control(const struct adsp_glink_survey_items *items,
++	uint16_t command, uint16_t param1, uint32_t param2)
++{
++	uint8_t frame[8] = { 0 };
++	beryllium_adsp_apr_put16(frame, command);
++	beryllium_adsp_apr_put16(frame + 2, param1);
++	beryllium_adsp_apr_put32(frame + 4, param2);
++	return adsp_glink_send_frame(items, frame, sizeof(frame));
++}
++
++static bool
++adsp_apr_record_remote_intents(struct adsp_apr_channel_state *state,
++	const uint8_t *frame, size_t frame_bytes)
++{
++	struct beryllium_adsp_glink_intent parsed[BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS];
++	size_t parsed_count = 0;
++	if (state == NULL || !beryllium_adsp_apr_parse_remote_intents(frame,
++	    frame_bytes, state->remote_channel_id, parsed,
++	    BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS, &parsed_count) ||
++	    parsed_count > BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS - state->remote_intent_count) {
++		return false;
++	}
++	for (size_t i = 0; i < parsed_count; i++) {
++		for (size_t prior = 0; prior < state->remote_intent_count; prior++) {
++			if (state->remote_intents[prior].id == parsed[i].id) {
++				return false;
++			}
++		}
++		state->remote_intents[state->remote_intent_count + i] = parsed[i];
++	}
++	state->remote_intent_count += parsed_count;
++	printf("SWEET ADSP: APR GLINK remote advertised %lu intent(s) on channel %u\n",
++	    (unsigned long)parsed_count, state->remote_channel_id);
++	return true;
++}
++
++static bool
++adsp_apr_open_channel(const struct adsp_glink_survey_items *items,
++	struct adsp_apr_channel_state *state)
++{
++	uint8_t open_frame[8 + BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES] = { 0 };
++	bool local_open_ack = false, remote_open = false;
++	if (items == NULL || state == NULL) {
++		return false;
++	}
++	beryllium_adsp_apr_put16(open_frame, BERYLLIUM_ADSP_GLINK_CMD_OPEN);
++	beryllium_adsp_apr_put16(open_frame + 2, ADSP_APR_LOCAL_CHANNEL);
++	beryllium_adsp_apr_put32(open_frame + 4, BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES);
++	for (size_t i = 0; i < BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES; i++) {
++		open_frame[8 + i] = (uint8_t)BERYLLIUM_ADSP_APR_CHANNEL_NAME[i];
++	}
++	if (!adsp_glink_send_frame(items, open_frame, sizeof(open_frame))) {
++		printf("SWEET ADSP: APR GLINK OPEN request was not sent\n");
++		return false;
++	}
++	printf("SWEET ADSP: APR GLINK OPEN requested channel apr_audio_svc local-id=%u\n",
++	    ADSP_APR_LOCAL_CHANNEL);
++	for (unsigned ms = 0; ms < ADSP_APR_OPEN_POLL_MS; ms++) {
++		uint8_t frame[ADSP_APR_GLINK_FRAME_MAX] = { 0 };
++		uint32_t head, tail, used;
++		size_t frame_bytes = 0;
++		if (!adsp_glink_rx_snapshot(items, &head, &tail, &used)) {
++			delay(1000);
++			continue;
++		}
++		if (used < 8) {
++			delay(1000);
++			continue;
++		}
++		size_t copy_bytes = used < sizeof(frame) ? used : sizeof(frame);
++		adsp_glink_rx_copy_frame(&items->rx_fifo, tail, frame, copy_bytes);
++		enum beryllium_adsp_glink_frame_status status =
++		    beryllium_adsp_apr_glink_frame_bytes(frame, copy_bytes, &frame_bytes);
++		if (status == BERYLLIUM_ADSP_GLINK_FRAME_INCOMPLETE) {
++			delay(1000);
++			continue;
++		}
++		if (status != BERYLLIUM_ADSP_GLINK_FRAME_COMPLETE) {
++			printf("SWEET ADSP: APR GLINK OPEN stopped on malformed/unknown command=%u\n",
++			    beryllium_adsp_apr_get16(frame));
++			return false;
++		}
++		uint16_t command = beryllium_adsp_apr_get16(frame);
++		uint16_t param1 = beryllium_adsp_apr_get16(frame + 2);
++		uint32_t param2 = beryllium_adsp_apr_get32(frame + 4);
++		if (command == BERYLLIUM_ADSP_GLINK_CMD_OPEN) {
++			if (remote_open || param1 == 0 ||
++			    !beryllium_adsp_apr_open_name_valid(frame, frame_bytes, param1)) {
++				printf("SWEET ADSP: APR GLINK OPEN rejected unexpected peer channel/name/id\n");
++				return false;
++			}
++			state->remote_channel_id = param1;
++			if (!adsp_apr_send_control(items, BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK,
++			    state->remote_channel_id, 0)) {
++				printf("SWEET ADSP: APR GLINK OPEN_ACK for remote id %u was not sent\n",
++				    state->remote_channel_id);
++				return false;
++			}
++			remote_open = true;
++			printf("SWEET ADSP: APR GLINK peer opened apr_audio_svc remote-id=%u; OPEN_ACK sent\n",
++			    state->remote_channel_id);
++		} else if (command == BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK) {
++			if (param1 != ADSP_APR_LOCAL_CHANNEL || param2 != 0 || local_open_ack) {
++				printf("SWEET ADSP: APR GLINK OPEN_ACK rejected channel id=%u value=%#x\n",
++				    param1, param2);
++				return false;
++			}
++			local_open_ack = true;
++			printf("SWEET ADSP: APR GLINK local OPEN acknowledged\n");
++		} else if (command == BERYLLIUM_ADSP_GLINK_CMD_INTENT) {
++			if (!remote_open || !adsp_apr_record_remote_intents(state, frame, frame_bytes)) {
++				printf("SWEET ADSP: APR GLINK rejected remote INTENT before a valid channel open\n");
++				return false;
++			}
++		} else {
++			printf("SWEET ADSP: APR GLINK OPEN stopped on unexpected command=%u\n", command);
++			return false;
++		}
++		if (!adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++			printf("SWEET ADSP: APR GLINK OPEN could not advance AP-owned RX tail\n");
++			return false;
++		}
++		if (local_open_ack && remote_open) {
++			return true;
++		}
++		delay(1000);
++	}
++	printf("SWEET ADSP: APR GLINK channel OPEN timed out after %u ms\n",
++	    ADSP_APR_OPEN_POLL_MS);
++	return false;
++}
++
++static bool
++adsp_apr_has_remote_intent(const struct adsp_apr_channel_state *state)
++{
++	if (state == NULL) {
++		return false;
++	}
++	for (size_t i = 0; i < state->remote_intent_count; i++) {
++		if (state->remote_intents[i].size >= BERYLLIUM_ADSP_APR_HEADER_BYTES) {
++			return true;
++		}
++	}
++	return false;
++}
++
++static bool
++adsp_apr_advertise_local_intents(const struct adsp_glink_survey_items *items)
++{
++	for (uint32_t id = 1; id <= BERYLLIUM_ADSP_APR_INTENT_COUNT; id++) {
++		uint8_t frame[16] = { 0 };
++		beryllium_adsp_apr_put16(frame, BERYLLIUM_ADSP_GLINK_CMD_INTENT);
++		beryllium_adsp_apr_put16(frame + 2, ADSP_APR_LOCAL_CHANNEL);
++		beryllium_adsp_apr_put32(frame + 4, 1);
++		beryllium_adsp_apr_put32(frame + 8, BERYLLIUM_ADSP_APR_INTENT_BYTES);
++		beryllium_adsp_apr_put32(frame + 12, id);
++		if (!adsp_glink_send_frame(items, frame, sizeof(frame))) {
++			printf("SWEET ADSP: APR local INTENT advertisement stopped at id=%u\n", id);
++			return false;
++		}
++	}
++	printf("SWEET ADSP: APR advertised %u AP-owned RX intents of %u bytes\n",
++	    BERYLLIUM_ADSP_APR_INTENT_COUNT, BERYLLIUM_ADSP_APR_INTENT_BYTES);
++	return true;
++}
++
++static bool
++adsp_apr_wait_remote_intent(const struct adsp_glink_survey_items *items,
++	struct adsp_apr_channel_state *state)
++{
++	for (unsigned ms = 0; ms < ADSP_APR_INTENT_POLL_MS; ms++) {
++		uint8_t frame[ADSP_APR_GLINK_FRAME_MAX] = { 0 };
++		uint32_t head, tail, used;
++		size_t frame_bytes = 0;
++		if (adsp_apr_has_remote_intent(state)) {
++			return true;
++		}
++		if (!adsp_glink_rx_snapshot(items, &head, &tail, &used) || used < 8) {
++			delay(1000);
++			continue;
++		}
++		size_t copy_bytes = used < sizeof(frame) ? used : sizeof(frame);
++		adsp_glink_rx_copy_frame(&items->rx_fifo, tail, frame, copy_bytes);
++		enum beryllium_adsp_glink_frame_status status =
++		    beryllium_adsp_apr_glink_frame_bytes(frame, copy_bytes, &frame_bytes);
++		if (status == BERYLLIUM_ADSP_GLINK_FRAME_INCOMPLETE) {
++			delay(1000);
++			continue;
++		}
++		if (status != BERYLLIUM_ADSP_GLINK_FRAME_COMPLETE ||
++		    beryllium_adsp_apr_get16(frame) != BERYLLIUM_ADSP_GLINK_CMD_INTENT ||
++		    !adsp_apr_record_remote_intents(state, frame, frame_bytes)) {
++			printf("SWEET ADSP: APR intent wait stopped on malformed/unknown GLINK command=%u\n",
++			    beryllium_adsp_apr_get16(frame));
++			return false;
++		}
++		if (!adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++			printf("SWEET ADSP: APR intent wait could not advance AP-owned RX tail\n");
++			return false;
++		}
++	}
++	printf("SWEET ADSP: no remote GLINK intent large enough for the 20-byte APR query after %u ms\n",
++	    ADSP_APR_INTENT_POLL_MS);
++	return false;
++}
++
++static bool
++adsp_apr_send_fwk_version(const struct adsp_glink_survey_items *items,
++	struct adsp_apr_channel_state *state)
++{
++	uint8_t apr_packet[BERYLLIUM_ADSP_APR_HEADER_BYTES];
++	uint8_t frame[16 + BERYLLIUM_ADSP_APR_HEADER_BYTES] = { 0 };
++	const struct beryllium_adsp_glink_intent *selected = NULL;
++	for (size_t i = 0; i < state->remote_intent_count; i++) {
++		const struct beryllium_adsp_glink_intent *candidate = &state->remote_intents[i];
++		if (candidate->size < sizeof(apr_packet)) {
++			continue;
++		}
++		if (selected == NULL || candidate->size < selected->size) {
++			selected = candidate;
++		}
++	}
++	if (selected == NULL || !beryllium_adsp_apr_encode_get_fwk_version(apr_packet)) {
++		return false;
++	}
++	state->request_intent_id = selected->id;
++	beryllium_adsp_apr_put16(frame, BERYLLIUM_ADSP_GLINK_CMD_TX_DATA);
++	beryllium_adsp_apr_put16(frame + 2, ADSP_APR_LOCAL_CHANNEL);
++	beryllium_adsp_apr_put32(frame + 4, selected->id);
++	beryllium_adsp_apr_put32(frame + 8, sizeof(apr_packet));
++	beryllium_adsp_apr_put32(frame + 12, 0);
++	for (size_t i = 0; i < sizeof(apr_packet); i++) {
++		frame[16 + i] = apr_packet[i];
++	}
++	if (!adsp_glink_send_frame(items, frame, sizeof(frame))) {
++		printf("SWEET ADSP: Q6Core GET_FWK_VERSION GLINK TX failed\n");
++		return false;
++	}
++	printf("SWEET ADSP: sent one APR Q6Core GET_FWK_VERSION opcode=%#x service=%u via remote intent %u\n",
++	    BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION,
++	    BERYLLIUM_ADSP_APR_Q6CORE_SERVICE, selected->id);
++	return true;
++}
++
++static bool
++adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
++	struct adsp_apr_channel_state *state)
++{
++	bool request_intent_done = false;
++	for (unsigned ms = 0; ms < ADSP_APR_POLL_MS; ms++) {
++		uint8_t frame[ADSP_APR_GLINK_FRAME_MAX] = { 0 };
++		uint32_t head, tail, used;
++		size_t frame_bytes = 0;
++		if (!adsp_glink_rx_snapshot(items, &head, &tail, &used) || used < 8) {
++			delay(1000);
++			continue;
++		}
++		size_t copy_bytes = used < sizeof(frame) ? used : sizeof(frame);
++		adsp_glink_rx_copy_frame(&items->rx_fifo, tail, frame, copy_bytes);
++		enum beryllium_adsp_glink_frame_status status =
++		    beryllium_adsp_apr_glink_frame_bytes(frame, copy_bytes, &frame_bytes);
++		if (status == BERYLLIUM_ADSP_GLINK_FRAME_INCOMPLETE) {
++			delay(1000);
++			continue;
++		}
++		if (status != BERYLLIUM_ADSP_GLINK_FRAME_COMPLETE) {
++			printf("SWEET ADSP: APR response wait stopped on malformed/unknown GLINK command=%u\n",
++			    beryllium_adsp_apr_get16(frame));
++			return false;
++		}
++		uint16_t command = beryllium_adsp_apr_get16(frame);
++		uint16_t param1 = beryllium_adsp_apr_get16(frame + 2);
++		uint32_t param2 = beryllium_adsp_apr_get32(frame + 4);
++		if (command == BERYLLIUM_ADSP_GLINK_CMD_INTENT) {
++			if (!adsp_apr_record_remote_intents(state, frame, frame_bytes) ||
++			    !adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++				printf("SWEET ADSP: APR response wait rejected remote INTENT\n");
++				return false;
++			}
++			continue;
++		}
++		if (command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE) {
++			if (param1 != state->remote_channel_id || param2 != state->request_intent_id ||
++			    request_intent_done || !adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++				printf("SWEET ADSP: APR response wait rejected unexpected remote RX_DONE\n");
++				return false;
++			}
++			request_intent_done = true;
++			printf("SWEET ADSP: remote RX_DONE confirmed for request intent %u\n", param2);
++			continue;
++		}
++		if (command == BERYLLIUM_ADSP_GLINK_CMD_TX_DATA) {
++			const uint8_t *payload = NULL;
++			size_t payload_bytes = 0;
++			if (param2 == 0 || param2 > BERYLLIUM_ADSP_APR_INTENT_COUNT ||
++			    !beryllium_adsp_apr_tx_data_view(frame, frame_bytes,
++			    state->remote_channel_id, param2, &payload, &payload_bytes)) {
++				printf("SWEET ADSP: APR response TX_DATA rejected channel=%u intent=%u\n",
++				    param1, param2);
++				return false;
++			}
++			for (size_t i = 0; i < payload_bytes; i++) {
++				adsp_apr_rx_buffers[param2 - 1][i] = payload[i];
++			}
++			struct beryllium_adsp_apr_response response = { 0 };
++			enum beryllium_adsp_apr_response_kind parsed =
++			    beryllium_adsp_apr_parse_response(adsp_apr_rx_buffers[param2 - 1],
++			    payload_bytes, &response);
++			if (!adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++				printf("SWEET ADSP: APR response could not advance AP-owned RX tail\n");
++				return false;
++			}
++			if (!adsp_apr_send_control(items, BERYLLIUM_ADSP_GLINK_CMD_RX_DONE,
++			    ADSP_APR_LOCAL_CHANNEL, param2)) {
++				printf("SWEET ADSP: APR response intent %u consumed but RX_DONE TX failed\n", param2);
++				return false;
++			}
++			if (parsed == BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION) {
++				printf("SWEET ADSP: Q6Core firmware version %u.%u.%u.%u services=%u; APR GET_FWK_VERSION complete (peer RX_DONE %s)\n",
++				    response.major, response.minor, response.branch,
++				    response.subbranch, response.service_count,
++				    request_intent_done ? "observed" : "not yet observed");
++				return true;
++			}
++			if (parsed == BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT) {
++				printf("SWEET ADSP: Q6Core APR basic result for GET_FWK_VERSION status=%#x; query complete\n",
++				    response.status);
++				return true;
++			}
++			printf("SWEET ADSP: APR payload failed header/opcode/length validation; response intent released\n");
++			return false;
++		}
++		printf("SWEET ADSP: APR response wait stopped on unexpected GLINK command=%u\n", command);
++		return false;
++	}
++	printf("SWEET ADSP: Q6Core GET_FWK_VERSION response timeout after %u ms; QMP/XO remain on\n",
++	    ADSP_APR_POLL_MS);
++	return false;
++}
++
++static void
++adsp_apr_mode4_start(void)
++{
++	struct adsp_glink_survey_items items;
++	struct adsp_apr_channel_state state;
++	struct beryllium_adsp_glink_indices indices;
++	bzero(&state, sizeof(state));
++	if (!sweet_board_beryllium() || !adsp_glink_survey_read_items(4, &items) ||
++	    !adsp_glink_start_items_valid(&items, true) ||
++	    !adsp_glink_survey_read_indices(items.descriptor.off, &indices) ||
++	    !beryllium_adsp_glink_indices_valid(&indices, items.tx_fifo.size, items.rx_fifo.size)) {
++		printf("SWEET ADSP: APR mode 4 stopped: post-negotiation GLINK metadata/indices invalid\n");
++		return;
++	}
++	bzero(adsp_apr_rx_buffers, sizeof(adsp_apr_rx_buffers));
++	if (!adsp_apr_open_channel(&items, &state)) {
++		printf("SWEET ADSP: APR mode 4 stopped before sending a Q6Core command\n");
++		return;
++	}
++	if (!adsp_apr_advertise_local_intents(&items) ||
++	    !adsp_apr_wait_remote_intent(&items, &state)) {
++		printf("SWEET ADSP: APR mode 4 stopped before sending a Q6Core command\n");
++		return;
++	}
++	if (!adsp_apr_send_fwk_version(&items, &state)) {
++		printf("SWEET ADSP: APR mode 4 stopped before Q6Core GET_FWK_VERSION\n");
++		return;
++	}
++	if (adsp_apr_poll_response(&items, &state)) {
++		printf("SWEET ADSP: APR mode 4 complete; stopped before AFE/ASM/PCM/codec startup\n");
++	} else {
++		printf("SWEET ADSP: APR mode 4 ended without a validated Q6Core response\n");
+ 	}
+ }
+ 
+@@ -2275,7 +2782,8 @@ beryllium_adsp_pas_start(void)
+ 	if (!adsp_pas_requested || !sweet_board_beryllium()) {
+ 		return false;
+ 	}
+-	printf("SWEET ADSP: explicit PAS ID 1 startup requested (sweetadsp=2)\n");
++	printf("SWEET ADSP: explicit PAS ID 1 startup requested (sweetadsp=%d)\n",
++	    adsp_apr_requested ? 4 : (adsp_glink_requested ? 3 : 2));
+ 	/* Re-read remote-owned item 443 immediately before the explicit start attempt. */
+ 	adsp_smp2p_readonly_probe(false);
+ 	if (adsp_smp2p_ambiguous) {
+@@ -2299,7 +2807,7 @@ beryllium_adsp_pas_start(void)
+ 		return false;
+ 	}
+ 	if (!adsp_smp2p_known) {
+-		printf("SWEET ADSP: physical state unknown; continuing only under explicit sweetadsp=2 request\n");
++		printf("SWEET ADSP: physical state unknown; continuing only under explicit PAS-mode request\n");
+ 	}
+ 	printf("SWEET ADSP: Q6V5 watchdog SPI 162 is not observed by this stage; no timeout SHUTDOWN will be issued\n");
+ 	if (!adsp_fw_read_full_bundle(&bundle)) {
+@@ -2488,7 +2996,13 @@ beryllium_adsp_pas_start(void)
+ 			    ADSP_SMP2P_IN_ITEM, adsp_remote_ready_entry_value);
+ 		}
+ 		if (adsp_glink_requested) {
+-			adsp_glink_mode3_start();
++			if (adsp_glink_mode3_start()) {
++				if (adsp_apr_requested) {
++					adsp_apr_mode4_start();
++				} else {
++					printf("SWEET ADSP: GLINK mode 3 complete; stopped before APR/channel/audio startup\n");
++				}
++			}
+ 		} else {
+ 			printf("SWEET ADSP: stopped before GLINK/APR/audio; mode 2 remains read-only at the GLINK edge\n");
+ 			adsp_glink_readonly_survey();
+@@ -2532,11 +3046,13 @@ beryllium_adsp_probe(void)
+ 	adsp_probe_enabled = true;
+ 	adsp_pas_requested = beryllium_adsp_glink_mode_requests_pas(mode);
+ 	adsp_glink_requested = beryllium_adsp_glink_mode_requests_glink(mode);
++	adsp_apr_requested = mode == 4;
+ 	adsp_state = BERYLLIUM_ADSP_PREFLIGHT;
+-	printf("SWEET ADSP: opt-in %s\n", adsp_glink_requested ?
+-	    "PAS plus GLINK-only startup requested; early SMP2P probe remains read-only" :
++	printf("SWEET ADSP: opt-in %s\n", adsp_apr_requested ?
++	    "PAS plus GLINK and one Q6Core APR version query requested; early SMP2P probe remains read-only" :
++	    (adsp_glink_requested ? "PAS plus GLINK-only startup requested; early SMP2P probe remains read-only" :
+ 	    (adsp_pas_requested ? "PAS startup mode requested; early SMP2P probe remains read-only" :
+-	    "read-only preflight (PAS/SMEM writes disabled)"));
++	    "read-only preflight (PAS/SMEM writes disabled)")));
+ 	adsp_smp2p_readonly_probe(false);
+ 	printf("SWEET ADSP: early SMP2P snapshot complete; state=%u\n", (unsigned)adsp_state);
+ }
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+new file mode 100644
+index 0000000..70324ad
+--- /dev/null
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -0,0 +1,283 @@
++#ifndef _BERYLLIUM_ADSP_APR_PROBE_H_
++#define _BERYLLIUM_ADSP_APR_PROBE_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define BERYLLIUM_ADSP_APR_DOMAIN_ADSP 4u
++#define BERYLLIUM_ADSP_APR_DOMAIN_APPS 5u
++#define BERYLLIUM_ADSP_APR_Q6CORE_SERVICE 3u
++#define BERYLLIUM_ADSP_APR_HEADER_BYTES 20u
++#define BERYLLIUM_ADSP_APR_SEQ_CMD_HDR_FIELD 0x0250u
++#define BERYLLIUM_ADSP_APR_RSP_HDR_FIELD 0x0150u
++#define BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION 0x001292cu
++#define BERYLLIUM_ADSP_APR_RSP_GET_FWK_VERSION 0x001292du
++#define BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT 0x000110e8u
++#define BERYLLIUM_ADSP_APR_CHANNEL_NAME "apr_audio_svc"
++#define BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES 14u
++#define BERYLLIUM_ADSP_APR_INTENT_BYTES 512u
++#define BERYLLIUM_ADSP_APR_INTENT_COUNT 20u
++#define BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS 64u
++#define BERYLLIUM_ADSP_APR_MAX_DATA_BYTES 512u
++
++#define BERYLLIUM_ADSP_GLINK_CMD_OPEN 2u
++#define BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK 4u
++#define BERYLLIUM_ADSP_GLINK_CMD_INTENT 5u
++#define BERYLLIUM_ADSP_GLINK_CMD_RX_DONE 6u
++#define BERYLLIUM_ADSP_GLINK_CMD_TX_DATA 9u
++
++enum beryllium_adsp_glink_frame_status {
++	BERYLLIUM_ADSP_GLINK_FRAME_MALFORMED = 0,
++	BERYLLIUM_ADSP_GLINK_FRAME_INCOMPLETE,
++	BERYLLIUM_ADSP_GLINK_FRAME_COMPLETE,
++};
++
++enum beryllium_adsp_apr_response_kind {
++	BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED = 0,
++	BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION,
++	BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT,
++};
++
++struct beryllium_adsp_glink_intent {
++	uint32_t id;
++	uint32_t size;
++};
++
++struct beryllium_adsp_apr_response {
++	uint32_t major;
++	uint32_t minor;
++	uint32_t branch;
++	uint32_t subbranch;
++	uint32_t service_count;
++	uint32_t status;
++};
++
++static inline uint16_t
++beryllium_adsp_apr_get16(const uint8_t *p)
++{
++	return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
++}
++
++static inline uint32_t
++beryllium_adsp_apr_get32(const uint8_t *p)
++{
++	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++	    ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++static inline void
++beryllium_adsp_apr_put16(uint8_t *p, uint16_t value)
++{
++	p[0] = (uint8_t)value;
++	p[1] = (uint8_t)(value >> 8);
++}
++
++static inline void
++beryllium_adsp_apr_put32(uint8_t *p, uint32_t value)
++{
++	p[0] = (uint8_t)value;
++	p[1] = (uint8_t)(value >> 8);
++	p[2] = (uint8_t)(value >> 16);
++	p[3] = (uint8_t)(value >> 24);
++}
++
++static inline bool
++beryllium_adsp_apr_encode_get_fwk_version(uint8_t packet[BERYLLIUM_ADSP_APR_HEADER_BYTES])
++{
++	if (packet == NULL) {
++		return false;
++	}
++	for (size_t i = 0; i < BERYLLIUM_ADSP_APR_HEADER_BYTES; i++) {
++		packet[i] = 0;
++	}
++	beryllium_adsp_apr_put16(packet, BERYLLIUM_ADSP_APR_SEQ_CMD_HDR_FIELD);
++	beryllium_adsp_apr_put16(packet + 2, BERYLLIUM_ADSP_APR_HEADER_BYTES);
++	packet[4] = BERYLLIUM_ADSP_APR_Q6CORE_SERVICE;
++	packet[5] = BERYLLIUM_ADSP_APR_DOMAIN_APPS;
++	packet[8] = BERYLLIUM_ADSP_APR_Q6CORE_SERVICE;
++	packet[9] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
++	beryllium_adsp_apr_put32(packet + 16, BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION);
++	return true;
++}
++
++/* Compute the aligned GLINK frame length without reading past available bytes. */
++static inline enum beryllium_adsp_glink_frame_status
++beryllium_adsp_apr_glink_frame_bytes(const uint8_t *frame, size_t available,
++	size_t *frame_bytes)
++{
++	uint16_t command;
++	uint32_t param2, payload_bytes;
++	size_t raw_bytes, aligned_bytes;
++
++	if (frame == NULL || frame_bytes == NULL) {
++		return BERYLLIUM_ADSP_GLINK_FRAME_MALFORMED;
++	}
++	if (available < 8) {
++		return BERYLLIUM_ADSP_GLINK_FRAME_INCOMPLETE;
++	}
++	command = beryllium_adsp_apr_get16(frame);
++	param2 = beryllium_adsp_apr_get32(frame + 4);
++	switch (command) {
++	case BERYLLIUM_ADSP_GLINK_CMD_OPEN:
++		payload_bytes = param2 & 0xffffu;
++		if (payload_bytes == 0 || payload_bytes > 32) {
++			return BERYLLIUM_ADSP_GLINK_FRAME_MALFORMED;
++		}
++		raw_bytes = 8u + payload_bytes;
++		break;
++	case BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK:
++	case BERYLLIUM_ADSP_GLINK_CMD_RX_DONE:
++		raw_bytes = 8;
++		break;
++	case BERYLLIUM_ADSP_GLINK_CMD_INTENT:
++		if (param2 == 0 || param2 > BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS) {
++			return BERYLLIUM_ADSP_GLINK_FRAME_MALFORMED;
++		}
++		raw_bytes = 8u + (size_t)param2 * 8u;
++		break;
++	case BERYLLIUM_ADSP_GLINK_CMD_TX_DATA:
++		if (available < 16) {
++			return BERYLLIUM_ADSP_GLINK_FRAME_INCOMPLETE;
++		}
++		payload_bytes = beryllium_adsp_apr_get32(frame + 8);
++		if (payload_bytes == 0 || payload_bytes > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES ||
++		    beryllium_adsp_apr_get32(frame + 12) != 0) {
++			return BERYLLIUM_ADSP_GLINK_FRAME_MALFORMED;
++		}
++		raw_bytes = 16u + payload_bytes;
++		break;
++	default:
++		return BERYLLIUM_ADSP_GLINK_FRAME_MALFORMED;
++	}
++	aligned_bytes = (raw_bytes + 7u) & ~(size_t)7u;
++	if (available < aligned_bytes) {
++		return BERYLLIUM_ADSP_GLINK_FRAME_INCOMPLETE;
++	}
++	*frame_bytes = aligned_bytes;
++	return BERYLLIUM_ADSP_GLINK_FRAME_COMPLETE;
++}
++
++static inline bool
++beryllium_adsp_apr_open_name_valid(const uint8_t *frame, size_t frame_bytes,
++	uint16_t remote_channel_id)
++{
++	if (frame == NULL || remote_channel_id == 0 || frame_bytes != 24 ||
++	    beryllium_adsp_apr_get16(frame) != BERYLLIUM_ADSP_GLINK_CMD_OPEN ||
++	    beryllium_adsp_apr_get16(frame + 2) != remote_channel_id ||
++	    (beryllium_adsp_apr_get32(frame + 4) & 0xffffu) != BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES) {
++		return false;
++	}
++	for (size_t i = 0; i < BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES; i++) {
++		if (frame[8 + i] != (uint8_t)BERYLLIUM_ADSP_APR_CHANNEL_NAME[i]) {
++			return false;
++		}
++	}
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_parse_remote_intents(const uint8_t *frame, size_t frame_bytes,
++	uint16_t remote_channel_id, struct beryllium_adsp_glink_intent *intents,
++	size_t intent_capacity, size_t *intent_count)
++{
++	uint32_t count;
++	if (frame == NULL || intents == NULL || intent_count == NULL ||
++	    frame_bytes < 16 || remote_channel_id == 0 ||
++	    beryllium_adsp_apr_get16(frame) != BERYLLIUM_ADSP_GLINK_CMD_INTENT ||
++	    beryllium_adsp_apr_get16(frame + 2) != remote_channel_id) {
++		return false;
++	}
++	count = beryllium_adsp_apr_get32(frame + 4);
++	if (count == 0 || count > BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS ||
++	    count > intent_capacity || frame_bytes != 8u + (size_t)count * 8u) {
++		return false;
++	}
++	for (size_t i = 0; i < count; i++) {
++		uint32_t size = beryllium_adsp_apr_get32(frame + 8 + i * 8);
++		uint32_t id = beryllium_adsp_apr_get32(frame + 12 + i * 8);
++		if (size == 0 || size > 0x4000u || id == 0) {
++			return false;
++		}
++		for (size_t prior = 0; prior < i; prior++) {
++			if (intents[prior].id == id) {
++				return false;
++			}
++		}
++		intents[i].size = size;
++		intents[i].id = id;
++	}
++	*intent_count = count;
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_tx_data_view(const uint8_t *frame, size_t frame_bytes,
++	uint16_t remote_channel_id, uint32_t local_intent_id,
++	const uint8_t **payload, size_t *payload_bytes)
++{
++	uint32_t length;
++	if (frame == NULL || payload == NULL || payload_bytes == NULL ||
++	    frame_bytes < 24 || remote_channel_id == 0 || local_intent_id == 0 ||
++	    beryllium_adsp_apr_get16(frame) != BERYLLIUM_ADSP_GLINK_CMD_TX_DATA ||
++	    beryllium_adsp_apr_get16(frame + 2) != remote_channel_id ||
++	    beryllium_adsp_apr_get32(frame + 12) != 0) {
++		return false;
++	}
++	length = beryllium_adsp_apr_get32(frame + 8);
++	if (length == 0 || length > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES ||
++	    frame_bytes != ((16u + (size_t)length + 7u) & ~(size_t)7u) ||
++	    beryllium_adsp_apr_get32(frame + 4) != local_intent_id) {
++		return false;
++	}
++	*payload = frame + 16;
++	*payload_bytes = length;
++	return true;
++}
++
++static inline enum beryllium_adsp_apr_response_kind
++beryllium_adsp_apr_parse_response(const uint8_t *packet, size_t packet_bytes,
++	struct beryllium_adsp_apr_response *response)
++{
++	uint16_t packet_size;
++	uint32_t opcode;
++	if (packet == NULL || response == NULL || packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES) {
++		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
++	}
++	packet_size = beryllium_adsp_apr_get16(packet + 2);
++	opcode = beryllium_adsp_apr_get32(packet + 16);
++	if (beryllium_adsp_apr_get16(packet) != BERYLLIUM_ADSP_APR_RSP_HDR_FIELD ||
++	    packet_size != packet_bytes || packet[4] != BERYLLIUM_ADSP_APR_Q6CORE_SERVICE ||
++	    packet[5] != BERYLLIUM_ADSP_APR_DOMAIN_ADSP ||
++	    beryllium_adsp_apr_get16(packet + 6) != 0 ||
++	    packet[8] != BERYLLIUM_ADSP_APR_Q6CORE_SERVICE ||
++	    packet[9] != BERYLLIUM_ADSP_APR_DOMAIN_APPS ||
++	    beryllium_adsp_apr_get16(packet + 10) != 0 ||
++	    beryllium_adsp_apr_get32(packet + 12) != 0) {
++		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
++	}
++	if (opcode == BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT) {
++		if (packet_bytes != BERYLLIUM_ADSP_APR_HEADER_BYTES + 8u ||
++		    beryllium_adsp_apr_get32(packet + 20) != BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION) {
++			return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
++		}
++		response->status = beryllium_adsp_apr_get32(packet + 24);
++		return BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT;
++	}
++	if (opcode != BERYLLIUM_ADSP_APR_RSP_GET_FWK_VERSION || packet_bytes < 40 ||
++	    ((packet_bytes - 40u) % 12u) != 0) {
++		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
++	}
++	response->major = beryllium_adsp_apr_get32(packet + 20);
++	response->minor = beryllium_adsp_apr_get32(packet + 24);
++	response->branch = beryllium_adsp_apr_get32(packet + 28);
++	response->subbranch = beryllium_adsp_apr_get32(packet + 32);
++	response->service_count = beryllium_adsp_apr_get32(packet + 36);
++	if (response->service_count > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES / 12u ||
++	    packet_bytes != 40u + (size_t)response->service_count * 12u) {
++		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
++	}
++	return BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION;
++}
++
++#endif /* _BERYLLIUM_ADSP_APR_PROBE_H_ */
+diff --git a/bsd/dev/beryllium_adsp_glink_start.h b/bsd/dev/beryllium_adsp_glink_start.h
+index b519e8f..ff4dec1 100644
+--- a/bsd/dev/beryllium_adsp_glink_start.h
++++ b/bsd/dev/beryllium_adsp_glink_start.h
+@@ -29,19 +29,19 @@ struct beryllium_adsp_glink_message {
+ static inline bool
+ beryllium_adsp_glink_mode_valid(int mode)
+ {
+-	return mode >= 1 && mode <= 3;
++	return mode >= 1 && mode <= 4;
+ }
+ 
+ static inline bool
+ beryllium_adsp_glink_mode_requests_pas(int mode)
+ {
+-	return mode == 2 || mode == 3;
++	return mode == 2 || mode == 3 || mode == 4;
+ }
+ 
+ static inline bool
+ beryllium_adsp_glink_mode_requests_glink(int mode)
+ {
+-	return mode == 3;
++	return mode == 3 || mode == 4;
+ }
+ 
+ static inline bool

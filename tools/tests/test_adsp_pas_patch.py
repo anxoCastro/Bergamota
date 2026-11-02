@@ -17,6 +17,7 @@ PREFLIGHT_PATCH = ROOT / "xnu/patches-12377/1131-beryllium-adsp-apr.patch"
 NEGOTIATION_PATCH = ROOT / "xnu/patches-12377/1147-beryllium-adsp-smp2p-version-negotiation.patch"
 GLINK_PATCH = ROOT / "xnu/patches-12377/1148-beryllium-adsp-glink-readonly-preflight.patch"
 GLINK_MODE3_PATCH = ROOT / "xnu/patches-12377/1149-beryllium-adsp-glink-mode3.patch"
+APR_MODE4_PATCH = ROOT / "xnu/patches-12377/1150-beryllium-adsp-apr-q6core-mode4.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -79,7 +80,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1149:
+                if not 1131 <= number <= 1150:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -629,8 +630,82 @@ class AdspPasPatchTests(unittest.TestCase):
                         continue
                     subprocess.run(["git", "apply", f"--include={target}", str(earlier)],
                                    cwd=work, check=True, capture_output=True, text=True)
-                subprocess.run(["git", "apply", "--check", f"--include={target}", str(PATCH)],
-                               cwd=work, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--check", f"--include={target}", str(PATCH)],
+                           cwd=work, check=True, capture_output=True, text=True)
+
+
+class AdspAprMode4Tests(unittest.TestCase):
+    def test_compiled_apr_mode4_helpers(self):
+        self.assertTrue(APR_MODE4_PATCH.is_file(),
+                        "patch 1150 must provide the production APR helper header")
+        header_path = "bsd/dev/beryllium_adsp_apr_probe.h"
+        glink_header_path = "bsd/dev/beryllium_adsp_glink_start.h"
+        harness = ROOT / "tools/tests/test_adsp_apr_mode4.c"
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(APR_MODE4_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--include=bsd/dev/beryllium_adsp_glink_survey.h",
+                            str(GLINK_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={glink_header_path}",
+                            str(GLINK_MODE3_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={glink_header_path}",
+                            str(APR_MODE4_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            executable = work / "test-apr-mode4"
+            subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                "-I", str((work / header_path).parent), str(harness),
+                "-o", str(executable),
+            ], check=True, capture_output=True, text=True)
+            result = subprocess.run([str(executable)], check=False,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "APR mode-4 helper checks passed")
+
+    def test_mode4_is_a_single_read_only_q6core_request_after_glink(self):
+        self.assertTrue(APR_MODE4_PATCH.is_file(), "patch 1150 is missing")
+        patch = APR_MODE4_PATCH.read_text()
+        driver = diff_section(patch, "bsd/dev/beryllium_adsp.c")
+        apr_header = diff_section(patch, "bsd/dev/beryllium_adsp_apr_probe.h")
+        self.assertIn("adsp_apr_requested = mode == 4", driver)
+        self.assertIn("adsp_glink_mode3_start()", driver)
+        self.assertIn("adsp_apr_mode4_start()", driver)
+        self.assertIn('#define BERYLLIUM_ADSP_APR_CHANNEL_NAME "apr_audio_svc"', apr_header)
+        self.assertIn("ADSP_APR_CMD_GET_FWK_VERSION", driver)
+        self.assertIn("BERYLLIUM_ADSP_APR_INTENT_COUNT", driver)
+        self.assertIn("BERYLLIUM_ADSP_APR_INTENT_BYTES", driver)
+        self.assertNotRegex(driver, r"q6afe|q6asm|AFE_PORT|ASM_STREAM|codec_start|pas_shutdown")
+        self.assertNotIn("RX_INTENT_REQ", driver)
+        self.assertNotIn('adsp_pas_call("SHUTDOWN"', driver)
+        start_header = diff_section(patch, "bsd/dev/beryllium_adsp_glink_start.h")
+        self.assertIn("mode <= 4", start_header)
+        apr_start = added_function_body(driver, "adsp_apr_mode4_start")
+        ready_path = driver[driver.index("if (adsp_glink_mode3_start())"):]
+        self.assertLess(ready_path.index("adsp_glink_mode3_start()"),
+                        ready_path.index("adsp_apr_mode4_start()"))
+        self.assertIn("adsp_apr_open_channel", apr_start)
+        self.assertLess(apr_start.index("adsp_apr_send_fwk_version"),
+                        apr_start.index("adsp_apr_poll_response"))
+        self.assertEqual(driver.count("beryllium_adsp_apr_encode_get_fwk_version("), 1)
+        local_intents = added_function_body(driver, "adsp_apr_advertise_local_intents")
+        self.assertIn("for (uint32_t id = 1; id <= BERYLLIUM_ADSP_APR_INTENT_COUNT; id++)",
+                      local_intents)
+        self.assertIn("ADSP_APR_LOCAL_CHANNEL", local_intents)
+        self.assertIn("BERYLLIUM_ADSP_APR_INTENT_BYTES", local_intents)
+        apr_transport = driver[driver.index("adsp_glink_send_frame("):
+                               driver.index("beryllium_adsp_pas_start(void)")]
+        self.assertIn("items->descriptor.off + 4", apr_transport)
+        self.assertIn("items->descriptor.off + 8", apr_transport)
+        self.assertNotRegex(apr_transport,
+                            r"adsp_smem_wr32\(items->descriptor\.off \+ (?:0|12)")
+        self.assertIn("ADSP_APR_POLL_MS",
+                      added_function_body(driver, "adsp_apr_poll_response"))
 
 
 if __name__ == "__main__":
