@@ -114,7 +114,7 @@
 - Update: `NOTES.md`
 - Artifacts: ignored `.superpowers/ci/<run-id>/`
 
-- [ ] **Step 1: Push the reviewed parser fix and dispatch KDK-enabled `xnu.yml`** on `audio-poco-f1-adsp-bootstrap` for macOS 26.5, Xcode 26.1, DEVELOPMENT-SWEET, and keep-going enabled. The obsolete run 41482463386 built no steps and was cancelled while queued on the pre-fix SHA.
+- [ ] **Step 1: Push the reviewed parser fix and dispatch KDK-enabled `xnu.yml`** on `audio-poco-f1-adsp-bootstrap` for macOS 26.5, Xcode 26.1, DEVELOPMENT-SWEET, and keep-going enabled. The obsolete run 41482463386 built no steps and ended cancelled while queued on the pre-fix SHA; the replacement run is 41486126502, queued on `727eedd7942378453529830013fb81e905da1306`.
 - [ ] **Step 2: Use `gh` to inspect the run and artifacts.** Record run ID, pinned SHA, patch-1148 application, empty compiler-error report, kernel hash, and linker warnings.
 - [ ] **Step 3: Package a temporary root-read-only Enxerto image.** Keep `sweetadsp=2`, omit `ufsrw=1`/`rootrw=1`, verify `/chosen` marker and image hash.
 - [ ] **Step 4: Verify Fastboot identity and boot the image temporarily.** Require `product=beryllium` and `unlocked=yes`; start UDP/5140 capture before `fastboot boot`; do not flash any partition.
