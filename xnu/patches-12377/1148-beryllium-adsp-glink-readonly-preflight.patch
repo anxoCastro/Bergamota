@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
-index c414786..564249b 100644
+index c414786..cf887b7 100644
 --- a/bsd/dev/beryllium_adsp.c
 +++ b/bsd/dev/beryllium_adsp.c
 @@ -27,6 +27,7 @@
@@ -49,7 +49,7 @@ index c414786..564249b 100644
  static uint16_t
  adsp_u16le(const uint8_t *p)
  {
-@@ -364,89 +383,117 @@ adsp_smem_wr32(uint32_t off, uint32_t value)
+@@ -364,89 +383,181 @@ adsp_smem_wr32(uint32_t off, uint32_t value)
  	p[3] = (uint8_t)(value >> 24);
  }
  
@@ -60,8 +60,8 @@ index c414786..564249b 100644
  {
  	const uint32_t top = ADSP_SMEM_SIZE - 0x1000;
 -	uint32_t count;
-+	uint32_t count, part_off = 0, part_size = 0;
-+	uint32_t free_uncached, pos, end, found_off = 0, found_size = 0;
++	uint32_t count, part_off = 0, part_size = 0, cacheline = 0;
++	uint32_t free_uncached, free_cached, pos, end, found_off = 0, found_size = 0;
 +	bool partition_found = false, item_found = false;
  
 -	if (adsp_smem_rd32(top) != ADSP_SMEM_TOC_MAGIC) {
@@ -84,6 +84,7 @@ index c414786..564249b 100644
 +		uint32_t candidate_off = adsp_smem_rd32(ent);
 +		uint32_t candidate_size = adsp_smem_rd32(ent + 4);
  		uint32_t hosts = adsp_smem_rd32(ent + 12);
++		uint32_t candidate_cacheline = adsp_smem_rd32(ent + 16);
  		uint16_t h0 = (uint16_t)hosts, h1 = (uint16_t)(hosts >> 16);
 -		uint32_t free_uncached, pos;
 -		if (!part_off || part_size < ADSP_SMEM_PART_HDR_BYTES ||
@@ -100,11 +101,13 @@ index c414786..564249b 100644
 +		partition_found = true;
 +		part_off = candidate_off;
 +		part_size = candidate_size;
++		cacheline = candidate_cacheline;
 +		if (!part_off || part_size < ADSP_SMEM_PART_HDR_BYTES ||
 +		    !adsp_range(ADSP_SMEM_SIZE, part_off, part_size) ||
  		    adsp_smem_rd32(part_off) != ADSP_SMEM_PART_MAGIC ||
  		    adsp_smem_rd16(part_off + 4) != h0 || adsp_smem_rd16(part_off + 6) != h1 ||
- 		    adsp_smem_rd32(part_off + 8) > part_size) {
+-		    adsp_smem_rd32(part_off + 8) > part_size) {
++		    adsp_smem_rd32(part_off + 8) != part_size) {
  			ADSP_SMP2P_LOG("SWEET ADSP: SMEM private partition %u has invalid bounds/header\n", i);
 -			return false;
 +			return BERYLLIUM_ADSP_ITEM_MALFORMED;
@@ -120,9 +123,11 @@ index c414786..564249b 100644
 +		return BERYLLIUM_ADSP_ITEM_ABSENT;
 +	}
 +	free_uncached = adsp_smem_rd32(part_off + 12);
-+	if (free_uncached < ADSP_SMEM_PART_HDR_BYTES || free_uncached > part_size) {
-+		ADSP_SMP2P_LOG("SWEET ADSP: SMEM private partition free offset invalid (%#x/%#x)\n",
-+		    free_uncached, part_size);
++	free_cached = adsp_smem_rd32(part_off + 16);
++	if (free_uncached < ADSP_SMEM_PART_HDR_BYTES || free_uncached > part_size ||
++	    free_cached < free_uncached || free_cached > part_size) {
++		ADSP_SMP2P_LOG("SWEET ADSP: SMEM private partition free offsets invalid (%#x/%#x/%#x)\n",
++		    free_uncached, free_cached, part_size);
 +		return BERYLLIUM_ADSP_ITEM_MALFORMED;
 +	}
 +	pos = part_off + ADSP_SMEM_PART_HDR_BYTES;
@@ -134,42 +139,7 @@ index c414786..564249b 100644
 +		    pos + ADSP_SMEM_PRIVATE_HDR > end) {
 +			ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header truncated\n");
 +			return BERYLLIUM_ADSP_ITEM_MALFORMED;
- 		}
--		pos = part_off + ADSP_SMEM_PART_HDR_BYTES;
--		for (unsigned guard = 0; guard < ADSP_SMEM_MAX_ITEMS && pos < part_off + free_uncached; guard++) {
--			uint32_t w0, item_size, pads, pad_data, pad_hdr, next, payload;
--			uint16_t item;
--			if (!adsp_range(ADSP_SMEM_SIZE, pos, ADSP_SMEM_PRIVATE_HDR) ||
--			    pos + ADSP_SMEM_PRIVATE_HDR > part_off + free_uncached) {
--				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header truncated\n");
--				return false;
--			}
--			w0 = adsp_smem_rd32(pos);
--			item = (uint16_t)(w0 >> 16);
--			item_size = adsp_smem_rd32(pos + 4);
--			pads = adsp_smem_rd32(pos + 8);
--			pad_data = (uint16_t)pads;
--			pad_hdr = (uint16_t)(pads >> 16);
--			if ((uint16_t)w0 != ADSP_SMEM_PRIVATE_CANARY || item_size > part_size || pad_data > item_size ||
--			    pad_hdr > part_size - ADSP_SMEM_PRIVATE_HDR) {
--				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header malformed at %#x\n", pos);
--				return false;
--			}
--			payload = pos + ADSP_SMEM_PRIVATE_HDR + pad_hdr;
--			if (!adsp_range(ADSP_SMEM_SIZE, payload, item_size) ||
--			    payload + item_size > part_off + free_uncached) {
--				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item payload outside used partition\n");
--				return false;
--			}
--			if (item == wanted) {
--				*data_off = payload;
--				*data_size = item_size - pad_data;
--				return true;
--			}
--			next = payload + item_size;
--			if (next <= pos) {
--				ADSP_SMP2P_LOG("SWEET ADSP: SMEM item walk did not advance\n");
--				return false;
++		}
 +		w0 = adsp_smem_rd32(pos);
 +		item = (uint16_t)(w0 >> 16);
 +		item_size = adsp_smem_rd32(pos + 4);
@@ -190,27 +160,113 @@ index c414786..564249b 100644
 +			if (item_found) {
 +				ADSP_SMP2P_LOG("SWEET ADSP: duplicate private SMEM item %u\n", (unsigned)wanted);
 +				return BERYLLIUM_ADSP_ITEM_MALFORMED;
- 			}
--			pos = next;
++			}
 +			item_found = true;
 +			found_off = payload;
 +			found_size = item_size - pad_data;
  		}
--		ADSP_SMP2P_LOG("SWEET ADSP: ADSP private SMEM partition has no item %u\n", (unsigned)wanted);
--		return false;
+-		pos = part_off + ADSP_SMEM_PART_HDR_BYTES;
+-		for (unsigned guard = 0; guard < ADSP_SMEM_MAX_ITEMS && pos < part_off + free_uncached; guard++) {
+-			uint32_t w0, item_size, pads, pad_data, pad_hdr, next, payload;
 +		next = payload + item_size;
 +		if (next <= pos || next > end) {
 +			ADSP_SMP2P_LOG("SWEET ADSP: SMEM item walk did not advance within partition\n");
 +			return BERYLLIUM_ADSP_ITEM_MALFORMED;
 +		}
 +		pos = next;
- 	}
--		ADSP_SMP2P_LOG("SWEET ADSP: SMEM partition for hosts %u<->%u not found\n", (unsigned)host_a, (unsigned)host_b);
--	return false;
++	}
 +	if (pos != end) {
 +		ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item list exceeds bounded walk\n");
 +		return BERYLLIUM_ADSP_ITEM_MALFORMED;
 +	}
++	if (free_cached < part_size) {
++		uint32_t header_span, cached_pos, cached_end;
++		if (cacheline == 0 || cacheline > part_size ||
++		    (cacheline & (cacheline - 1)) != 0) {
++			ADSP_SMP2P_LOG("SWEET ADSP: SMEM cached-list cacheline invalid (%u)\n", cacheline);
++			return BERYLLIUM_ADSP_ITEM_MALFORMED;
++		}
++		header_span = (ADSP_SMEM_PRIVATE_HDR + cacheline - 1) & ~(cacheline - 1);
++		if (header_span > part_size) {
++			ADSP_SMP2P_LOG("SWEET ADSP: SMEM cached-list header alignment exceeds partition\n");
++			return BERYLLIUM_ADSP_ITEM_MALFORMED;
++		}
++		cached_pos = part_off + part_size - header_span;
++		cached_end = part_off + free_cached;
++		for (unsigned guard = 0; guard < ADSP_SMEM_MAX_ITEMS && cached_pos > cached_end; guard++) {
++			uint32_t w0, item_size, pads, pad_data, payload, next;
+ 			uint16_t item;
+-			if (!adsp_range(ADSP_SMEM_SIZE, pos, ADSP_SMEM_PRIVATE_HDR) ||
+-			    pos + ADSP_SMEM_PRIVATE_HDR > part_off + free_uncached) {
+-				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header truncated\n");
+-				return false;
++			if (!adsp_range(ADSP_SMEM_SIZE, cached_pos, ADSP_SMEM_PRIVATE_HDR) ||
++			    cached_pos + ADSP_SMEM_PRIVATE_HDR > part_off + part_size) {
++				ADSP_SMP2P_LOG("SWEET ADSP: SMEM cached item header outside partition\n");
++				return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 			}
+-			w0 = adsp_smem_rd32(pos);
++			w0 = adsp_smem_rd32(cached_pos);
+ 			item = (uint16_t)(w0 >> 16);
+-			item_size = adsp_smem_rd32(pos + 4);
+-			pads = adsp_smem_rd32(pos + 8);
++			item_size = adsp_smem_rd32(cached_pos + 4);
++			pads = adsp_smem_rd32(cached_pos + 8);
+ 			pad_data = (uint16_t)pads;
+-			pad_hdr = (uint16_t)(pads >> 16);
+-			if ((uint16_t)w0 != ADSP_SMEM_PRIVATE_CANARY || item_size > part_size || pad_data > item_size ||
+-			    pad_hdr > part_size - ADSP_SMEM_PRIVATE_HDR) {
+-				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header malformed at %#x\n", pos);
+-				return false;
++			if ((uint16_t)w0 != ADSP_SMEM_PRIVATE_CANARY || item_size > part_size ||
++			    pad_data > item_size || item_size > cached_pos - part_off ||
++			    header_span > cached_pos - part_off - item_size) {
++				ADSP_SMP2P_LOG("SWEET ADSP: SMEM cached item header malformed at %#x\n", cached_pos);
++				return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 			}
+-			payload = pos + ADSP_SMEM_PRIVATE_HDR + pad_hdr;
++			payload = cached_pos - item_size;
+ 			if (!adsp_range(ADSP_SMEM_SIZE, payload, item_size) ||
+-			    payload + item_size > part_off + free_uncached) {
+-				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item payload outside used partition\n");
+-				return false;
++			    payload < part_off + free_uncached || payload < cached_end) {
++				ADSP_SMP2P_LOG("SWEET ADSP: SMEM cached item payload outside partition free bounds\n");
++				return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 			}
+ 			if (item == wanted) {
+-				*data_off = payload;
+-				*data_size = item_size - pad_data;
+-				return true;
++				if (item_found) {
++					ADSP_SMP2P_LOG("SWEET ADSP: duplicate private SMEM item %u\n", (unsigned)wanted);
++					return BERYLLIUM_ADSP_ITEM_MALFORMED;
++				}
++				item_found = true;
++				found_off = payload;
++				found_size = item_size - pad_data;
+ 			}
+-			next = payload + item_size;
+-			if (next <= pos) {
+-				ADSP_SMP2P_LOG("SWEET ADSP: SMEM item walk did not advance\n");
+-				return false;
++			next = cached_pos - item_size - header_span;
++			if (next >= cached_pos || next < cached_end) {
++				ADSP_SMP2P_LOG("SWEET ADSP: SMEM cached item walk exceeds free offset\n");
++				return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 			}
+-			pos = next;
++			cached_pos = next;
++		}
++		if (cached_pos != cached_end) {
++			ADSP_SMP2P_LOG("SWEET ADSP: SMEM cached item list exceeds bounded walk\n");
++			return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 		}
+-		ADSP_SMP2P_LOG("SWEET ADSP: ADSP private SMEM partition has no item %u\n", (unsigned)wanted);
+-		return false;
+ 	}
+-		ADSP_SMP2P_LOG("SWEET ADSP: SMEM partition for hosts %u<->%u not found\n", (unsigned)host_a, (unsigned)host_b);
+-	return false;
 +	if (!item_found) {
 +		ADSP_SMP2P_LOG("SWEET ADSP: ADSP private SMEM partition has no item %u\n",
 +		    (unsigned)wanted);
@@ -222,7 +278,7 @@ index c414786..564249b 100644
  }
  
  /* Lock TCSR mutex 3 while editing the Apps<->ADSP private SMEM allocation list. */
-@@ -712,9 +759,8 @@ adsp_smp2p_out_snapshot(const char *stage)
+@@ -712,9 +823,8 @@ adsp_smp2p_out_snapshot(const char *stage)
  	uint32_t value = 0;
  	bool found = false;
  
@@ -234,7 +290,7 @@ index c414786..564249b 100644
  		printf("SWEET ADSP: outbound SMP2P readback (%s): item %u unavailable\n",
  		    stage, ADSP_SMP2P_OUT_ITEM);
  		return;
-@@ -892,6 +938,8 @@ adsp_smp2p_readonly_probe(bool quiet)
+@@ -892,6 +1002,8 @@ adsp_smp2p_readonly_probe(bool quiet)
  	adsp_smp2p_quiet = quiet;
  	adsp_smp2p_known = false;
  	adsp_remote_ready = false;
@@ -243,7 +299,7 @@ index c414786..564249b 100644
  	adsp_remote_fatal = false;
  	adsp_remote_handover = false;
  	adsp_remote_stop_ack = false;
-@@ -916,7 +964,8 @@ adsp_smp2p_readonly_probe(bool quiet)
+@@ -916,7 +1028,8 @@ adsp_smp2p_readonly_probe(bool quiet)
  		}
  	}
  	__asm__ volatile ("dmb sy" ::: "memory");
@@ -253,7 +309,7 @@ index c414786..564249b 100644
  		ADSP_SMP2P_LOG("SWEET ADSP: remote SMP2P inbound item %u unavailable\n", ADSP_SMP2P_IN_ITEM);
  		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
  		return;
-@@ -971,11 +1020,21 @@ adsp_smp2p_readonly_probe(bool quiet)
+@@ -971,11 +1084,21 @@ adsp_smp2p_readonly_probe(bool quiet)
  		if (strcmp(name, "slave-kernel") == 0) {
  			if (found) {
  				ADSP_SMP2P_LOG("SWEET ADSP: duplicate slave-kernel SMP2P entry; rejecting snapshot\n");
@@ -275,7 +331,7 @@ index c414786..564249b 100644
  			adsp_smp2p_known = true;
  			fatal = (value & 1u) != 0;
  			ready = (value & (1u << 1)) != 0;
-@@ -1018,9 +1077,9 @@ adsp_crash_reason_read(char *reason, uint32_t *item_size, bool *truncated)
+@@ -1018,9 +1141,9 @@ adsp_crash_reason_read(char *reason, uint32_t *item_size, bool *truncated)
  	if (adsp_smem == NULL) {
  		adsp_smem = (volatile uint8_t *)ml_io_map(ADSP_SMEM_PA, ADSP_SMEM_SIZE);
  	}
@@ -288,7 +344,7 @@ index c414786..564249b 100644
  		return false;
  	}
  	count = MIN(reason_size, (uint32_t)128);
-@@ -1551,6 +1610,200 @@ adsp_metadata_alloc_contig(const struct adsp_full_bundle *bundle, vm_offset_t *k
+@@ -1551,6 +1674,200 @@ adsp_metadata_alloc_contig(const struct adsp_full_bundle *bundle, vm_offset_t *k
  	return true;
  }
  
@@ -489,7 +545,7 @@ index c414786..564249b 100644
  static bool
  beryllium_adsp_pas_start(void)
  {
-@@ -1772,6 +2025,11 @@ beryllium_adsp_pas_start(void)
+@@ -1772,6 +2089,11 @@ beryllium_adsp_pas_start(void)
  	    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
  	if (ready) {
  		printf("SWEET ADSP: Q6V5 ready observed; stopped before GLINK/APR/audio; QMP/XO retained\n");

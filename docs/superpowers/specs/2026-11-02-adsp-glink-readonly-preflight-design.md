@@ -71,7 +71,7 @@ flowchart TD
 
 For a valid descriptor, use the Linux field mapping: word 0 TX tail, word 1 TX head, word 2 RX tail, word 3 RX head. Check TX indices against item 479's reported size and RX indices against item 480's reported size only when those FIFOs exist and have nonzero size. An out-of-range value is logged as invalid and is never repaired. Do not infer that a field is safe to modify based on this mapping.
 
-The private-item lookup must distinguish `FOUND`, `ABSENT`, and `MALFORMED` outcomes rather than making the survey infer status from log text. Keep the result bounded; do not return a pointer to an unchecked item.
+The private-item lookup must distinguish `FOUND`, `ABSENT`, and `MALFORMED` outcomes rather than making the survey infer status from log text. `ABSENT` is valid only after both uncached and cached lists have been checked. Require the partition header size to equal the TOC entry size and validate both free offsets before scanning. Keep the result bounded; do not return a pointer to an unchecked item.
 
 ### Sampling and logs
 

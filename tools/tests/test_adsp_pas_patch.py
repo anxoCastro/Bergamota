@@ -252,6 +252,56 @@ class AdspPasPatchTests(unittest.TestCase):
             self.assertIn("!= BERYLLIUM_ADSP_ITEM_FOUND",
                           added_function_body(self.latest_driver, caller), caller)
 
+    def test_compiled_smem_private_item_parser(self):
+        header_path = "bsd/dev/beryllium_adsp_glink_survey.h"
+        harness = ROOT / "tools/tests/adsp_smem_private_item_harness.c"
+        self.assertTrue(GLINK_PATCH.is_file(), "patch 1148 must provide the production helper header")
+        body = added_function_body(self.latest_driver, "adsp_smem_private_item")
+        function = (
+            "static enum beryllium_adsp_item_result\n"
+            "adsp_smem_private_item(uint16_t host_a, uint16_t host_b, uint16_t wanted,\n"
+            "    uint32_t *data_off, uint32_t *data_size)\n" + body
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(GLINK_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            source = harness.read_text().replace("/* PRODUCTION_FUNCTION */", function)
+            source_path = work / "test-adsp-smem-private-item.c"
+            source_path.write_text(source)
+            executable = work / "test-adsp-smem-private-item"
+            subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                "-I", str((work / header_path).parent), str(source_path),
+                "-o", str(executable),
+            ], check=True, capture_output=True, text=True)
+            result = subprocess.run([str(executable)], check=False,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "SMEM private item parser checks passed")
+
+    def test_glink_survey_guards_precede_index_reads(self):
+        survey = added_function_body(self.latest_driver, "adsp_glink_readonly_survey")
+        read_items = added_function_body(self.latest_driver, "adsp_glink_survey_read_items")
+        absent_guard = survey.index(
+            "if (first_items.descriptor.result != BERYLLIUM_ADSP_ITEM_FOUND)")
+        absent_return = survey.index("return;", absent_guard)
+        first_index_read = survey.index("adsp_glink_survey_read_indices", absent_guard)
+        self.assertLess(absent_return, first_index_read)
+
+        size_guard = survey.index(
+            "if (!beryllium_adsp_glink_descriptor_size_valid(first_items.descriptor.size))")
+        size_return = survey.index("return;", size_guard)
+        self.assertLess(size_return, first_index_read)
+
+        malformed_guard = read_items.index(
+            "items->descriptor.result == BERYLLIUM_ADSP_ITEM_MALFORMED")
+        malformed_return = read_items.index("return false;", malformed_guard)
+        self.assertLess(malformed_return, read_items.index("return true;", malformed_guard))
+
     def test_glink_survey_is_read_only_and_after_ready(self):
         survey = added_function_body(self.latest_driver, "adsp_glink_readonly_survey")
         read_items = added_function_body(self.latest_driver, "adsp_glink_survey_read_items")

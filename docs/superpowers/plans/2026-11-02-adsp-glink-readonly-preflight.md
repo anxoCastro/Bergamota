@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Keep survey opt-in under the existing `sweetadsp=2` mode; ordinary boot and mode 1 remain unchanged.
-- Inspect items 478, 479, and 480 in the Apps/ADSP private SMEM partition for hosts 0 and 2.
+- Inspect items 478, 479, and 480 in both cached and uncached lists of the Apps/ADSP private SMEM partition for hosts 0 and 2. Report `ABSENT` only after both valid lists are scanned.
 - Item 478 is interpreted only when its reported size is exactly 32 bytes; items 479 and 480 are reported as found/absent with their actual sizes.
 - Record descriptor word 0 TX tail, word 1 TX head, word 2 RX tail, and word 3 RX head.
 - Take two descriptor/index samples 100 ms apart; read words 0–3 twice within each sample and mark a sample unstable if the reads differ.
@@ -25,7 +25,7 @@
 ## Review Focus
 
 - Missing item 478: report absent and do not read descriptor words or allocate a replacement; pin in the parser/driver integration check.
-- Malformed private partition/item metadata: classify malformed separately from absent and stop the survey without panic; pin in the parser contract check.
+- Malformed private partition/item metadata, including a header size that differs from the TOC size: classify malformed separately from absent and stop the survey without panic; pin in the compiled parser fixture.
 - Descriptor size other than 32 bytes: log the size without interpreting its contents; pin in the compiled C helper test and patch-contract check.
 - Missing FIFO 479 or 480: report its size as unknown and avoid range-checking the associated ring; pin in the compiled C helper test.
 - TX/RX index equal to or greater than its FIFO size: report out of range and do not repair it; pin in the compiled C helper test.
@@ -65,7 +65,7 @@
 
 **Interfaces:**
 - Change `adsp_smem_private_item(uint16_t host_a, uint16_t host_b, uint16_t wanted, uint32_t *data_off, uint32_t *data_size)` to return `enum beryllium_adsp_item_result`.
-- Return `FOUND` only after the existing bounds/canary/range checks pass; return `ABSENT` only when the valid partition/list contains no requested item; return `MALFORMED` for invalid TOC, partition, item header, canary, or payload bounds.
+- Return `FOUND` only after the bounds/canary/range checks pass for both lists; return `ABSENT` only when neither valid list contains the requested item; return `MALFORMED` for invalid TOC, unequal partition sizes, invalid free offsets, item header, canary, cacheline, or payload bounds.
 - Update existing call sites to compare explicitly with `FOUND`, preserving their existing behavior for absent or malformed items.
 
 - [x] **Step 1: Add patch-contract cases for lookup classification.** Assert the enum returns and ensure the function does not call `adsp_smem_wr*`, the allocator, or the TCSR lock.
@@ -97,11 +97,12 @@
 
 **Files:**
 - Modify: `tools/tests/test_adsp_pas_patch.py`
+- Add: `tools/tests/adsp_smem_private_item_harness.c`
 - Modify through patch 1148: `bsd/dev/beryllium_adsp.c`
 - Add: `xnu/patches-12377/1148-beryllium-adsp-glink-readonly-preflight.patch`
 
 - [x] **Step 1: Extend ordered patch application through 1148.** Assert patches 1131–1148 apply in order and the latest driver contains the survey.
-- [x] **Step 2: Run ADSP patch regression tests.** Run `python3 tools/tests/test_adsp_pas_patch.py`; expected: all C harnesses and integration checks pass.
+- [x] **Step 2: Run ADSP patch regression tests.** Run `python3 tools/tests/test_adsp_pas_patch.py`; expected: all C harnesses and integration checks pass, including the extracted production parser against cached/uncached and malformed fixtures.
 - [x] **Step 3: Run repository test discovery.** Run `python3 -m unittest discover -s tools/tests`; expected: all existing and new tests pass.
 - [x] **Step 4: Run `git diff --check`.** Expected: clean outside unified patch context whitespace conventions.
 - [x] **Step 5: Commit the regression and patch-order updates.**
@@ -113,7 +114,7 @@
 - Update: `NOTES.md`
 - Artifacts: ignored `.superpowers/ci/<run-id>/`
 
-- [ ] **Step 1: Dispatch KDK-enabled `xnu.yml`** on `audio-poco-f1-adsp-bootstrap` for macOS 26.5, Xcode 26.1, DEVELOPMENT-SWEET, and keep-going enabled.
+- [ ] **Step 1: Push the reviewed parser fix and dispatch KDK-enabled `xnu.yml`** on `audio-poco-f1-adsp-bootstrap` for macOS 26.5, Xcode 26.1, DEVELOPMENT-SWEET, and keep-going enabled. The obsolete run 41482463386 built no steps and was cancelled while queued on the pre-fix SHA.
 - [ ] **Step 2: Use `gh` to inspect the run and artifacts.** Record run ID, pinned SHA, patch-1148 application, empty compiler-error report, kernel hash, and linker warnings.
 - [ ] **Step 3: Package a temporary root-read-only Enxerto image.** Keep `sweetadsp=2`, omit `ufsrw=1`/`rootrw=1`, verify `/chosen` marker and image hash.
 - [ ] **Step 4: Verify Fastboot identity and boot the image temporarily.** Require `product=beryllium` and `unlocked=yes`; start UDP/5140 capture before `fastboot boot`; do not flash any partition.
