@@ -1,0 +1,272 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index f430ce6..c414786 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -27,6 +27,7 @@
+ #include <vm/vm_kern_xnu.h>
+ #include "sweet_board.h"
+ #include "beryllium_adsp.h"
++#include "beryllium_smp2p_negotiation.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern vm_offset_t ml_io_map_unmappable(vm_offset_t, vm_size_t, uint32_t);
+@@ -130,9 +131,18 @@ static bool adsp_smp2p_ambiguous;
+ static bool adsp_smp2p_quiet;
+ static bool adsp_smp2p_header_valid;
+ static uint8_t adsp_remote_smp2p_version;
++static uint8_t adsp_remote_smp2p_features;
+ static uint16_t adsp_remote_smp2p_total_entries;
+ static uint16_t adsp_remote_smp2p_valid_entries;
+ static uint32_t adsp_remote_smp2p_flags;
++static uint32_t adsp_smp2p_out_data_off;
++static uint32_t adsp_smp2p_out_data_size;
++static bool adsp_smp2p_out_valid;
++static bool adsp_smp2p_out_kick_pending;
++static bool adsp_smp2p_negotiated;
++static bool adsp_smp2p_remote_version_wait_reported;
++static bool adsp_smp2p_kick_failure_reported;
++static bool adsp_smp2p_negotiation_failed;
+ 
+ static uint16_t
+ adsp_u16le(const uint8_t *p)
+@@ -630,6 +640,12 @@ adsp_smp2p_out_setup(void)
+ {
+ 	uint32_t data_off = 0, data_size = 0, counts, valid, entry;
+ 	uint8_t version = adsp_remote_smp2p_version;
++	adsp_smp2p_out_valid = false;
++	adsp_smp2p_out_kick_pending = false;
++	adsp_smp2p_negotiated = false;
++	adsp_smp2p_remote_version_wait_reported = false;
++	adsp_smp2p_kick_failure_reported = false;
++	adsp_smp2p_negotiation_failed = false;
+ 	if (adsp_smem == NULL) {
+ 		adsp_smem = (volatile uint8_t *)ml_io_map(ADSP_SMEM_PA, ADSP_SMEM_SIZE);
+ 	}
+@@ -678,6 +694,9 @@ adsp_smp2p_out_setup(void)
+ 	if (!adsp_smp2p_kick()) {
+ 		return false;
+ 	}
++	adsp_smp2p_out_data_off = data_off;
++	adsp_smp2p_out_data_size = data_size;
++	adsp_smp2p_out_valid = true;
+ 	printf("SWEET ADSP: outbound SMP2P item %u version %u pid %u->%u entry master-kernel value=0 (stop bit 0), doorbell bit %u\n",
+ 	    ADSP_SMP2P_OUT_ITEM, version, ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_DOORBELL);
+ 	return true;
+@@ -742,6 +761,125 @@ adsp_smp2p_out_snapshot(const char *stage)
+ 	    (unsigned)valid, (unsigned)total, flags, found ? "present" : "missing", value);
+ }
+ 
++static void
++adsp_smp2p_negotiate_remote(void)
++{
++	uint32_t magic, local_head, pids, counts;
++	uint16_t total, valid;
++	uint8_t local_version, local_features;
++	uint32_t entry;
++	char name[17];
++	enum beryllium_smp2p_action action;
++
++	if (!adsp_smp2p_out_valid || !adsp_smp2p_header_valid ||
++	    adsp_smem == NULL || adsp_smp2p_negotiated ||
++	    adsp_smp2p_negotiation_failed) {
++		return;
++	}
++	if (adsp_smp2p_out_data_size < ADSP_SMP2P_HEADER_BYTES + ADSP_SMP2P_ENTRY_BYTES) {
++		printf("SWEET ADSP: SMP2P negotiation refused undersized AP item %u\n",
++		    ADSP_SMP2P_OUT_ITEM);
++		adsp_smp2p_negotiation_failed = true;
++		return;
++	}
++
++	__asm__ volatile ("dmb sy" ::: "memory");
++	magic = adsp_smem_rd32(adsp_smp2p_out_data_off);
++	local_head = adsp_smem_rd32(adsp_smp2p_out_data_off + 4);
++	pids = adsp_smem_rd32(adsp_smp2p_out_data_off + 8);
++	counts = adsp_smem_rd32(adsp_smp2p_out_data_off + 12);
++	total = (uint16_t)counts;
++	valid = (uint16_t)(counts >> 16);
++	local_version = (uint8_t)local_head;
++	local_features = (uint8_t)(local_head >> 8);
++	if (magic != ADSP_SMP2P_MAGIC ||
++	    (uint16_t)pids != ADSP_LOCAL_PID ||
++	    (uint16_t)(pids >> 16) != ADSP_REMOTE_PID ||
++	    local_version == 0 || local_version > ADSP_SMP2P_VERSION ||
++	    total != ADSP_SMP2P_MAX_ENTRY || valid != 1 ||
++	    adsp_smp2p_out_data_size < ADSP_SMP2P_HEADER_BYTES +
++	    (uint32_t)valid * ADSP_SMP2P_ENTRY_BYTES) {
++		printf("SWEET ADSP: SMP2P negotiation refused malformed AP item %u\n",
++		    ADSP_SMP2P_OUT_ITEM);
++		adsp_smp2p_negotiation_failed = true;
++		return;
++	}
++	entry = adsp_smp2p_out_data_off + ADSP_SMP2P_HEADER_BYTES;
++	for (unsigned i = 0; i < 16; i++) {
++		uint8_t ch = adsp_smem[entry + i];
++		name[i] = ch == 0 ? '\0' : ((ch >= 0x20 && ch <= 0x7e) ? (char)ch : '?');
++	}
++	name[16] = '\0';
++	if (strcmp(name, "master-kernel") != 0) {
++		printf("SWEET ADSP: SMP2P negotiation refused AP item without master-kernel\n");
++		adsp_smp2p_negotiation_failed = true;
++		return;
++	}
++
++	if (adsp_smp2p_out_kick_pending) {
++		if (!adsp_smp2p_kick()) {
++			if (!adsp_smp2p_kick_failure_reported) {
++				printf("SWEET ADSP: SMP2P version-downgrade mailbox kick still pending\n");
++				adsp_smp2p_kick_failure_reported = true;
++			}
++			return;
++		}
++		adsp_smp2p_out_kick_pending = false;
++		printf("SWEET ADSP: SMP2P version-downgrade mailbox kick completed\n");
++	}
++
++	uint32_t remote_head = (uint32_t)adsp_remote_smp2p_version |
++	    ((uint32_t)adsp_remote_smp2p_features << 8);
++	uint32_t old_head = local_head;
++	action = beryllium_smp2p_negotiate_header(&local_head, remote_head);
++	switch (action) {
++	case BERYLLIUM_SMP2P_DOWNGRADE:
++		adsp_smem_wr32(adsp_smp2p_out_data_off + 4, local_head);
++		__asm__ volatile ("dsb sy" ::: "memory");
++		adsp_smp2p_out_kick_pending = true;
++		if (!adsp_smp2p_kick()) {
++			if (!adsp_smp2p_kick_failure_reported) {
++				printf("SWEET ADSP: SMP2P item %u version lowered %u->%u; mailbox kick pending\n",
++				    ADSP_SMP2P_OUT_ITEM, (unsigned)(uint8_t)old_head,
++				    (unsigned)(uint8_t)local_head);
++				adsp_smp2p_kick_failure_reported = true;
++			}
++			return;
++		}
++		adsp_smp2p_out_kick_pending = false;
++		printf("SWEET ADSP: SMP2P item %u version lowered %u->%u; mailbox bit %u kicked\n",
++		    ADSP_SMP2P_OUT_ITEM, (unsigned)(uint8_t)old_head,
++		    (unsigned)(uint8_t)local_head, ADSP_SMP2P_DOORBELL);
++		return;
++	case BERYLLIUM_SMP2P_FEATURES_CHANGED:
++		adsp_smem_wr32(adsp_smp2p_out_data_off + 4, local_head);
++		__asm__ volatile ("dsb sy" ::: "memory");
++		adsp_smp2p_negotiated = true;
++		printf("SWEET ADSP: SMP2P features intersected local=%#x remote=%#x common=%#x at version %u\n",
++		    (unsigned)local_features, (unsigned)adsp_remote_smp2p_features,
++		    (unsigned)(uint8_t)(local_head >> 8), (unsigned)(uint8_t)local_head);
++		return;
++	case BERYLLIUM_SMP2P_COMPLETE:
++		adsp_smp2p_negotiated = true;
++		printf("SWEET ADSP: SMP2P version negotiation complete version %u features=%#x\n",
++		    (unsigned)(uint8_t)local_head, (unsigned)(uint8_t)(local_head >> 8));
++		return;
++	case BERYLLIUM_SMP2P_WAIT_REMOTE:
++		if (!adsp_smp2p_remote_version_wait_reported) {
++			printf("SWEET ADSP: SMP2P remote version %u exceeds local %u; AP item unchanged\n",
++			    (unsigned)adsp_remote_smp2p_version, (unsigned)local_version);
++			adsp_smp2p_remote_version_wait_reported = true;
++		}
++		return;
++	case BERYLLIUM_SMP2P_INVALID:
++	default:
++		printf("SWEET ADSP: SMP2P version negotiation refused invalid versions local=%u remote=%u\n",
++		    (unsigned)local_version, (unsigned)adsp_remote_smp2p_version);
++		adsp_smp2p_negotiation_failed = true;
++		return;
++	}
++}
++
+ static bool
+ adsp_smp2p_prepare(void)
+ {
+@@ -760,6 +898,7 @@ adsp_smp2p_readonly_probe(bool quiet)
+ 	adsp_smp2p_ambiguous = false;
+ 	adsp_smp2p_header_valid = false;
+ 	adsp_remote_smp2p_version = 0;
++	adsp_remote_smp2p_features = 0;
+ 	adsp_remote_smp2p_total_entries = 0;
+ 	adsp_remote_smp2p_valid_entries = 0;
+ 	adsp_remote_smp2p_flags = 0;
+@@ -814,6 +953,7 @@ adsp_smp2p_readonly_probe(bool quiet)
+ 		return;
+ 	}
+ 	adsp_smp2p_header_valid = true;
++	adsp_remote_smp2p_features = (uint8_t)((head1 >> 8) & 0xffu);
+ 	adsp_remote_smp2p_total_entries = total;
+ 	adsp_remote_smp2p_valid_entries = valid;
+ 	adsp_remote_smp2p_flags = flags;
+@@ -1587,6 +1727,9 @@ beryllium_adsp_pas_start(void)
+ 		uint32_t crash_reason_size = 0;
+ 		bool crash_reason_truncated = false;
+ 		adsp_smp2p_readonly_probe(true);
++		if (adsp_smp2p_header_valid) {
++			adsp_smp2p_negotiate_remote();
++		}
+ 		if (adsp_smem != NULL &&
+ 		    adsp_crash_reason_read(crash_reason, &crash_reason_size, &crash_reason_truncated)) {
+ 			if (!crash_reason_seen) {
+diff --git a/bsd/dev/beryllium_smp2p_negotiation.h b/bsd/dev/beryllium_smp2p_negotiation.h
+new file mode 100644
+index 0000000..b229108
+--- /dev/null
++++ b/bsd/dev/beryllium_smp2p_negotiation.h
+@@ -0,0 +1,60 @@
++#ifndef BERYLLIUM_SMP2P_NEGOTIATION_H
++#define BERYLLIUM_SMP2P_NEGOTIATION_H
++
++#include <stdint.h>
++
++#define BERYLLIUM_SMP2P_VERSION_MASK 0x000000ffu
++#define BERYLLIUM_SMP2P_FEATURE_MASK 0x0000ff00u
++#define BERYLLIUM_SMP2P_MAX_VERSION  2u
++
++enum beryllium_smp2p_action {
++	BERYLLIUM_SMP2P_INVALID = 0,
++	BERYLLIUM_SMP2P_WAIT_REMOTE,
++	BERYLLIUM_SMP2P_DOWNGRADE,
++	BERYLLIUM_SMP2P_FEATURES_CHANGED,
++	BERYLLIUM_SMP2P_COMPLETE,
++};
++
++/*
++ * Negotiate the version/features word in an AP-owned SMP2P header.
++ * A lower remote version downgrades the local header; a higher remote
++ * version never upgrades it. Feature intersection is only valid once both
++ * peers advertise the same version.
++ */
++static inline enum beryllium_smp2p_action
++beryllium_smp2p_negotiate_header(uint32_t *local_head, uint32_t remote_head)
++{
++	uint8_t local_version, remote_version;
++	uint8_t local_features, remote_features, common_features;
++	uint32_t current;
++
++	if (local_head == 0) {
++		return BERYLLIUM_SMP2P_INVALID;
++	}
++	current = *local_head;
++	local_version = (uint8_t)(current & BERYLLIUM_SMP2P_VERSION_MASK);
++	remote_version = (uint8_t)(remote_head & BERYLLIUM_SMP2P_VERSION_MASK);
++	if (local_version == 0 || local_version > BERYLLIUM_SMP2P_MAX_VERSION ||
++	    remote_version == 0 || remote_version > BERYLLIUM_SMP2P_MAX_VERSION) {
++		return BERYLLIUM_SMP2P_INVALID;
++	}
++	if (remote_version < local_version) {
++		*local_head = (current & ~BERYLLIUM_SMP2P_VERSION_MASK) | remote_version;
++		return BERYLLIUM_SMP2P_DOWNGRADE;
++	}
++	if (remote_version > local_version) {
++		return BERYLLIUM_SMP2P_WAIT_REMOTE;
++	}
++
++	local_features = (uint8_t)((current & BERYLLIUM_SMP2P_FEATURE_MASK) >> 8);
++	remote_features = (uint8_t)((remote_head & BERYLLIUM_SMP2P_FEATURE_MASK) >> 8);
++	common_features = local_features & remote_features;
++	if (common_features != local_features) {
++		*local_head = (current & ~BERYLLIUM_SMP2P_FEATURE_MASK) |
++		    ((uint32_t)common_features << 8);
++		return BERYLLIUM_SMP2P_FEATURES_CHANGED;
++	}
++	return BERYLLIUM_SMP2P_COMPLETE;
++}
++
++#endif /* BERYLLIUM_SMP2P_NEGOTIATION_H */

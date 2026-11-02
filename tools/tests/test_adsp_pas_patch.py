@@ -14,6 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / "xnu/patches-12377/1132-beryllium-adsp-pas-startup.patch"
 PREFLIGHT_PATCH = ROOT / "xnu/patches-12377/1131-beryllium-adsp-apr.patch"
+NEGOTIATION_PATCH = ROOT / "xnu/patches-12377/1147-beryllium-adsp-smp2p-version-negotiation.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -76,7 +77,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1146:
+                if not 1131 <= number <= 1147:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -165,6 +166,48 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertIn("adsp_smem_alloc_private_item", self.driver)
         self.assertNotIn("ADSP_SMP2P_IN_ITEM", prepare)
         self.assertNotRegex(prepare, r"adsp_smem\s*\[[^]]+\]\s*=")
+
+    def test_smp2p_version_negotiation_is_wired_to_ap_item(self):
+        negotiate = added_function_body(self.latest_driver, "adsp_smp2p_negotiate_remote")
+        start = added_function_body(self.latest_driver, "beryllium_adsp_pas_start")
+        setup = added_function_body(self.latest_driver, "adsp_smp2p_out_setup")
+        self.assertIn("beryllium_smp2p_negotiate_header", negotiate)
+        self.assertIn("ADSP_SMP2P_OUT_ITEM", setup)
+        self.assertIn("adsp_smp2p_out_data_off = data_off", setup)
+        self.assertNotIn("ADSP_SMP2P_IN_ITEM", negotiate)
+        self.assertIn("BERYLLIUM_SMP2P_DOWNGRADE", negotiate)
+        downgrade = negotiate.index("BERYLLIUM_SMP2P_DOWNGRADE")
+        kick = negotiate.index("adsp_smp2p_kick()", downgrade)
+        equal = negotiate.index("BERYLLIUM_SMP2P_FEATURES_CHANGED")
+        self.assertLess(downgrade, kick)
+        self.assertLess(kick, equal)
+        self.assertNotIn("adsp_smp2p_kick()", negotiate[equal:])
+        writes = re.findall(r"adsp_smem_wr(?:8|16|32)\(([^,]+)", negotiate)
+        self.assertEqual(writes, ["adsp_smp2p_out_data_off + 4"] * 2)
+        self.assertNotIn("ADSP_SMP2P_IN_ITEM", negotiate)
+        self.assertLess(start.index("adsp_smp2p_readonly_probe(true)"),
+                        start.index("adsp_smp2p_negotiate_remote()"))
+
+    def test_compiled_smp2p_header_transitions(self):
+        header_path = "bsd/dev/beryllium_smp2p_negotiation.h"
+        harness = ROOT / "tools/tests/test_adsp_smp2p_negotiation.c"
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(NEGOTIATION_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            executable = work / "test-smp2p-negotiation"
+            subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                "-I", str((work / header_path).parent), str(harness),
+                "-o", str(executable),
+            ], check=True, capture_output=True, text=True)
+            result = subprocess.run([str(executable)], check=False,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "SMP2P negotiation transitions passed")
 
     def test_outbound_smp2p_readback_is_passive_and_brackets_pas_start(self):
         snapshot = added_function_body(self.latest_driver, "adsp_smp2p_out_snapshot")
