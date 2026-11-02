@@ -76,7 +76,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1144:
+                if not 1131 <= number <= 1145:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -166,6 +166,24 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertNotIn("ADSP_SMP2P_IN_ITEM", prepare)
         self.assertNotRegex(prepare, r"adsp_smem\s*\[[^]]+\]\s*=")
 
+    def test_outbound_smp2p_readback_is_passive_and_brackets_pas_start(self):
+        snapshot = added_function_body(self.latest_driver, "adsp_smp2p_out_snapshot")
+        start = added_function_body(self.latest_driver, "beryllium_adsp_pas_start")
+        self.assertIn("ADSP_SMP2P_OUT_ITEM", snapshot)
+        self.assertIn("ADSP_LOCAL_PID", snapshot)
+        self.assertIn("ADSP_REMOTE_PID", snapshot)
+        self.assertIn('strcmp(name, "master-kernel")', snapshot)
+        self.assertIn("ch == 0 ? '\\0'", snapshot)
+        self.assertIn("adsp_smem_rd32", snapshot)
+        self.assertNotIn("adsp_smem_wr32", snapshot)
+        self.assertNotIn("adsp_smp2p_kick", snapshot)
+        self.assertLess(start.index("adsp_smp2p_prepare"),
+                        start.index('adsp_smp2p_out_snapshot("after publish")'))
+        self.assertLess(start.index('adsp_smp2p_out_snapshot("after publish")'),
+                        start.index('adsp_pas_call("INIT_IMAGE"'))
+        self.assertLess(start.index('adsp_pas_call("AUTH_AND_RESET"'),
+                        start.index('adsp_smp2p_out_snapshot("after PAS wait")'))
+
     def test_pas_refuses_malformed_or_active_smp2p_lifecycle_state(self):
         start = added_function_body(self.driver, "beryllium_adsp_pas_start")
         prepare = start.index("adsp_smp2p_prepare")
@@ -214,20 +232,15 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertIn("region[off + j] != 0", verifier)
         self.assertIn("readback mismatch", verifier)
 
-    def test_pas_metadata_uses_a_validated_low_physical_dma_window(self):
+    def test_pas_metadata_uses_xnu_managed_contiguous_memory(self):
         allocator = added_function_body(self.latest_driver, "adsp_metadata_alloc_contig")
-        self.assertRegex(self.latest_driver,
-                         r"#define ADSP_PAS_METADATA_PA\s+0xc0000000ull")
-        self.assertRegex(self.latest_driver,
-                         r"#define ADSP_PAS_METADATA_REGION_SIZE\s+0x4000u")
-        self.assertIn('SecureDTGetProperty(chosen, "sweet-adsp-metadata-region"', allocator)
-        self.assertIn("metadata overlaps XNU RAM", allocator)
-        self.assertIn("metadata overlaps or has an invalid framebuffer low pool", allocator)
-        self.assertIn("lowpool_size == 0", allocator)
-        self.assertIn("ml_io_map_unmappable((vm_offset_t)metadata_pa, size, VM_WIMG_WCOMB)",
-                      " ".join(allocator.split()))
-        self.assertIn("dsb sy", allocator)
-        self.assertNotIn("kmem_alloc_contig", allocator)
+        self.assertIn("kmem_alloc_contig(kernel_map", allocator)
+        self.assertIn("pmap_find_phys", allocator)
+        self.assertIn("pmap_set_cache_attributes", allocator)
+        self.assertIn("sweet_dma_sync_va", allocator)
+        self.assertIn("VM_WIMG_WCOMB", allocator)
+        self.assertNotIn("SecureDTGetProperty", allocator)
+        self.assertNotIn("ADSP_PAS_METADATA_PA", self.latest_driver)
 
     def test_payload_metadata_region_marker_is_exact_and_conflict_checked(self):
         root = adt.Node()

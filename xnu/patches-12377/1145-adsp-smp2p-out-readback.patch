@@ -1,0 +1,223 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 440f052..0bac365 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -51,11 +51,6 @@ extern vnode_t rootvnode;
+ #define ADSP_FW_META_MAX         0x00010000u     /* accept program-header tables in first 64 KiB */
+ #define ADSP_PAS_REGION_PA       0x8c500000ull
+ #define ADSP_PAS_REGION_SIZE     0x01e00000u
+-#define ADSP_PAS_METADATA_DMA_LIMIT 0x100000000ull
+-#define ADSP_PAS_METADATA_PA 0xc0000000ull
+-#define ADSP_PAS_METADATA_REGION_SIZE 0x4000u
+-#define ADSP_FB_LOWPOOL_DEF_BASE 0xb0400000ull
+-#define ADSP_FB_LOWPOOL_DEF_SIZE 0x0fc00000ull
+ #define ADSP_PAS_ID              1u
+ #define ADSP_SMEM_PA             0x86000000u
+ #define ADSP_SMEM_SIZE           0x00200000u
+@@ -688,6 +683,65 @@ adsp_smp2p_out_setup(void)
+ 	return true;
+ }
+ 
++static void
++adsp_smp2p_out_snapshot(const char *stage)
++{
++	uint32_t data_off = 0, data_size = 0;
++	uint32_t magic, head1, pids, counts, flags;
++	uint16_t total, valid;
++	char name[17];
++	uint32_t value = 0;
++	bool found = false;
++
++	if (adsp_smem == NULL ||
++	    !adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID,
++	    ADSP_SMP2P_OUT_ITEM, &data_off, &data_size)) {
++		printf("SWEET ADSP: outbound SMP2P readback (%s): item %u unavailable\n",
++		    stage, ADSP_SMP2P_OUT_ITEM);
++		return;
++	}
++	if (data_size < ADSP_SMP2P_HEADER_BYTES) {
++		printf("SWEET ADSP: outbound SMP2P readback (%s): item %u too small (%u bytes)\n",
++		    stage, ADSP_SMP2P_OUT_ITEM, data_size);
++		return;
++	}
++	__asm__ volatile ("dmb sy" ::: "memory");
++	magic = adsp_smem_rd32(data_off);
++	head1 = adsp_smem_rd32(data_off + 4);
++	pids = adsp_smem_rd32(data_off + 8);
++	counts = adsp_smem_rd32(data_off + 12);
++	flags = adsp_smem_rd32(data_off + 16);
++	total = (uint16_t)counts;
++	valid = (uint16_t)(counts >> 16);
++	if (magic != ADSP_SMP2P_MAGIC || (uint8_t)head1 == 0 || (uint8_t)head1 > 2 ||
++	    (uint16_t)pids != ADSP_LOCAL_PID || (uint16_t)(pids >> 16) != ADSP_REMOTE_PID ||
++	    total == 0 || total > ADSP_SMP2P_MAX_ENTRY || valid > total ||
++	    data_size < ADSP_SMP2P_HEADER_BYTES + (uint32_t)valid * ADSP_SMP2P_ENTRY_BYTES) {
++		printf("SWEET ADSP: outbound SMP2P readback (%s): invalid header magic=%#x version=%u pid=%u->%u entries=%u/%u flags=%#x\n",
++		    stage, magic, (unsigned)(uint8_t)head1, (unsigned)(uint16_t)pids,
++		    (unsigned)(uint16_t)(pids >> 16), (unsigned)valid, (unsigned)total, flags);
++		return;
++	}
++	for (uint16_t i = 0; i < valid; i++) {
++		uint32_t ent = data_off + ADSP_SMP2P_HEADER_BYTES +
++		    (uint32_t)i * ADSP_SMP2P_ENTRY_BYTES;
++		for (unsigned c = 0; c < 16; c++) {
++			uint8_t ch = adsp_smem[ent + c];
++			name[c] = ch == 0 ? '\0' : ((ch >= 0x20 && ch <= 0x7e) ? (char)ch : '?');
++		}
++		name[16] = '\0';
++		if (strcmp(name, "master-kernel") == 0) {
++			value = adsp_smem_rd32(ent + 16);
++			found = true;
++			break;
++		}
++	}
++	printf("SWEET ADSP: outbound SMP2P readback (%s): item %u version %u pid %u->%u entries %u/%u flags %#x master-kernel=%s value=%#x\n",
++	    stage, ADSP_SMP2P_OUT_ITEM, (unsigned)(uint8_t)head1,
++	    (unsigned)(uint16_t)pids, (unsigned)(uint16_t)(pids >> 16),
++	    (unsigned)valid, (unsigned)total, flags, found ? "present" : "missing", value);
++}
++
+ static bool
+ adsp_smp2p_prepare(void)
+ {
+@@ -1323,105 +1377,37 @@ adsp_check_carveout_marker(void)
+ 	return true;
+ }
+ 
+-static bool
+-adsp_ranges_overlap(uint64_t a_base, uint64_t a_size, uint64_t b_base, uint64_t b_size)
+-{
+-	if (a_size == 0 || b_size == 0) {
+-		return false;
+-	}
+-	if (a_base > UINT64_MAX - a_size || b_base > UINT64_MAX - b_size) {
+-		return true;
+-	}
+-	return a_base < b_base + b_size && b_base < a_base + a_size;
+-}
+-
+ static bool
+ adsp_metadata_alloc_contig(const struct adsp_full_bundle *bundle, vm_offset_t *kva_out, uint64_t *pa_out)
+ {
+-	DTEntry chosen = NULL, disp = NULL;
+-	void const *prop = NULL;
+-	unsigned prop_size = 0;
+-	uint8_t marker[16];
+-	uint64_t metadata_pa, region_size;
+-	uint64_t lowpool_base = ADSP_FB_LOWPOOL_DEF_BASE;
+-	uint64_t lowpool_size = ADSP_FB_LOWPOOL_DEF_SIZE;
+-	uint32_t arg = 0;
++	vm_offset_t kva = 0;
+ 	vm_size_t size = round_page(bundle->metadata_size);
+-	vm_offset_t kva;
+-
+-	*kva_out = 0;
+-	*pa_out = 0;
+-	if (bundle->metadata_size == 0 || size == 0 || size > ADSP_PAS_METADATA_REGION_SIZE) {
+-		printf("SWEET ADSP: PAS metadata size exceeds the candidate low-memory DMA page\n");
+-		return false;
+-	}
+-	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
+-	    SecureDTGetProperty(chosen, "sweet-adsp-metadata-region", &prop, &prop_size) != kSuccess ||
+-	    prop == NULL || prop_size != sizeof(marker)) {
+-		printf("SWEET ADSP: /chosen/sweet-adsp-metadata-region marker missing or malformed\n");
+-		return false;
+-	}
+-	memcpy(marker, prop, sizeof(marker));
+-	metadata_pa = adsp_u64le(marker);
+-	region_size = adsp_u64le(marker + 8);
+-	if (metadata_pa != ADSP_PAS_METADATA_PA || region_size != ADSP_PAS_METADATA_REGION_SIZE ||
+-	    (metadata_pa & PAGE_MASK) != 0 || metadata_pa >= ADSP_PAS_METADATA_DMA_LIMIT ||
+-	    region_size > ADSP_PAS_METADATA_DMA_LIMIT - metadata_pa) {
+-		printf("SWEET ADSP: low-memory PAS metadata marker is not the candidate Beryllium DMA page\n");
++	if (kmem_alloc_contig(kernel_map, &kva, size, PAGE_MASK, 0, 0,
++	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("SWEET ADSP: contiguous PAS metadata allocation failed\n");
+ 		return false;
+ 	}
+-	if (gPhysSize == 0 || (uint64_t)gPhysBase > UINT64_MAX - (uint64_t)gPhysSize ||
+-	    adsp_ranges_overlap(metadata_pa, region_size, (uint64_t)gPhysBase, (uint64_t)gPhysSize)) {
+-		printf("SWEET ADSP: PAS metadata overlaps XNU RAM %#llx+%#llx; refusing DMA mapping\n",
+-		    (unsigned long long)gPhysBase, (unsigned long long)gPhysSize);
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)kva);
++	if (pn == 0) {
++		printf("SWEET ADSP: PAS metadata page has no physical address\n");
+ 		return false;
+ 	}
+-	if (adsp_ranges_overlap(metadata_pa, region_size, ADSP_PAS_REGION_PA, ADSP_PAS_REGION_SIZE) ||
+-	    adsp_ranges_overlap(metadata_pa, region_size, ADSP_SMEM_PA, ADSP_SMEM_SIZE)) {
+-		printf("SWEET ADSP: PAS metadata overlaps the ADSP carveout or SMEM; refusing DMA mapping\n");
+-		return false;
+-	}
+-	if (SecureDTLookupEntry(NULL, "/arm-io/disp0", &disp) == kSuccess) {
+-		prop = NULL;
+-		prop_size = 0;
+-		if (SecureDTGetProperty(disp, "sweet-lowpool", &prop, &prop_size) == kSuccess) {
+-			if (prop == NULL || prop_size != sizeof(marker)) {
+-				printf("SWEET ADSP: framebuffer low-pool marker is malformed; refusing PAS metadata page\n");
+-				return false;
+-			}
+-			memcpy(marker, prop, sizeof(marker));
+-			lowpool_base = adsp_u64le(marker);
+-			lowpool_size = adsp_u64le(marker + 8);
++	for (unsigned i = 1; i < size / PAGE_SIZE; i++) {
++		if (pmap_find_phys(kernel_pmap, (addr64_t)(kva + i * PAGE_SIZE)) != pn + i) {
++			printf("SWEET ADSP: PAS metadata pages are not physically contiguous\n");
++			return false;
+ 		}
+ 	}
+-	arg = 0;
+-	if (PE_parse_boot_argn("sweetfb_lowpoolbase", &arg, sizeof(arg)) && arg != 0) {
+-		lowpool_base = arg;
+-	}
+-	arg = 0;
+-	if (PE_parse_boot_argn("sweetfb_lowpool", &arg, sizeof(arg)) && arg != 0) {
+-		lowpool_size = (uint64_t)arg << 20;
+-	}
+-	if (lowpool_size == 0 || lowpool_base > UINT64_MAX - lowpool_size ||
+-	    adsp_ranges_overlap(metadata_pa, region_size, lowpool_base, lowpool_size)) {
+-		printf("SWEET ADSP: PAS metadata overlaps or has an invalid framebuffer low pool; refusing DMA mapping\n");
+-		return false;
+-	}
+-
+-	/* The page is outside XNU's managed RAM. Map it Normal non-cacheable
+-	 * (WCOMB in this board config) without a managed-page alias. */
+-	kva = ml_io_map_unmappable((vm_offset_t)metadata_pa, size, VM_WIMG_WCOMB);
+-	if (kva == 0) {
+-		printf("SWEET ADSP: candidate low-memory PAS metadata page mapping failed\n");
+-		return false;
+-	}
+-	bzero((void *)kva, size);
+ 	memcpy((void *)kva, bundle->metadata, bundle->metadata_size);
+-	__asm__ volatile ("dsb sy" ::: "memory");
++	sweet_dma_sync_va((const void *)kva, size);
++	for (unsigned i = 0; i < size / PAGE_SIZE; i++) {
++		pmap_set_cache_attributes(pn + i, VM_WIMG_WCOMB);
++	}
++	sweet_dma_sync_va((const void *)kva, size);
+ 	*kva_out = kva;
+-	*pa_out = metadata_pa;
+-	printf("SWEET ADSP: PAS metadata %lu bytes at candidate PA %#llx (%#lx-byte low DMA page), non-cacheable\n",
+-	    (unsigned long)bundle->metadata_size, (unsigned long long)metadata_pa, (unsigned long)size);
++	*pa_out = ptoa_64(pn);
++	printf("SWEET ADSP: PAS metadata %lu bytes at PA %#llx, contiguous and non-cacheable\n",
++	    (unsigned long)bundle->metadata_size, (unsigned long long)*pa_out);
+ 	return true;
+ }
+ 
+@@ -1480,6 +1466,7 @@ beryllium_adsp_pas_start(void)
+ 		printf("SWEET ADSP: outbound SMP2P preparation failed; no PAS call made\n");
+ 		goto out;
+ 	}
++	adsp_smp2p_out_snapshot("after publish");
+ 	qmp_attempted = true;
+ 	if (!beryllium_qmp_set_adsp_load_state(true)) {
+ 		printf("SWEET ADSP: AOSS QMP load_state=on failed\n");
+@@ -1634,6 +1621,7 @@ beryllium_adsp_pas_start(void)
+ 		}
+ 		delay(10000);
+ 	}
++	adsp_smp2p_out_snapshot("after PAS wait");
+ 	if (!smp2p_header_reported) {
+ 		printf("SWEET ADSP: SMP2P item 443 valid header was not observed during the 5-second window\n");
+ 	}
