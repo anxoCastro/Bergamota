@@ -1,11 +1,17 @@
 diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 --- a/bsd/dev/beryllium_adsp.c
 +++ b/bsd/dev/beryllium_adsp.c
-@@ -1440,3 +1439,0 @@
+@@ -1437,17 +1437,13 @@
+ 		goto out;
+ 	}
+ 	region_mapped = true;
 -	for (uint32_t off = 0; off < ADSP_PAS_REGION_SIZE; off += sizeof(uint32_t)) {
 -		*(volatile uint32_t *)(region + off) = 0;
 -	}
-@@ -1447,4 +1444,3 @@
+ 	for (unsigned i = 0; i < bundle.segment_count; i++) {
+ 		const struct adsp_full_segment *seg = &bundle.segments[i];
+ 		uint64_t reloc_base = bundle.relocatable ? bundle.min_addr : ADSP_PAS_REGION_PA;
+ 		uint64_t off = (uint64_t)seg->paddr - reloc_base;
 -		if (seg->filesz == 0) {
 -			continue;
 -		}
@@ -13,8 +19,13 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +		if (seg->filesz > seg->memsz || off > ADSP_PAS_REGION_SIZE ||
 +		    seg->memsz > ADSP_PAS_REGION_SIZE - off ||
 +		    (seg->filesz != 0 && seg->data == NULL)) {
-@@ -1461,0 +1458,12 @@
-+		}
+ 			printf("SWEET ADSP: validated segment %u failed final carveout bounds check\n", seg->index);
+ 			goto out;
+ 		}
+@@ -1460,6 +1456,18 @@
+ 		for (; j < seg->filesz; j++) {
+ 			*(volatile uint8_t *)(region + off + j) = seg->data[j];
+ 		}
 +		uint64_t zero_off = off + seg->filesz;
 +		uint64_t zero_size = seg->memsz - seg->filesz;
 +		while (zero_size != 0 && (zero_off & (sizeof(uint32_t) - 1)) != 0) {
@@ -26,3 +37,7 @@ diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
 +		}
 +		for (; zero_size != 0; zero_size--, zero_off++) {
 +			*(volatile uint8_t *)(region + zero_off) = 0;
++		}
+ 	}
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	if (!adsp_verify_loaded_segments(&bundle, (volatile uint8_t *)region)) {
