@@ -1,0 +1,93 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 9f626e8..8a1864f 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2440,6 +2440,7 @@ adsp_apr_open_channel(const struct adsp_glink_survey_items *items,
+ {
+ 	uint8_t open_frame[8 + BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES] = { 0 };
+ 	bool local_open_ack = false, remote_open = false;
++	bool ignored_fastrpc_open = false;
+ 	if (items == NULL || state == NULL) {
+ 		return false;
+ 	}
+@@ -2484,7 +2485,12 @@ adsp_apr_open_channel(const struct adsp_glink_survey_items *items,
+ 		uint16_t param1 = beryllium_adsp_apr_get16(frame + 2);
+ 		uint32_t param2 = beryllium_adsp_apr_get32(frame + 4);
+ 		if (command == BERYLLIUM_ADSP_GLINK_CMD_OPEN) {
+-			if (remote_open || param1 == 0 ||
++			if (!ignored_fastrpc_open && !remote_open && param1 != 0 &&
++			    beryllium_adsp_apr_fastrpc_open_valid(frame, frame_bytes, param1)) {
++				ignored_fastrpc_open = true;
++				printf("SWEET ADSP: APR GLINK ignoring unhandled peer channel fastrpcglink-apps-dsp remote-id=%u; no OPEN_ACK sent\n",
++				    (unsigned)param1);
++			} else if (remote_open || param1 == 0 ||
+ 			    !beryllium_adsp_apr_open_name_valid(frame, frame_bytes, param1)) {
+ 				size_t dump_bytes = frame_bytes > 8 ? frame_bytes - 8 : 0;
+ 				if (dump_bytes > 32) {
+@@ -2498,17 +2504,18 @@ adsp_apr_open_channel(const struct adsp_glink_survey_items *items,
+ 				}
+ 				printf("\n");
+ 				return false;
+-			}
+-			state->remote_channel_id = param1;
+-			if (!adsp_apr_send_control(items, BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK,
+-			    state->remote_channel_id, 0)) {
+-				printf("SWEET ADSP: APR GLINK OPEN_ACK for remote id %u was not sent\n",
++			} else {
++				state->remote_channel_id = param1;
++				if (!adsp_apr_send_control(items, BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK,
++				    state->remote_channel_id, 0)) {
++					printf("SWEET ADSP: APR GLINK OPEN_ACK for remote id %u was not sent\n",
++					    state->remote_channel_id);
++					return false;
++				}
++				remote_open = true;
++				printf("SWEET ADSP: APR GLINK peer opened apr_audio_svc remote-id=%u; OPEN_ACK sent\n",
+ 				    state->remote_channel_id);
+-				return false;
+ 			}
+-			remote_open = true;
+-			printf("SWEET ADSP: APR GLINK peer opened apr_audio_svc remote-id=%u; OPEN_ACK sent\n",
+-			    state->remote_channel_id);
+ 		} else if (command == BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK) {
+ 			if (param1 != ADSP_APR_LOCAL_CHANNEL || param2 != 0 || local_open_ack) {
+ 				printf("SWEET ADSP: APR GLINK OPEN_ACK rejected channel id=%u value=%#x\n",
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index 70324ad..428153f 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -16,6 +16,8 @@
+ #define BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT 0x000110e8u
+ #define BERYLLIUM_ADSP_APR_CHANNEL_NAME "apr_audio_svc"
+ #define BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES 14u
++#define BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME "fastrpcglink-apps-dsp"
++#define BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME_BYTES 22u
+ #define BERYLLIUM_ADSP_APR_INTENT_BYTES 512u
+ #define BERYLLIUM_ADSP_APR_INTENT_COUNT 20u
+ #define BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS 64u
+@@ -176,6 +178,25 @@ beryllium_adsp_apr_open_name_valid(const uint8_t *frame, size_t frame_bytes,
+ 	return true;
+ }
+ 
++static inline bool
++beryllium_adsp_apr_fastrpc_open_valid(const uint8_t *frame, size_t frame_bytes,
++	uint16_t remote_channel_id)
++{
++	if (frame == NULL || remote_channel_id == 0 || frame_bytes != 32 ||
++	    beryllium_adsp_apr_get16(frame) != BERYLLIUM_ADSP_GLINK_CMD_OPEN ||
++	    beryllium_adsp_apr_get16(frame + 2) != remote_channel_id ||
++	    (beryllium_adsp_apr_get32(frame + 4) & 0xffffu) !=
++	    BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME_BYTES) {
++		return false;
++	}
++	for (size_t i = 0; i < BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME_BYTES; i++) {
++		if (frame[8 + i] != (uint8_t)BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME[i]) {
++			return false;
++		}
++	}
++	return true;
++}
++
+ static inline bool
+ beryllium_adsp_apr_parse_remote_intents(const uint8_t *frame, size_t frame_bytes,
+ 	uint16_t remote_channel_id, struct beryllium_adsp_glink_intent *intents,

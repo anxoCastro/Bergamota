@@ -39,6 +39,7 @@ main(void)
 {
 	uint8_t request[BERYLLIUM_ADSP_APR_HEADER_BYTES];
 	uint8_t open_frame[24] = { 0 };
+	uint8_t fastrpc_open_frame[32] = { 0 };
 	uint8_t intent_frame[24] = { 0 };
 	uint8_t data_frame[40] = { 0 };
 	uint8_t response[BERYLLIUM_ADSP_APR_MAX_DATA_BYTES];
@@ -80,6 +81,40 @@ main(void)
 	    &frame_bytes));
 	assert(frame_bytes == sizeof(open_frame));
 	assert(beryllium_adsp_apr_open_name_valid(open_frame, frame_bytes, 7));
+
+	put16(fastrpc_open_frame, BERYLLIUM_ADSP_GLINK_CMD_OPEN);
+	put16(fastrpc_open_frame + 2, 1);
+	assert(sizeof(BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME) ==
+	    BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME_BYTES);
+	put32(fastrpc_open_frame + 4,
+	    BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME_BYTES);
+	memcpy(fastrpc_open_frame + 8, BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME,
+	    BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME_BYTES);
+	assert(fastrpc_open_frame[29] == 0);
+	assert(beryllium_adsp_apr_fastrpc_open_valid(fastrpc_open_frame,
+	    sizeof(fastrpc_open_frame), 1));
+	assert(beryllium_adsp_apr_glink_frame_bytes(fastrpc_open_frame,
+	    sizeof(fastrpc_open_frame) - 8, &frame_bytes) ==
+	    BERYLLIUM_ADSP_GLINK_FRAME_INCOMPLETE);
+	assert(!beryllium_adsp_apr_fastrpc_open_valid(fastrpc_open_frame,
+	    sizeof(fastrpc_open_frame) - 8, 1));
+	assert(!beryllium_adsp_apr_fastrpc_open_valid(fastrpc_open_frame,
+	    sizeof(fastrpc_open_frame), 0));
+	assert(!beryllium_adsp_apr_fastrpc_open_valid(fastrpc_open_frame,
+	    sizeof(fastrpc_open_frame), 2));
+	put32(fastrpc_open_frame + 4,
+	    BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME_BYTES - 1);
+	assert(!beryllium_adsp_apr_fastrpc_open_valid(fastrpc_open_frame,
+	    sizeof(fastrpc_open_frame), 1));
+	put32(fastrpc_open_frame + 4,
+	    BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME_BYTES);
+	fastrpc_open_frame[8] ^= 1;
+	assert(!beryllium_adsp_apr_fastrpc_open_valid(fastrpc_open_frame,
+	    sizeof(fastrpc_open_frame), 1));
+	fastrpc_open_frame[8] ^= 1;
+	fastrpc_open_frame[31] = 1;
+	assert(beryllium_adsp_apr_fastrpc_open_valid(fastrpc_open_frame,
+	    sizeof(fastrpc_open_frame), 1));
 	put32(open_frame + 4, BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES - 1);
 	assert(!beryllium_adsp_apr_open_name_valid(open_frame, frame_bytes, 7));
 	put32(open_frame + 4, 0x10000u | BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES);

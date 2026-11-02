@@ -19,6 +19,7 @@ GLINK_PATCH = ROOT / "xnu/patches-12377/1148-beryllium-adsp-glink-readonly-prefl
 GLINK_MODE3_PATCH = ROOT / "xnu/patches-12377/1149-beryllium-adsp-glink-mode3.patch"
 APR_MODE4_PATCH = ROOT / "xnu/patches-12377/1150-beryllium-adsp-apr-q6core-mode4.patch"
 APR_OPEN_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1151-beryllium-adsp-apr-open-diagnostics.patch"
+FASTRPC_OPEN_PATCH = ROOT / "xnu/patches-12377/1152-beryllium-adsp-fastrpc-peer-open.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -81,7 +82,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1151:
+                if not 1131 <= number <= 1152:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -644,6 +645,22 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertIn("for (size_t i = 0; i < dump_bytes; i++)", open_body)
         self.assertIn("return false", open_body)
 
+    def test_known_fastrpc_peer_open_is_consumed_without_ack(self):
+        open_body = added_function_body(self.latest_driver, "adsp_apr_open_channel")
+        self.assertIn("bool ignored_fastrpc_open = false", open_body)
+        self.assertIn("beryllium_adsp_apr_fastrpc_open_valid", open_body)
+        self.assertIn("ignoring unhandled peer channel fastrpcglink-apps-dsp", open_body)
+        self.assertIn("ignored_fastrpc_open = true", open_body)
+        fast_open_start = open_body.index("if (!ignored_fastrpc_open")
+        fast_open_end = open_body.index("} else if (remote_open", fast_open_start)
+        fast_open = open_body[fast_open_start:fast_open_end]
+        self.assertIn("!remote_open", fast_open)
+        self.assertNotIn("adsp_apr_send_control", fast_open)
+        self.assertNotIn("return false", fast_open)
+        self.assertIn("adsp_glink_rx_consume_frame(items, tail, frame_bytes)", open_body)
+        self.assertLess(open_body.index("adsp_glink_rx_consume_frame(items, tail, frame_bytes)"),
+                        open_body.index("if (local_open_ack && remote_open)"))
+
 
 class AdspAprMode4Tests(unittest.TestCase):
     def test_compiled_apr_mode4_helpers(self):
@@ -667,6 +684,9 @@ class AdspAprMode4Tests(unittest.TestCase):
                            check=True, capture_output=True, text=True)
             subprocess.run(["git", "apply", f"--include={glink_header_path}",
                             str(APR_MODE4_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(FASTRPC_OPEN_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             subprocess.run([

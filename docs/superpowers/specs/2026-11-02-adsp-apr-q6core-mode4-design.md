@@ -9,6 +9,8 @@ The new `sweetadsp=4` mode runs the existing PAS start and Q6V5-ready gate, perf
 ## Protocol evidence
 
 - Linux SDM845 DTS binds the ADSP edge to `apr_audio_svc` and sets `qcom,intents = <512 20>`. The probe mirrors those receive-intent dimensions.
+- A Beryllium mode-4 capture observed a peer OPEN on the same edge with remote ID 1, length 22, and a 32-byte aligned frame. Its NUL-terminated name is `fastrpcglink-apps-dsp`. Linux SDM845 DTS declares this as a sibling of `apr_audio_svc`; XNU has no FastRPC endpoint.
+- **Inference:** consume one exact FastRPC sibling OPEN without ACK, then continue waiting for APR. This is the endpoint-driven GLINK OPEN behavior: the unimplemented sibling is not acknowledged or registered as an XNU channel. Reject duplicate FastRPC OPENs and all other unknown or malformed OPENs.
 - Linux native GLINK sends an `OPEN` request with a NUL-terminated channel name, waits for both a matching remote `OPEN_ACK` and a remote `OPEN`, then acknowledges the remote's channel ID. It advertises local intents as `(size, id)` pairs and sends data through a remote intent ID.
 - Linux Q6Core sends a 20-byte APR header-only sequential command with opcode `0x001292c`; it waits 100 ms for a response. A firmware-version response uses opcode `0x001292d` and carries five 32-bit version/count fields followed by three 32-bit fields per service.
 - APR header size is 20 bytes. The request uses type `SEQ_CMD`, version 0, source domain APPS (5), destination domain ADSP (4), and service ID 3 at both ends. A basic APR result uses opcode `0x000110e8` and carries the original opcode and status.
@@ -19,7 +21,7 @@ References: [SDM845 DTS](https://github.com/torvalds/linux/blob/master/arch/arm6
 
 - Keep `sweetadsp=0`, `1`, `2`, and `3` behavior unchanged; only explicit `sweetadsp=4` requests APR.
 - Enter APR only after PAS succeeds, Q6V5 ready is observed, and mode 3's base VERSION exchange completes.
-- Open only the exact NUL-terminated channel name `apr_audio_svc` (14 bytes including NUL), local channel ID 1. Require both the matching peer `OPEN` and peer `OPEN_ACK`; send one `OPEN_ACK` for the peer ID.
+- Open only the exact NUL-terminated channel name `apr_audio_svc` (14 bytes including NUL), local channel ID 1. Require both the matching peer `OPEN` and peer `OPEN_ACK`; send one `OPEN_ACK` for the peer ID. During this wait, consume at most one exact `fastrpcglink-apps-dsp` sibling OPEN without ACK.
 - Mirror SDM845's `<512 20>` receive-intent parameters using AP-local buffers and IDs 1–20. Never write GLINK SMEM descriptor/FIFO indices other than AP-owned TX head and RX tail, or any remote-owned item.
 - Parse remote intents only for the opened peer channel, with a bounded count and sizes. Send the APR request only when the peer has offered an intent large enough for 20 bytes; do not issue `RX_INTENT_REQ` in this version.
 - Send exactly one APR `AVCS_CMD_GET_FWK_VERSION` request: 20 bytes, service 3, APPS 5 to ADSP 4, zero ports/token, opcode `0x001292c`.
@@ -31,7 +33,7 @@ References: [SDM845 DTS](https://github.com/torvalds/linux/blob/master/arch/arm6
 ## Safety gates
 
 1. The mode-4 path runs only after mode 3 returns a valid base VERSION_ACK; modes 0–3 are unchanged.
-2. All incoming control frames are length-checked and 8-byte aligned before advancing RX tail. Unknown commands or malformed frames remain unread and terminate the probe.
+2. All incoming control frames are length-checked and 8-byte aligned before advancing RX tail. Unknown commands or malformed frames remain unread and terminate the probe. The only exception is one exact, nonzero-ID `fastrpcglink-apps-dsp` OPEN; consume it without ACK, then keep waiting for APR. A duplicate remains unread and terminates the probe.
    For a rejected peer `OPEN`, diagnostics include its command, remote ID, `param2`, total frame length, and at most 32 bytes of frame data. Logging does not consume the frame or change the rejection path.
 3. The only transmitted APR command is the zero-initialized 20-byte Q6Core version query. No AFE/ASM service ID or mutating opcode is sent.
 4. RX data is accepted only for the exact channel ID, local receive-intent ID, single-fragment size fields (`left_size == 0`), and a bounded 512-byte buffer. The APR parser must validate the full envelope before reporting data.

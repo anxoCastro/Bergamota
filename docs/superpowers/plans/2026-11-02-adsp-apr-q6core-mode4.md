@@ -66,9 +66,47 @@
 
 - [x] Preserve the rejection behavior and add a bounded log of command, remote ID, `param2`, frame length, and at most 32 wire-data bytes in patch 1151.
 - [x] Extend ordered-patch contract coverage through 1151; focused test passes and full test discovery passes 39/39.
-- [ ] Commit and push patch 1151, tests, plan, design, and `NOTES.md`; dispatch the XNU 26.5 KDK build with `gh` and verify patch application, artifact checksums, and empty `errors.txt`.
-- [ ] Once exactly one unlocked `beryllium` Fastboot device enumerates, boot a new temporary image with `fastboot boot` and a fresh UDP capture. Record peer OPEN wire fields and the exact boot continuation.
-- [ ] Use the observed wire frame to select the next APR protocol change; do not infer channel success or audio from GLINK base negotiation alone.
+- [x] Commit and push patch 1151, tests, plan, design, and `NOTES.md`; dispatch the XNU 26.5 KDK build with `gh` and verify patch application, artifact checksums, and empty `errors.txt` (commit `4cfcb8f`; CI run `41536582931`, success).
+- [x] Boot a new temporary image with `fastboot boot` after verifying exactly one unlocked `beryllium` target; capture the peer OPEN (log `.superpowers/ci/41536582931/live-udp-apr-open-diagnostics.log`, SHA-256 `4aaaaf8b6e7acd2a0ef1a6df4c86c1e75765240fe449f18c596232282f4e6be3`). This was RAM-only; no partition was flashed.
+- [x] Identify the observed OPEN as `fastrpcglink-apps-dsp`, a sibling of `apr_audio_svc` on the Linux SDM845 ADSP edge.
+
+## Follow-up: Ignore one unsupported FastRPC sibling OPEN
+
+**Observation:** patch 1151 captured command 2, remote ID 1, `param2=22`, a 32-byte frame, and the NUL-padded name `fastrpcglink-apps-dsp`. XNU has no FastRPC endpoint, while Linux DTS declares this channel beside `apr_audio_svc` on the same edge.
+
+- [x] Add a compiled helper test for exact FastRPC name, channel ID, length, full aligned frame, and truncated frame.
+- [x] Add a driver contract test proving one known FastRPC OPEN is consumed without ACK before the APR wait continues.
+- [x] Implement patch 1152: recognize the exact sibling name, consume at most one such frame by advancing AP-owned RX tail, and send no ACK. Duplicate, malformed, and unknown OPEN frames still reject.
+- [x] Run focused and full test discovery; verify the ordered patch series through 1152 and inspect ownership/call order. Focused tests passed 2/2; full `python3 -I -m unittest discover -s tools/tests -v` passed 40/40.
+- [ ] Commit and push patch 1152, tests, design, plan, and `NOTES.md`; run the XNU 26.5 KDK build with `gh` and verify the artifact.
+- [ ] Package a read-only mode-4 image, recheck Fastboot product/unlocked state, and RAM-boot with a fresh UDP capture. Record whether APR `OPEN_ACK`, remote intents, Q6Core request/response, and boot continuation are observed. Do not infer audio from channel discovery.
+
+## Task 6: Consume one unsupported FastRPC sibling OPEN
+
+**Files:**
+- `xnu/patches-12377/1152-beryllium-adsp-fastrpc-peer-open.patch`
+- `tools/tests/test_adsp_apr_mode4.c`
+- `tools/tests/test_adsp_pas_patch.py`
+- This plan, the mode-4 design, and `NOTES.md`
+
+**Interfaces:** patch 1151 logs a bounded wire frame; its device capture identifies the peer OPEN name and shape. The new driver path must consume only that exact frame and preserve APR handshake state.
+
+- [x] Add failing tests for the exact FastRPC name, nonzero/matching remote ID, length, aligned frame, truncation, no ACK, and AP-owned RX consumption.
+- [x] Add a helper that recognizes only `fastrpcglink-apps-dsp` and a driver branch that ignores at most one such OPEN without ACK.
+- [x] Keep APR OPEN validation and ACK behavior unchanged; reject duplicates, malformed frames, and other channel names.
+- [x] Run focused tests, ordered patch application through 1152, and full repository test discovery.
+- [ ] Commit and push the implementation and handoff.
+
+**Expected:** tests fail against patch 1151, pass with patch 1152; `python3 -I -m unittest discover -s tools/tests -v` passes.
+
+## Task 7: Build and RAM-boot the FastRPC OPEN change
+
+- [ ] Dispatch and verify the XNU 26.5 KDK build with `gh`; confirm patch application, checksum manifest and empty `errors.txt`.
+- [ ] Package a read-only `sweetadsp=4` image, then verify kernel/payload bytes, ADT regions and the absence of root-write flags.
+- [ ] Immediately before boot, confirm one unlocked Fastboot target with product `beryllium`.
+- [ ] Start a fresh UDP/5140 capture and use only `fastboot boot`; record APR channel progress and boot continuation. Do not flash any partition.
+
+**Expected:** the device consumes the recognized sibling OPEN without an ACK, then continues waiting for `apr_audio_svc`; boot outcome must be reported only from the captured evidence.
 
 ## Completion report
 
