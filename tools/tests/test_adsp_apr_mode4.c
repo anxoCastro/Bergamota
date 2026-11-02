@@ -181,13 +181,16 @@ main(void)
 	response[0] ^= 1;
 
 	put16(response + 2, 63);
-	assert(beryllium_adsp_apr_parse_response(response, sizeof(response), &parsed) ==
+	assert(beryllium_adsp_apr_parse_response(response, 64, &parsed) ==
 	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
 	put16(response + 2, 64);
 	put32(response + 36, 3);
-	assert(beryllium_adsp_apr_parse_response(response, sizeof(response), &parsed) ==
+	assert(beryllium_adsp_apr_parse_response(response, 64, &parsed) ==
 	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
-	put32(response + 36, 0);
+	make_apr_header(response, 52, BERYLLIUM_ADSP_APR_RSP_GET_FWK_VERSION);
+	put32(response + 36, 2);
+	assert(beryllium_adsp_apr_parse_response(response, 52, &parsed) ==
+	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
 	make_apr_header(response, sizeof(response),
 	    BERYLLIUM_ADSP_APR_RSP_GET_FWK_VERSION);
 	put32(response + 36,
