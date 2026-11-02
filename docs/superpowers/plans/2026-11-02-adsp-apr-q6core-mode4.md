@@ -95,7 +95,7 @@
 - [x] Add a helper that recognizes only `fastrpcglink-apps-dsp` and a driver branch that ignores at most one such OPEN without ACK.
 - [x] Keep APR OPEN validation and ACK behavior unchanged; reject duplicates, malformed frames, and other channel names.
 - [x] Run focused tests, ordered patch application through 1152, and full repository test discovery.
-- [ ] Commit and push the implementation and handoff.
+- [x] Commit and push the implementation and handoff (`b611f37`).
 
 **Expected:** tests fail against patch 1151, pass with patch 1152; `python3 -I -m unittest discover -s tools/tests -v` passes.
 
