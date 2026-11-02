@@ -76,7 +76,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1145:
+                if not 1131 <= number <= 1146:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -241,6 +241,13 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertIn("VM_WIMG_WCOMB", allocator)
         self.assertNotIn("SecureDTGetProperty", allocator)
         self.assertNotIn("ADSP_PAS_METADATA_PA", self.latest_driver)
+
+    def test_permanent_pas_metadata_is_not_unmapped(self):
+        start = added_function_body(self.latest_driver, "beryllium_adsp_pas_start")
+        self.assertIn("KMA_PERMANENT", added_function_body(self.latest_driver,
+                                                           "adsp_metadata_alloc_contig"))
+        self.assertNotIn("ml_io_unmap(metadata_kva", start)
+        self.assertIn("ml_io_unmap(region, ADSP_PAS_REGION_SIZE)", start)
 
     def test_payload_metadata_region_marker_is_exact_and_conflict_checked(self):
         root = adt.Node()

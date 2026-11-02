@@ -1,0 +1,15 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 0bac365..f430ce6 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -1642,9 +1642,7 @@ beryllium_adsp_pas_start(void)
+ 	adsp_smp2p_readonly_probe(false);
+ 	adsp_post_start_diagnostics("ready timeout");
+ out:
+-	if (metadata_kva != 0) {
+-		ml_io_unmap(metadata_kva, round_page(bundle.metadata_size));
+-	}
++	/* metadata_kva came from KMA_PERMANENT and must not be unmapped. */
+ 	if (region_mapped) {
+ 		ml_io_unmap(region, ADSP_PAS_REGION_SIZE);
+ 	}
