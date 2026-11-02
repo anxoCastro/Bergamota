@@ -2,6 +2,11 @@
 
 ## Agent handoff / active work (2026-11-02, latest)
 
+### >>> 2026-11-02: requested retest could not start; device is not in Fastboot <<<
+* **Observed host state:** after the user requested another test, `fastboot devices -l` returned no device and `adb devices -l` listed none. `lsusb -v -d 1209:0001` identified the attached target as `ios-sweet` / `Sweet iOS (USB Ethernet)`, not a Fastboot interface. Host `usb0` was up at `192.168.7.1/24`; neighbor resolution for `192.168.7.2` failed, three pings received no replies, and a TCP connection attempt to port 22 timed out.
+* **Fresh telemetry check (observed):** a listener bound to UDP/5140 for 20 seconds and received 0 bytes. The last available handshake capture remains `.superpowers/ci/41463145417/live-udp-adsp-smp2p-negotiation-ro.log` (SHA-256 `5589756912452bddfc68a6dd23343e4492909cc020a47771ae4643967ab285f2`).
+* **No new boot was issued:** the available RAM image is `.superpowers/ci/41463145417/enxerto-adsp-smp2p-negotiation-ro.img` (SHA-256 `f7c0f06fe2a9138a06ab6de1ee008a21d8cbc3873de5e567b0dfaa6e6aa99dd6`). I did not restart the handset or write any partition. **Next:** once the handset is physically back in Fastboot, verify `product=beryllium` and `unlocked=yes`, then repeat this same RAM-only image with UDP/5140 listening before boot.
+
 ### >>> 2026-11-02: SMP2P negotiation succeeds; Q6V5 ready observed <<<
 * **Implementation (observed):** commit `bb41ffc` adds Linux-compatible negotiation for AP-owned item 429. If a valid item 443 v1 arrives while item 429 is v2, XNU lowers only the local header and kicks mailbox client 10; once versions match, it intersects feature bits. It validates the AP header and `master-kernel` entry before writing. Remote item 443 remains read-only; PAS arguments, timeout and audio startup are unchanged. The cause of the empty item 443 / SFR remains a hypothesis.
 * **Regression evidence (observed):** the exact production C transition helper is compiled and executed by `tools/tests/test_adsp_pas_patch.py`; the ADSP patch suite passed 25/25 and `python3 -m unittest discover -s tools/tests` passed 28/28. The ordered driver patch series through 1147 applied.
