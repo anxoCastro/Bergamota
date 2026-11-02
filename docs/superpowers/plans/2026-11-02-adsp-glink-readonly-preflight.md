@@ -115,7 +115,7 @@
 - Artifacts: ignored `.superpowers/ci/<run-id>/`
 
 - [x] **Step 1: Push the reviewed parser fix and dispatch KDK-enabled `xnu.yml`** on `audio-poco-f1-adsp-bootstrap` for macOS 26.5, Xcode 26.1, DEVELOPMENT-SWEET, and keep-going enabled. The obsolete run 41482463386 built no steps and ended cancelled while queued on the pre-fix SHA. Replacement run 41486126502 on `727eedd7942378453529830013fb81e905da1306` also ended cancelled after 15 minutes with `runner_name=null` and no steps; neither run produced an artifact.
-- [ ] **Step 1b: Retry the same KDK build with `runner_label=macos-26-intel`.** The original `macos-26` pool did not assign a runner in 15 minutes. The workflow adds a manual runner override; keep macOS 26.5, Xcode 26.1, KDK, kernel config, patch series, and source revision unchanged.
+- [x] **Step 1b: Retry the same KDK build with `runner_label=macos-26-intel`.** The original `macos-26` pool did not assign a runner in 15 minutes. Run 41489245547 is executing on `macos-26-intel`, pinned to workflow-override commit `93aab9345182fa32ac3e4c920c0218590bf882b3`; setup, checkout and build-script fetch passed, with dependencies installing. Kernel patch source remains identical to code commit `727eedd`.
 - [ ] **Step 2: Use `gh` to inspect the run and artifacts.** Record run ID, pinned SHA, patch-1148 application, empty compiler-error report, kernel hash, and linker warnings.
 - [ ] **Step 3: Package a temporary root-read-only Enxerto image.** Keep `sweetadsp=2`, omit `ufsrw=1`/`rootrw=1`, verify `/chosen` marker and image hash.
 - [ ] **Step 4: Verify Fastboot identity and boot the image temporarily.** Require `product=beryllium` and `unlocked=yes`; start UDP/5140 capture before `fastboot boot`; do not flash any partition.
