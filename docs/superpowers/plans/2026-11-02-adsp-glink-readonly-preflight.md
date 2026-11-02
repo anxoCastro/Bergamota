@@ -51,11 +51,11 @@
 - `bool beryllium_adsp_glink_indices_equal(const struct beryllium_adsp_glink_indices *a, const struct beryllium_adsp_glink_indices *b)` compares all four words.
 - All helpers are side-effect free.
 
-- [ ] **Step 1: Write the failing C harness and unittest entry.** Add assertions for descriptor sizes 0, 16, 31, 32, and 33; absent TX/RX FIFOs; indices 0 and `size - 1`; indices equal to size and greater than size; and equal/different index sets. Add `test_compiled_glink_survey_helpers` to `tools/tests/test_adsp_pas_patch.py`, extracting the header from patch 1148 and compiling it with the harness.
-- [ ] **Step 2: Run the harness integration test and confirm failure.** Run `python3 tools/tests/test_adsp_pas_patch.py AdspPasPatchTests.test_compiled_glink_survey_helpers`; expected: failure because patch 1148 and its helper header do not yet exist.
-- [ ] **Step 3: Add the pure helper header in patch 1148.** Keep it independent of XNU headers so the host compiler can compile the exact production helper.
-- [ ] **Step 4: Run the focused test.** Run `python3 tools/tests/test_adsp_pas_patch.py AdspPasPatchTests.test_compiled_glink_survey_helpers`; expected: the exact header from patch 1148 compiles with `cc -std=c11 -Wall -Wextra -Werror` and all descriptor, missing-FIFO, bounds, and comparison cases pass.
-- [ ] **Step 5: Commit the helper and host regression.** Use a message that names the read-only GLINK survey; add no co-author trailer.
+- [x] **Step 1: Write the failing C harness and unittest entry.** Add assertions for descriptor sizes 0, 16, 31, 32, and 33; absent TX/RX FIFOs; indices 0 and `size - 1`; indices equal to size and greater than size; and equal/different index sets. Add `test_compiled_glink_survey_helpers` to `tools/tests/test_adsp_pas_patch.py`, extracting the header from patch 1148 and compiling it with the harness.
+- [x] **Step 2: Run the harness integration test and confirm failure.** Run `python3 tools/tests/test_adsp_pas_patch.py AdspPasPatchTests.test_compiled_glink_survey_helpers`; expected: failure because patch 1148 and its helper header do not yet exist.
+- [x] **Step 3: Add the pure helper header in patch 1148.** Keep it independent of XNU headers so the host compiler can compile the exact production helper.
+- [x] **Step 4: Run the focused test.** Run `python3 tools/tests/test_adsp_pas_patch.py AdspPasPatchTests.test_compiled_glink_survey_helpers`; expected: the exact header from patch 1148 compiles with `cc -std=c11 -Wall -Wextra -Werror` and all descriptor, missing-FIFO, bounds, and comparison cases pass.
+- [x] **Step 5: Commit the helper and host regression.** Use a message that names the read-only GLINK survey; add no co-author trailer.
 
 ### Task 2: Classify bounded private-SMEM lookup results
 

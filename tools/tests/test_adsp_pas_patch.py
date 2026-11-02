@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / "xnu/patches-12377/1132-beryllium-adsp-pas-startup.patch"
 PREFLIGHT_PATCH = ROOT / "xnu/patches-12377/1131-beryllium-adsp-apr.patch"
 NEGOTIATION_PATCH = ROOT / "xnu/patches-12377/1147-beryllium-adsp-smp2p-version-negotiation.patch"
+GLINK_PATCH = ROOT / "xnu/patches-12377/1148-beryllium-adsp-glink-readonly-preflight.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -208,6 +209,28 @@ class AdspPasPatchTests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "SMP2P negotiation transitions passed")
+
+    def test_compiled_glink_survey_helpers(self):
+        header_path = "bsd/dev/beryllium_adsp_glink_survey.h"
+        harness = ROOT / "tools/tests/test_adsp_glink_survey.c"
+        self.assertTrue(GLINK_PATCH.is_file(), "patch 1148 must provide the production helper header")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(GLINK_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            executable = work / "test-glink-survey"
+            subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                "-I", str((work / header_path).parent), str(harness),
+                "-o", str(executable),
+            ], check=True, capture_output=True, text=True)
+            result = subprocess.run([str(executable)], check=False,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "GLINK survey helper checks passed")
 
     def test_outbound_smp2p_readback_is_passive_and_brackets_pas_start(self):
         snapshot = added_function_body(self.latest_driver, "adsp_smp2p_out_snapshot")

@@ -1,0 +1,60 @@
+diff --git a/bsd/dev/beryllium_adsp_glink_survey.h b/bsd/dev/beryllium_adsp_glink_survey.h
+new file mode 100644
+index 0000000..f87e326
+--- /dev/null
++++ b/bsd/dev/beryllium_adsp_glink_survey.h
+@@ -0,0 +1,54 @@
++#ifndef _BERYLLIUM_ADSP_GLINK_SURVEY_H_
++#define _BERYLLIUM_ADSP_GLINK_SURVEY_H_
++
++#include <stdbool.h>
++#include <stdint.h>
++
++enum beryllium_adsp_item_result {
++	BERYLLIUM_ADSP_ITEM_FOUND = 0,
++	BERYLLIUM_ADSP_ITEM_ABSENT,
++	BERYLLIUM_ADSP_ITEM_MALFORMED,
++};
++
++struct beryllium_adsp_glink_indices {
++	uint32_t tx_tail;
++	uint32_t tx_head;
++	uint32_t rx_tail;
++	uint32_t rx_head;
++};
++
++enum beryllium_adsp_glink_index_result {
++	BERYLLIUM_ADSP_GLINK_INDEX_VALID = 0,
++	BERYLLIUM_ADSP_GLINK_INDEX_UNCHECKED_FIFO_MISSING,
++	BERYLLIUM_ADSP_GLINK_INDEX_OUT_OF_RANGE,
++};
++
++static inline bool
++beryllium_adsp_glink_descriptor_size_valid(uint32_t size)
++{
++	return size == 32u;
++}
++
++static inline enum beryllium_adsp_glink_index_result
++beryllium_adsp_glink_check_index(uint32_t value, bool fifo_present,
++    uint32_t fifo_size)
++{
++	if (!fifo_present) {
++		return BERYLLIUM_ADSP_GLINK_INDEX_UNCHECKED_FIFO_MISSING;
++	}
++	if (value >= fifo_size) {
++		return BERYLLIUM_ADSP_GLINK_INDEX_OUT_OF_RANGE;
++	}
++	return BERYLLIUM_ADSP_GLINK_INDEX_VALID;
++}
++
++static inline bool
++beryllium_adsp_glink_indices_equal(
++    const struct beryllium_adsp_glink_indices *a,
++    const struct beryllium_adsp_glink_indices *b)
++{
++	return a->tx_tail == b->tx_tail && a->tx_head == b->tx_head &&
++	    a->rx_tail == b->rx_tail && a->rx_head == b->rx_head;
++}
++
++#endif /* _BERYLLIUM_ADSP_GLINK_SURVEY_H_ */
