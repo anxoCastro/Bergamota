@@ -4,7 +4,7 @@
 
 **Goal:** Make XNU negotiate AP-owned SMP2P item 429 down to the valid remote item 443 version, then verify the handshake in a read-only Poco F1 boot.
 
-**Architecture:** Add a bounded negotiation helper to the existing Beryllium ADSP driver. It reads the remote header, updates only the AP-owned item when Linux would downgrade its version, intersects features after versions match, and uses the existing mailbox-10 kick. Keep PAS, item 443, and audio startup unchanged.
+**Architecture:** Put the protocol transition in a small production C header included by the Beryllium ADSP driver. A host harness compiles and executes that exact helper with literal SMP2P headers; Python patch-integration checks cover AP-item ownership and the mailbox call site. Keep PAS, item 443, and audio startup unchanged.
 
 **Tech Stack:** XNU 26.5 C patch series, Python unittest patch-contract checks, GitHub Actions workflow xnu.yml, Fastboot RAM boot, UDP/5140 kernel capture.
 
@@ -30,21 +30,23 @@
 
 ---
 
-### Task 1: Add a regression contract for Linux-compatible negotiation
+### Task 1: Add a compiled regression contract and Linux-compatible negotiation patch
 
 **Files:**
 - Modify: tools/tests/test_adsp_pas_patch.py
-- Test: tools/tests/test_adsp_pas_patch.py
+- Create: tools/tests/test_adsp_smp2p_negotiation.c
+- Add through patch 1147: bsd/dev/beryllium_smp2p_negotiation.h
+- Add: xnu/patches-12377/1147-beryllium-adsp-smp2p-version-negotiation.patch
 
 **Interfaces:**
 - Consumes: the ordered 1131–1146 patch series.
-- Produces: a latest_driver fixture that applies patch 1147 and a test for adsp_smp2p_negotiate_remote().
+- Produces: beryllium_smp2p_negotiate_header(uint32_t *local_head, uint32_t remote_head), a latest_driver fixture including patch 1147, and an integration path from the post-PAS poll.
 
-- [ ] **Step 1: Write the failing regression test.** Extend the patch-order bound to 1147. Assert the helper reads a validated nonzero remote version, accesses only ADSP_SMP2P_OUT_ITEM, lowers only when remote version is below local, preserves feature bits, kicks after a downgrade, intersects remote features only after versions match, refuses upgrades, and is called from the existing ready loop after the read-only inbound probe.
-- [ ] **Step 2: Run the test and verify it fails.** Run python3 tools/tests/test_adsp_pas_patch.py; expected: the latest-driver test fails because patch 1147 and adsp_smp2p_negotiate_remote() do not exist.
-- [ ] **Step 3: Implement the minimum ordered patch.** Add xnu/patches-12377/1147-beryllium-adsp-smp2p-version-negotiation.patch. Store the AP item-429 offset when it is allocated. Add adsp_smp2p_negotiate_remote() that validates both headers, follows Linux's downgrade and feature-intersection rules, writes no bytes from item 443, and kicks only after a version downgrade. Call it during each existing post-PAS poll after adsp_smp2p_readonly_probe(true).
-- [ ] **Step 4: Run the regression suite.** Run python3 tools/tests/test_adsp_pas_patch.py; expected: all tests pass and patches 1131–1147 apply in order.
-- [ ] **Step 5: Commit the patch and regression check.** Commit with a message describing SMP2P version negotiation; add no co-author trailer.
+- [ ] **Step 1: Write the failing executable regression.** Add a C harness with hand-derived header values for: local v2/feature 1 plus remote v1/feature 1 -> DOWNGRADE and local v1/feature 1; equal v1 with remote feature 0 -> FEATURES_CHANGED and local feature 0; equal v1/features -> COMPLETE unchanged; remote v2 with local v1 -> WAIT unchanged; and zero/unsupported versions -> INVALID unchanged. Extend the Python patch test to extract the new header from patch 1147, compile it with cc, and run the harness. Add integration assertions that the driver calls negotiation after its read-only item-443 probe, writes only ADSP_SMP2P_OUT_ITEM, kicks on DOWNGRADE, and never stores to item 443. Extend the patch-order bound to 1147.
+- [ ] **Step 2: Run the test and verify it fails for the missing feature.** Run python3 tools/tests/test_adsp_pas_patch.py AdspPasPatchTests.test_smp2p_version_negotiation_is_wired_to_ap_item; expected: this one integration test fails because adsp_smp2p_negotiate_remote() does not yet exist.
+- [ ] **Step 3: Implement the minimum ordered patch.** Add patch 1147 with the pure header transition helper and the driver integration. The driver stores the AP item-429 offset when publishing it, validates its header before updating, preserves features while lowering the version, retries a pending mailbox kick if necessary, intersects features only once versions match, and never writes item 443. Call the driver helper after each read-only inbound probe in the existing bounded poll.
+- [ ] **Step 4: Run the regression suite.** Run python3 tools/tests/test_adsp_pas_patch.py; expected: the host C harness passes and patches 1131–1147 apply in order.
+- [ ] **Step 5: Commit the patch and regression checks.** Commit with a message describing SMP2P version negotiation; add no co-author trailer.
 
 ### Task 2: Update protocol documentation and handoff
 

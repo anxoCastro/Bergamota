@@ -34,6 +34,6 @@ The selected approach is a narrow protocol correction. It writes only the AP-own
 
 ## Verification
 
-- Add a regression check that applies the ordered XNU patch series and verifies lower-version downgrade, feature intersection after versions match, mailbox kick, and no stores to item 443.
+- Put the protocol transition in a small production C header and compile that exact header into a host test harness with literal v1/v2 fixtures. Add patch-integration checks for the AP-owned item write, mailbox kick, post-probe call order, and no stores to item 443.
 - Build the XNU kernel through the fork's GitHub Actions workflow.
 - Boot a temporary root-read-only image with UDP capture active before boot. Success evidence is an AP item-429 downgrade/kick followed by item 443 acquiring a valid slave-kernel entry; otherwise retain the failure log and reassess the hypothesis.
