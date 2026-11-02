@@ -100,11 +100,11 @@
 - Modify through patch 1148: `bsd/dev/beryllium_adsp.c`
 - Add: `xnu/patches-12377/1148-beryllium-adsp-glink-readonly-preflight.patch`
 
-- [ ] **Step 1: Extend ordered patch application through 1148.** Assert patches 1131–1148 apply in order and the latest driver contains the survey.
-- [ ] **Step 2: Run ADSP patch regression tests.** Run `python3 tools/tests/test_adsp_pas_patch.py`; expected: all C harnesses and integration checks pass.
-- [ ] **Step 3: Run repository test discovery.** Run `python3 -m unittest discover -s tools/tests`; expected: all existing and new tests pass.
-- [ ] **Step 4: Run `git diff --check`.** Expected: clean outside unified patch context whitespace conventions.
-- [ ] **Step 5: Commit the regression and patch-order updates.**
+- [x] **Step 1: Extend ordered patch application through 1148.** Assert patches 1131–1148 apply in order and the latest driver contains the survey.
+- [x] **Step 2: Run ADSP patch regression tests.** Run `python3 tools/tests/test_adsp_pas_patch.py`; expected: all C harnesses and integration checks pass.
+- [x] **Step 3: Run repository test discovery.** Run `python3 -m unittest discover -s tools/tests`; expected: all existing and new tests pass.
+- [x] **Step 4: Run `git diff --check`.** Expected: clean outside unified patch context whitespace conventions.
+- [x] **Step 5: Commit the regression and patch-order updates.**
 
 ### Task 5: Build and capture the read-only hardware survey
 
