@@ -1,3 +1,223 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index c414786..c9c505e 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -27,6 +27,7 @@
+ #include <vm/vm_kern_xnu.h>
+ #include "sweet_board.h"
+ #include "beryllium_adsp.h"
++#include "beryllium_adsp_glink_survey.h"
+ #include "beryllium_smp2p_negotiation.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+@@ -364,89 +365,117 @@ adsp_smem_wr32(uint32_t off, uint32_t value)
+ 	p[3] = (uint8_t)(value >> 24);
+ }
+ 
+-static bool
++static enum beryllium_adsp_item_result
+ adsp_smem_private_item(uint16_t host_a, uint16_t host_b, uint16_t wanted,
+     uint32_t *data_off, uint32_t *data_size)
+ {
+ 	const uint32_t top = ADSP_SMEM_SIZE - 0x1000;
+-	uint32_t count;
++	uint32_t count, part_off = 0, part_size = 0;
++	uint32_t free_uncached, pos, end, found_off = 0, found_size = 0;
++	bool partition_found = false, item_found = false;
+ 
+-	if (adsp_smem_rd32(top) != ADSP_SMEM_TOC_MAGIC) {
++	if (adsp_smem == NULL || adsp_smem_rd32(top) != ADSP_SMEM_TOC_MAGIC) {
+ 		ADSP_SMP2P_LOG("SWEET ADSP: SMEM TOC magic invalid\n");
+-		return false;
++		return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 	}
+ 	count = adsp_smem_rd32(top + 8);
+ 	if (count == 0 || count > ADSP_SMEM_MAX_PARTITIONS ||
+ 	    !adsp_range(ADSP_SMEM_SIZE, top + ADSP_SMEM_TOC_BYTES,
+ 	    (uint64_t)count * ADSP_SMEM_TOC_ENTRY_BYTES)) {
+ 		ADSP_SMP2P_LOG("SWEET ADSP: SMEM partition count invalid (%u)\n", count);
+-		return false;
++		return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 	}
+ 	for (uint32_t i = 0; i < count; i++) {
+ 		uint32_t ent = top + ADSP_SMEM_TOC_BYTES + i * ADSP_SMEM_TOC_ENTRY_BYTES;
+-		uint32_t part_off = adsp_smem_rd32(ent), part_size = adsp_smem_rd32(ent + 4);
++		uint32_t candidate_off = adsp_smem_rd32(ent);
++		uint32_t candidate_size = adsp_smem_rd32(ent + 4);
+ 		uint32_t hosts = adsp_smem_rd32(ent + 12);
+ 		uint16_t h0 = (uint16_t)hosts, h1 = (uint16_t)(hosts >> 16);
+-		uint32_t free_uncached, pos;
+-		if (!part_off || part_size < ADSP_SMEM_PART_HDR_BYTES ||
+-		    !((h0 == host_a && h1 == host_b) || (h0 == host_b && h1 == host_a))) {
++		if (!((h0 == host_a && h1 == host_b) || (h0 == host_b && h1 == host_a))) {
+ 			continue;
+ 		}
+-		if (!adsp_range(ADSP_SMEM_SIZE, part_off, part_size) ||
++		if (partition_found) {
++			ADSP_SMP2P_LOG("SWEET ADSP: duplicate private SMEM partition for hosts %u<->%u\n",
++			    (unsigned)host_a, (unsigned)host_b);
++			return BERYLLIUM_ADSP_ITEM_MALFORMED;
++		}
++		partition_found = true;
++		part_off = candidate_off;
++		part_size = candidate_size;
++		if (!part_off || part_size < ADSP_SMEM_PART_HDR_BYTES ||
++		    !adsp_range(ADSP_SMEM_SIZE, part_off, part_size) ||
+ 		    adsp_smem_rd32(part_off) != ADSP_SMEM_PART_MAGIC ||
+ 		    adsp_smem_rd16(part_off + 4) != h0 || adsp_smem_rd16(part_off + 6) != h1 ||
+ 		    adsp_smem_rd32(part_off + 8) > part_size) {
+ 			ADSP_SMP2P_LOG("SWEET ADSP: SMEM private partition %u has invalid bounds/header\n", i);
+-			return false;
++			return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 		}
+-		free_uncached = adsp_smem_rd32(part_off + 12);
+-		if (free_uncached < ADSP_SMEM_PART_HDR_BYTES || free_uncached > part_size) {
+-			ADSP_SMP2P_LOG("SWEET ADSP: SMEM private partition free offset invalid (%#x/%#x)\n", free_uncached, part_size);
+-			return false;
++	}
++	if (!partition_found) {
++		ADSP_SMP2P_LOG("SWEET ADSP: SMEM partition for hosts %u<->%u not found\n",
++		    (unsigned)host_a, (unsigned)host_b);
++		return BERYLLIUM_ADSP_ITEM_ABSENT;
++	}
++	free_uncached = adsp_smem_rd32(part_off + 12);
++	if (free_uncached < ADSP_SMEM_PART_HDR_BYTES || free_uncached > part_size) {
++		ADSP_SMP2P_LOG("SWEET ADSP: SMEM private partition free offset invalid (%#x/%#x)\n",
++		    free_uncached, part_size);
++		return BERYLLIUM_ADSP_ITEM_MALFORMED;
++	}
++	pos = part_off + ADSP_SMEM_PART_HDR_BYTES;
++	end = part_off + free_uncached;
++	for (unsigned guard = 0; guard < ADSP_SMEM_MAX_ITEMS && pos < end; guard++) {
++		uint32_t w0, item_size, pads, pad_data, pad_hdr, next, payload;
++		uint16_t item;
++		if (!adsp_range(ADSP_SMEM_SIZE, pos, ADSP_SMEM_PRIVATE_HDR) ||
++		    pos + ADSP_SMEM_PRIVATE_HDR > end) {
++			ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header truncated\n");
++			return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 		}
+-		pos = part_off + ADSP_SMEM_PART_HDR_BYTES;
+-		for (unsigned guard = 0; guard < ADSP_SMEM_MAX_ITEMS && pos < part_off + free_uncached; guard++) {
+-			uint32_t w0, item_size, pads, pad_data, pad_hdr, next, payload;
+-			uint16_t item;
+-			if (!adsp_range(ADSP_SMEM_SIZE, pos, ADSP_SMEM_PRIVATE_HDR) ||
+-			    pos + ADSP_SMEM_PRIVATE_HDR > part_off + free_uncached) {
+-				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header truncated\n");
+-				return false;
+-			}
+-			w0 = adsp_smem_rd32(pos);
+-			item = (uint16_t)(w0 >> 16);
+-			item_size = adsp_smem_rd32(pos + 4);
+-			pads = adsp_smem_rd32(pos + 8);
+-			pad_data = (uint16_t)pads;
+-			pad_hdr = (uint16_t)(pads >> 16);
+-			if ((uint16_t)w0 != ADSP_SMEM_PRIVATE_CANARY || item_size > part_size || pad_data > item_size ||
+-			    pad_hdr > part_size - ADSP_SMEM_PRIVATE_HDR) {
+-				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header malformed at %#x\n", pos);
+-				return false;
+-			}
+-			payload = pos + ADSP_SMEM_PRIVATE_HDR + pad_hdr;
+-			if (!adsp_range(ADSP_SMEM_SIZE, payload, item_size) ||
+-			    payload + item_size > part_off + free_uncached) {
+-				ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item payload outside used partition\n");
+-				return false;
+-			}
+-			if (item == wanted) {
+-				*data_off = payload;
+-				*data_size = item_size - pad_data;
+-				return true;
+-			}
+-			next = payload + item_size;
+-			if (next <= pos) {
+-				ADSP_SMP2P_LOG("SWEET ADSP: SMEM item walk did not advance\n");
+-				return false;
++		w0 = adsp_smem_rd32(pos);
++		item = (uint16_t)(w0 >> 16);
++		item_size = adsp_smem_rd32(pos + 4);
++		pads = adsp_smem_rd32(pos + 8);
++		pad_data = (uint16_t)pads;
++		pad_hdr = (uint16_t)(pads >> 16);
++		if ((uint16_t)w0 != ADSP_SMEM_PRIVATE_CANARY || item_size > part_size ||
++		    pad_data > item_size || pad_hdr > part_size - ADSP_SMEM_PRIVATE_HDR) {
++			ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item header malformed at %#x\n", pos);
++			return BERYLLIUM_ADSP_ITEM_MALFORMED;
++		}
++		payload = pos + ADSP_SMEM_PRIVATE_HDR + pad_hdr;
++		if (!adsp_range(ADSP_SMEM_SIZE, payload, item_size) || payload + item_size > end) {
++			ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item payload outside used partition\n");
++			return BERYLLIUM_ADSP_ITEM_MALFORMED;
++		}
++		if (item == wanted) {
++			if (item_found) {
++				ADSP_SMP2P_LOG("SWEET ADSP: duplicate private SMEM item %u\n", (unsigned)wanted);
++				return BERYLLIUM_ADSP_ITEM_MALFORMED;
+ 			}
+-			pos = next;
++			item_found = true;
++			found_off = payload;
++			found_size = item_size - pad_data;
+ 		}
+-		ADSP_SMP2P_LOG("SWEET ADSP: ADSP private SMEM partition has no item %u\n", (unsigned)wanted);
+-		return false;
++		next = payload + item_size;
++		if (next <= pos || next > end) {
++			ADSP_SMP2P_LOG("SWEET ADSP: SMEM item walk did not advance within partition\n");
++			return BERYLLIUM_ADSP_ITEM_MALFORMED;
++		}
++		pos = next;
+ 	}
+-		ADSP_SMP2P_LOG("SWEET ADSP: SMEM partition for hosts %u<->%u not found\n", (unsigned)host_a, (unsigned)host_b);
+-	return false;
++	if (pos != end) {
++		ADSP_SMP2P_LOG("SWEET ADSP: SMEM private item list exceeds bounded walk\n");
++		return BERYLLIUM_ADSP_ITEM_MALFORMED;
++	}
++	if (!item_found) {
++		ADSP_SMP2P_LOG("SWEET ADSP: ADSP private SMEM partition has no item %u\n",
++		    (unsigned)wanted);
++		return BERYLLIUM_ADSP_ITEM_ABSENT;
++	}
++	*data_off = found_off;
++	*data_size = found_size;
++	return BERYLLIUM_ADSP_ITEM_FOUND;
+ }
+ 
+ /* Lock TCSR mutex 3 while editing the Apps<->ADSP private SMEM allocation list. */
+@@ -712,9 +741,8 @@ adsp_smp2p_out_snapshot(const char *stage)
+ 	uint32_t value = 0;
+ 	bool found = false;
+ 
+-	if (adsp_smem == NULL ||
+-	    !adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID,
+-	    ADSP_SMP2P_OUT_ITEM, &data_off, &data_size)) {
++	if (adsp_smem == NULL || adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID,
++	    ADSP_SMP2P_OUT_ITEM, &data_off, &data_size) != BERYLLIUM_ADSP_ITEM_FOUND) {
+ 		printf("SWEET ADSP: outbound SMP2P readback (%s): item %u unavailable\n",
+ 		    stage, ADSP_SMP2P_OUT_ITEM);
+ 		return;
+@@ -916,7 +944,8 @@ adsp_smp2p_readonly_probe(bool quiet)
+ 		}
+ 	}
+ 	__asm__ volatile ("dmb sy" ::: "memory");
+-	if (!adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_IN_ITEM, &item_off, &item_size)) {
++	if (adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID, ADSP_SMP2P_IN_ITEM,
++	    &item_off, &item_size) != BERYLLIUM_ADSP_ITEM_FOUND) {
+ 		ADSP_SMP2P_LOG("SWEET ADSP: remote SMP2P inbound item %u unavailable\n", ADSP_SMP2P_IN_ITEM);
+ 		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
+ 		return;
+@@ -1018,9 +1047,9 @@ adsp_crash_reason_read(char *reason, uint32_t *item_size, bool *truncated)
+ 	if (adsp_smem == NULL) {
+ 		adsp_smem = (volatile uint8_t *)ml_io_map(ADSP_SMEM_PA, ADSP_SMEM_SIZE);
+ 	}
+-	if (adsp_smem == NULL ||
+-	    !adsp_smem_private_item(0xfffeu, 0xfffeu, ADSP_CRASH_REASON_ITEM,
+-	    &reason_off, &reason_size) || reason_size == 0) {
++	if (adsp_smem == NULL || adsp_smem_private_item(0xfffeu, 0xfffeu,
++	    ADSP_CRASH_REASON_ITEM, &reason_off, &reason_size) != BERYLLIUM_ADSP_ITEM_FOUND ||
++	    reason_size == 0) {
+ 		return false;
+ 	}
+ 	count = MIN(reason_size, (uint32_t)128);
 diff --git a/bsd/dev/beryllium_adsp_glink_survey.h b/bsd/dev/beryllium_adsp_glink_survey.h
 new file mode 100644
 index 0000000..f87e326

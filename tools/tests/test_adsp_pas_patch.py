@@ -31,7 +31,7 @@ def diff_section(patch: str, path: str) -> str:
 
 
 def added_function_body(section: str, name: str) -> str:
-    match = re.search(rf"(?m)^[+ ]?{re.escape(name)}\([^\n]*\)$", section)
+    match = re.search(rf"(?m)^[+ ]?{re.escape(name)}\((?:[^)]|\n)*?\)$", section)
     if not match:
         raise AssertionError(f"function {name} not found in patch")
     body_start = re.search(r"\n[+ ]?\{", section[match.end() :])
@@ -78,7 +78,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1147:
+                if not 1131 <= number <= 1148:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -231,6 +231,23 @@ class AdspPasPatchTests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "GLINK survey helper checks passed")
+
+    def test_smem_lookup_classifies_absent_and_malformed(self):
+        lookup = added_function_body(self.latest_driver, "adsp_smem_private_item")
+        self.assertIsNotNone(re.search(
+            r"enum beryllium_adsp_item_result\s+adsp_smem_private_item\(",
+            self.latest_driver), "lookup still has bool return type")
+        self.assertIn("return BERYLLIUM_ADSP_ITEM_FOUND", lookup)
+        self.assertIn("return BERYLLIUM_ADSP_ITEM_ABSENT", lookup)
+        self.assertIn("return BERYLLIUM_ADSP_ITEM_MALFORMED", lookup)
+        self.assertIn("ADSP_SMEM_TOC_MAGIC", lookup)
+        self.assertIn("ADSP_SMEM_PRIVATE_CANARY", lookup)
+        self.assertNotIn("adsp_smem_wr", lookup)
+        self.assertNotIn("adsp_smem_alloc_private_item", lookup)
+        self.assertNotIn("adsp_smem_lock(", lookup)
+        self.assertNotIn("adsp_smem_unlock(", lookup)
+        self.assertNotRegex(self.latest_driver, r"!\s*adsp_smem_private_item\(")
+        self.assertEqual(self.latest_driver.count("!= BERYLLIUM_ADSP_ITEM_FOUND"), 3)
 
     def test_outbound_smp2p_readback_is_passive_and_brackets_pas_start(self):
         snapshot = added_function_body(self.latest_driver, "adsp_smp2p_out_snapshot")

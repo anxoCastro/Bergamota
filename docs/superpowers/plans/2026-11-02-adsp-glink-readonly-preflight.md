@@ -68,11 +68,11 @@
 - Return `FOUND` only after the existing bounds/canary/range checks pass; return `ABSENT` only when the valid partition/list contains no requested item; return `MALFORMED` for invalid TOC, partition, item header, canary, or payload bounds.
 - Update existing call sites to compare explicitly with `FOUND`, preserving their existing behavior for absent or malformed items.
 
-- [ ] **Step 1: Add patch-contract cases for lookup classification.** Assert the enum returns and ensure the function does not call `adsp_smem_wr*`, the allocator, or the TCSR lock.
-- [ ] **Step 2: Run the focused Python test and confirm failure.** Run `python3 tools/tests/test_adsp_pas_patch.py AdspPasPatchTests.test_smem_lookup_classifies_absent_and_malformed`; expected: failure because lookup still returns `bool`.
-- [ ] **Step 3: Implement the result enum and update call sites.** Preserve every existing structural validation before returning `FOUND`.
-- [ ] **Step 4: Run the focused Python test.** Expected: absent and malformed states have distinct branches and existing mode-2 gates remain in place.
-- [ ] **Step 5: Commit patch 1148 lookup changes.**
+- [x] **Step 1: Add patch-contract cases for lookup classification.** Assert the enum returns and ensure the function does not call `adsp_smem_wr*`, the allocator, or the TCSR lock.
+- [x] **Step 2: Run the focused Python test and confirm failure.** Run `python3 tools/tests/test_adsp_pas_patch.py AdspPasPatchTests.test_smem_lookup_classifies_absent_and_malformed`; expected: failure because lookup still returns `bool`.
+- [x] **Step 3: Implement the result enum and update call sites.** Preserve every existing structural validation before returning `FOUND`.
+- [x] **Step 4: Run the focused Python test.** Expected: absent and malformed states have distinct branches and existing mode-2 gates remain in place.
+- [x] **Step 5: Commit patch 1148 lookup changes.**
 
 ### Task 3: Implement the post-ready read-only survey
 
