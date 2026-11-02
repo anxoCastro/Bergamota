@@ -60,6 +60,9 @@ main(void)
 	assert(beryllium_adsp_glink_mode_requests_glink(3));
 	assert(beryllium_adsp_glink_mode_requests_glink(4));
 	assert(!beryllium_adsp_glink_mode_requests_glink(2));
+	assert(beryllium_adsp_glink_rx_frame_available(40, 0, 0x4000, 24));
+	assert(!beryllium_adsp_glink_rx_frame_available(16, 0, 0x4000, 24));
+	assert(beryllium_adsp_glink_rx_frame_available(8, 0x3ff8, 0x4000, 16));
 	assert(sizeof(request) == 20);
 	assert(request[0] == 0x50 && request[1] == 0x02);
 	assert(request[2] == 20 && request[3] == 0);

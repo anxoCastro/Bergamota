@@ -704,6 +704,9 @@ class AdspAprMode4Tests(unittest.TestCase):
         self.assertIn("items->descriptor.off + 8", apr_transport)
         self.assertNotRegex(apr_transport,
                             r"adsp_smem_wr32\(items->descriptor\.off \+ (?:0|12)")
+        rx_consume = added_function_body(driver, "adsp_glink_rx_consume_frame")
+        self.assertIn("beryllium_adsp_glink_rx_frame_available", rx_consume)
+        self.assertNotIn("expected_head", rx_consume)
         self.assertIn("ADSP_APR_POLL_MS",
                       added_function_body(driver, "adsp_apr_poll_response"))
 

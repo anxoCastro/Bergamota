@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
-index d36ad16..8327168 100644
+index d36ad16..9502dc5 100644
 --- a/bsd/dev/beryllium_adsp.c
 +++ b/bsd/dev/beryllium_adsp.c
 @@ -29,6 +29,7 @@
@@ -31,7 +31,7 @@ index d36ad16..8327168 100644
  static bool adsp_smp2p_known;
  static bool adsp_remote_ready;
  static bool adsp_remote_ready_entry_valid;
-@@ -2230,35 +2238,534 @@ adsp_glink_poll_version(const struct adsp_glink_survey_items *items)
+@@ -2230,35 +2238,538 @@ adsp_glink_poll_version(const struct adsp_glink_survey_items *items)
  	return false;
  }
  
@@ -153,10 +153,10 @@ index d36ad16..8327168 100644
 +
 +static bool
 +adsp_glink_rx_snapshot(const struct adsp_glink_survey_items *items,
-+	uint32_t *head_out, uint32_t *tail_out, uint32_t *used_out)
++	uint32_t *tail_out, uint32_t *used_out)
 +{
 +	uint32_t head, tail, head_again, tail_again, used;
-+	if (items == NULL || head_out == NULL || tail_out == NULL || used_out == NULL) {
++	if (items == NULL || tail_out == NULL || used_out == NULL) {
 +		return false;
 +	}
 +	__asm__ volatile ("dmb sy" ::: "memory");
@@ -170,7 +170,7 @@ index d36ad16..8327168 100644
 +	    items->rx_fifo.size, &used)) {
 +		return false;
 +	}
-+	*head_out = head;
++	__asm__ volatile ("dmb sy" ::: "memory");
 +	*tail_out = tail;
 +	*used_out = used;
 +	return true;
@@ -178,17 +178,21 @@ index d36ad16..8327168 100644
 +
 +static bool
 +adsp_glink_rx_consume_frame(const struct adsp_glink_survey_items *items,
-+	uint32_t expected_head, uint32_t tail, size_t frame_bytes)
++	uint32_t tail, size_t frame_bytes)
 +{
-+	uint32_t used, next;
++	uint32_t head, next;
 +	if (items == NULL || frame_bytes == 0 || (frame_bytes & 7u) != 0 ||
 +	    frame_bytes > items->rx_fifo.size ||
-+	    adsp_smem_rd32(items->descriptor.off + 12) != expected_head ||
-+	    adsp_smem_rd32(items->descriptor.off + 8) != tail ||
-+	    !beryllium_adsp_glink_ring_used(expected_head, tail,
-+	    items->rx_fifo.size, &used) || used < frame_bytes ||
++	    adsp_smem_rd32(items->descriptor.off + 8) != tail) {
++		return false;
++	}
++	__asm__ volatile ("dmb sy" ::: "memory");
++	head = adsp_smem_rd32(items->descriptor.off + 12); /* remote-owned RX head */
++	if (!beryllium_adsp_glink_rx_frame_available(head, tail,
++	    items->rx_fifo.size, frame_bytes) ||
 +	    !beryllium_adsp_glink_ring_advance(tail, (uint32_t)frame_bytes,
-+	    items->rx_fifo.size, &next)) {
++	    items->rx_fifo.size, &next) ||
++	    adsp_smem_rd32(items->descriptor.off + 8) != tail) {
 +		return false;
 +	}
 +	__asm__ volatile ("dmb sy" ::: "memory");
@@ -257,9 +261,9 @@ index d36ad16..8327168 100644
 +	    ADSP_APR_LOCAL_CHANNEL);
 +	for (unsigned ms = 0; ms < ADSP_APR_OPEN_POLL_MS; ms++) {
 +		uint8_t frame[ADSP_APR_GLINK_FRAME_MAX] = { 0 };
-+		uint32_t head, tail, used;
++		uint32_t tail, used;
 +		size_t frame_bytes = 0;
-+		if (!adsp_glink_rx_snapshot(items, &head, &tail, &used)) {
++		if (!adsp_glink_rx_snapshot(items, &tail, &used)) {
 +			delay(1000);
 +			continue;
 +		}
@@ -316,7 +320,7 @@ index d36ad16..8327168 100644
 +			printf("SWEET ADSP: APR GLINK OPEN stopped on unexpected command=%u\n", command);
 +			return false;
 +		}
-+		if (!adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++		if (!adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {
 +			printf("SWEET ADSP: APR GLINK OPEN could not advance AP-owned RX tail\n");
 +			return false;
 +		}
@@ -370,12 +374,12 @@ index d36ad16..8327168 100644
 +{
 +	for (unsigned ms = 0; ms < ADSP_APR_INTENT_POLL_MS; ms++) {
 +		uint8_t frame[ADSP_APR_GLINK_FRAME_MAX] = { 0 };
-+		uint32_t head, tail, used;
++		uint32_t tail, used;
 +		size_t frame_bytes = 0;
 +		if (adsp_apr_has_remote_intent(state)) {
 +			return true;
 +		}
-+		if (!adsp_glink_rx_snapshot(items, &head, &tail, &used) || used < 8) {
++		if (!adsp_glink_rx_snapshot(items, &tail, &used) || used < 8) {
 +			delay(1000);
 +			continue;
 +		}
@@ -394,7 +398,7 @@ index d36ad16..8327168 100644
 +			    beryllium_adsp_apr_get16(frame));
 +			return false;
 +		}
-+		if (!adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++		if (!adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {
 +			printf("SWEET ADSP: APR intent wait could not advance AP-owned RX tail\n");
 +			return false;
 +		}
@@ -449,9 +453,9 @@ index d36ad16..8327168 100644
 +	bool request_intent_done = false;
 +	for (unsigned ms = 0; ms < ADSP_APR_POLL_MS; ms++) {
 +		uint8_t frame[ADSP_APR_GLINK_FRAME_MAX] = { 0 };
-+		uint32_t head, tail, used;
++		uint32_t tail, used;
 +		size_t frame_bytes = 0;
-+		if (!adsp_glink_rx_snapshot(items, &head, &tail, &used) || used < 8) {
++		if (!adsp_glink_rx_snapshot(items, &tail, &used) || used < 8) {
 +			delay(1000);
 +			continue;
 +		}
@@ -473,7 +477,7 @@ index d36ad16..8327168 100644
 +		uint32_t param2 = beryllium_adsp_apr_get32(frame + 4);
 +		if (command == BERYLLIUM_ADSP_GLINK_CMD_INTENT) {
 +			if (!adsp_apr_record_remote_intents(state, frame, frame_bytes) ||
-+			    !adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++			    !adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {
 +				printf("SWEET ADSP: APR response wait rejected remote INTENT\n");
 +				return false;
 +			}
@@ -481,7 +485,7 @@ index d36ad16..8327168 100644
 +		}
 +		if (command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE) {
 +			if (param1 != state->remote_channel_id || param2 != state->request_intent_id ||
-+			    request_intent_done || !adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++			    request_intent_done || !adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {
 +				printf("SWEET ADSP: APR response wait rejected unexpected remote RX_DONE\n");
 +				return false;
 +			}
@@ -506,7 +510,7 @@ index d36ad16..8327168 100644
 +			enum beryllium_adsp_apr_response_kind parsed =
 +			    beryllium_adsp_apr_parse_response(adsp_apr_rx_buffers[param2 - 1],
 +			    payload_bytes, &response);
-+			if (!adsp_glink_rx_consume_frame(items, head, tail, frame_bytes)) {
++			if (!adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {
 +				printf("SWEET ADSP: APR response could not advance AP-owned RX tail\n");
 +				return false;
 +			}
@@ -573,7 +577,7 @@ index d36ad16..8327168 100644
  	}
  }
  
-@@ -2275,7 +2782,8 @@ beryllium_adsp_pas_start(void)
+@@ -2275,7 +2786,8 @@ beryllium_adsp_pas_start(void)
  	if (!adsp_pas_requested || !sweet_board_beryllium()) {
  		return false;
  	}
@@ -583,7 +587,7 @@ index d36ad16..8327168 100644
  	/* Re-read remote-owned item 443 immediately before the explicit start attempt. */
  	adsp_smp2p_readonly_probe(false);
  	if (adsp_smp2p_ambiguous) {
-@@ -2299,7 +2807,7 @@ beryllium_adsp_pas_start(void)
+@@ -2299,7 +2811,7 @@ beryllium_adsp_pas_start(void)
  		return false;
  	}
  	if (!adsp_smp2p_known) {
@@ -592,7 +596,7 @@ index d36ad16..8327168 100644
  	}
  	printf("SWEET ADSP: Q6V5 watchdog SPI 162 is not observed by this stage; no timeout SHUTDOWN will be issued\n");
  	if (!adsp_fw_read_full_bundle(&bundle)) {
-@@ -2488,7 +2996,13 @@ beryllium_adsp_pas_start(void)
+@@ -2488,7 +3000,13 @@ beryllium_adsp_pas_start(void)
  			    ADSP_SMP2P_IN_ITEM, adsp_remote_ready_entry_value);
  		}
  		if (adsp_glink_requested) {
@@ -607,7 +611,7 @@ index d36ad16..8327168 100644
  		} else {
  			printf("SWEET ADSP: stopped before GLINK/APR/audio; mode 2 remains read-only at the GLINK edge\n");
  			adsp_glink_readonly_survey();
-@@ -2532,11 +3046,13 @@ beryllium_adsp_probe(void)
+@@ -2532,11 +3050,13 @@ beryllium_adsp_probe(void)
  	adsp_probe_enabled = true;
  	adsp_pas_requested = beryllium_adsp_glink_mode_requests_pas(mode);
  	adsp_glink_requested = beryllium_adsp_glink_mode_requests_glink(mode);
@@ -914,7 +918,7 @@ index 0000000..70324ad
 +
 +#endif /* _BERYLLIUM_ADSP_APR_PROBE_H_ */
 diff --git a/bsd/dev/beryllium_adsp_glink_start.h b/bsd/dev/beryllium_adsp_glink_start.h
-index b519e8f..ff4dec1 100644
+index b519e8f..26605c6 100644
 --- a/bsd/dev/beryllium_adsp_glink_start.h
 +++ b/bsd/dev/beryllium_adsp_glink_start.h
 @@ -29,19 +29,19 @@ struct beryllium_adsp_glink_message {
@@ -940,3 +944,19 @@ index b519e8f..ff4dec1 100644
  }
  
  static inline bool
+@@ -116,6 +116,15 @@ beryllium_adsp_glink_ring_used(uint32_t head, uint32_t tail,
+ 	return true;
+ }
+ 
++static inline bool
++beryllium_adsp_glink_rx_frame_available(uint32_t head, uint32_t tail,
++	uint32_t size, size_t frame_bytes)
++{
++	uint32_t used;
++	return frame_bytes != 0 && (frame_bytes & 7u) == 0 && frame_bytes <= size &&
++	    beryllium_adsp_glink_ring_used(head, tail, size, &used) && used >= frame_bytes;
++}
++
+ static inline bool
+ beryllium_adsp_glink_ring_advance(uint32_t index, uint32_t count,
+     uint32_t size, uint32_t *next)
