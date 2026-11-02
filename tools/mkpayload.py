@@ -41,6 +41,11 @@ BOOT_LINE_LENGTH = 608
 CMDLINE = 0x48
 SEG_TABLE = CMDLINE + BOOT_LINE_LENGTH	# 0x2a8
 ADSP_REGION = (0x8c500000, 0x01e00000)
+# SCM PAS metadata for Beryllium is handed to secure firmware through a 32-bit
+# physical address. XNU manages RAM from 4 GiB on this board. This candidate
+# 16 KiB page is just above the default framebuffer low pool; the driver checks
+# runtime ranges before touching it.
+ADSP_METADATA_REGION = (0xc0000000, 0x4000)
 
 
 def parse_macho(buf):
@@ -156,6 +161,29 @@ def add_adsp_region_to_adt(adt_blob, base, size):
     return adt.serialize(root)
 
 
+def add_adsp_metadata_region_to_adt(adt_blob, base, size):
+    """Mark the single candidate Beryllium low-memory PAS metadata DMA page."""
+    if base is None and size is None:
+        return adt_blob
+    if (base, size) != ADSP_METADATA_REGION:
+        raise ValueError('only the candidate Beryllium PAS metadata page 0xc0000000:0x4000 is accepted')
+    if base >= (1 << 32) or size == 0 or size > (1 << 32) - base:
+        raise ValueError('PAS metadata page must fit inside the 32-bit SCM DMA window')
+    if base < ADSP_REGION[0] + ADSP_REGION[1] and ADSP_REGION[0] < base + size:
+        raise ValueError('PAS metadata page overlaps the ADSP firmware carveout')
+    root, _ = adt.parse(adt_blob)
+    chosen = next((c for c in root.children if c.name == 'chosen'), None)
+    if chosen is None:
+        raise ValueError('ADT has no /chosen node')
+    expected = struct.pack('<2Q', base, size)
+    current = chosen.prop('sweet-adsp-metadata-region')
+    if current is not None and current != expected:
+        raise ValueError('/chosen/sweet-adsp-metadata-region conflicts with the candidate Beryllium page')
+    if current is None:
+        chosen.props.append(('sweet-adsp-metadata-region', 0, expected))
+    return adt.serialize(root)
+
+
 def parse_adsp_region(value):
     """Parse the only currently verified ADSP reservation for a test payload."""
     try:
@@ -167,6 +195,24 @@ def parse_adsp_region(value):
         raise argparse.ArgumentTypeError('expected BASE:SIZE (for example 0x8c500000:0x01e00000)') from exc
     if region != ADSP_REGION:
         raise argparse.ArgumentTypeError('only verified Beryllium range 0x8c500000:0x01e00000 is accepted')
+    return region
+
+
+def parse_adsp_metadata_region(value):
+    """Parse the only candidate low physical PAS metadata page."""
+    try:
+        parts = value.split(':')
+        if len(parts) != 2:
+            raise ValueError
+        region = tuple(int(part, 0) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('expected BASE:SIZE (for example 0xc0000000:0x4000)') from exc
+    if region != ADSP_METADATA_REGION:
+        raise argparse.ArgumentTypeError('only candidate Beryllium page 0xc0000000:0x4000 is accepted')
+    if region[0] >= (1 << 32) or region[1] == 0 or region[1] > (1 << 32) - region[0]:
+        raise argparse.ArgumentTypeError('PAS metadata page must fit inside the 32-bit SCM DMA window')
+    if region[0] < ADSP_REGION[0] + ADSP_REGION[1] and ADSP_REGION[0] < region[0] + region[1]:
+        raise argparse.ArgumentTypeError('PAS metadata page overlaps the ADSP firmware carveout')
     return region
 
 
@@ -212,7 +258,8 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
-def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img4_nodes=True, adsp_region=None):
+def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img4_nodes=True,
+          adsp_region=None, adsp_metadata_region=None):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -230,6 +277,8 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img
         adt_blob = add_img4_nodes(adt_blob)
     if adsp_region is not None:
         adt_blob = add_adsp_region_to_adt(adt_blob, *adsp_region)
+    if adsp_metadata_region is not None:
+        adt_blob = add_adsp_metadata_region_to_adt(adt_blob, *adsp_metadata_region)
     # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
@@ -286,8 +335,11 @@ if __name__ == '__main__':
                     help='do not add /chosen/manifest-properties (cryptexd then traps in libimage4 again)')
     ap.add_argument('--adsp-region', type=parse_adsp_region,
                     help='opt in to the verified Beryllium ADSP region marker (0x8c500000:0x01e00000)')
+    ap.add_argument('--adsp-metadata-region', type=parse_adsp_metadata_region,
+                    help='opt in to the candidate Beryllium PAS DMA page marker (0xc0000000:0x4000)')
     a = ap.parse_args()
-    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.compress, not a.no_img4_nodes, a.adsp_region)
+    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.compress,
+                       not a.no_img4_nodes, a.adsp_region, a.adsp_metadata_region)
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':

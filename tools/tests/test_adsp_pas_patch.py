@@ -76,7 +76,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1143:
+                if not 1131 <= number <= 1144:
                     continue
                 marker = "diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c"
                 if marker not in later.read_text(errors="replace"):
@@ -215,13 +215,44 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertIn("region[off + j] != 0", verifier)
         self.assertIn("readback mismatch", verifier)
 
-    def test_pas_metadata_allocation_stays_inside_linux_scm_dma_window(self):
+    def test_pas_metadata_uses_a_validated_low_physical_dma_window(self):
         allocator = added_function_body(self.latest_driver, "adsp_metadata_alloc_contig")
         self.assertRegex(self.latest_driver,
-                         r"#define ADSP_PAS_METADATA_DMA_LIMIT\s+0x100000000ull")
-        self.assertIn("atop_64(ADSP_PAS_METADATA_DMA_LIMIT) - 1", allocator)
-        self.assertIn("PAGE_MASK, max_pnum, 0", allocator)
-        self.assertIn("PAS metadata address exceeds SCM DMA window", allocator)
+                         r"#define ADSP_PAS_METADATA_PA\s+0xc0000000ull")
+        self.assertRegex(self.latest_driver,
+                         r"#define ADSP_PAS_METADATA_REGION_SIZE\s+0x4000u")
+        self.assertIn('SecureDTGetProperty(chosen, "sweet-adsp-metadata-region"', allocator)
+        self.assertIn("metadata overlaps XNU RAM", allocator)
+        self.assertIn("metadata overlaps or has an invalid framebuffer low pool", allocator)
+        self.assertIn("lowpool_size == 0", allocator)
+        self.assertIn("ml_io_map_unmappable((vm_offset_t)metadata_pa, size, VM_WIMG_WCOMB)",
+                      " ".join(allocator.split()))
+        self.assertIn("dsb sy", allocator)
+        self.assertNotIn("kmem_alloc_contig", allocator)
+
+    def test_payload_metadata_region_marker_is_exact_and_conflict_checked(self):
+        root = adt.Node()
+        root.props.append(("name", 0, b"device-tree\0"))
+        chosen = adt.Node()
+        chosen.props.append(("name", 0, b"chosen\0"))
+        root.children.append(chosen)
+        raw = adt.serialize(root)
+
+        marked = mkpayload.add_adsp_metadata_region_to_adt(raw, 0xc0000000, 0x4000)
+        parsed, _ = adt.parse(marked)
+        chosen = next(node for node in parsed.children if node.name == "chosen")
+        self.assertEqual(struct.unpack("<2Q", chosen.prop("sweet-adsp-metadata-region")),
+                         (0xc0000000, 0x4000))
+        with self.assertRaises(ValueError):
+            mkpayload.add_adsp_metadata_region_to_adt(raw, 0xc0004000, 0x4000)
+
+        chosen.props = [
+            (name, flags, struct.pack("<2Q", 0xc0004000, 0x4000)
+             if name == "sweet-adsp-metadata-region" else value)
+            for name, flags, value in chosen.props
+        ]
+        with self.assertRaises(ValueError):
+            mkpayload.add_adsp_metadata_region_to_adt(adt.serialize(parsed), 0xc0000000, 0x4000)
 
     def test_adsp_qmp_wrapper_reuses_existing_open_channel(self):
         wlan = diff_section(self.patch, "bsd/dev/beryllium_wlan.c")
