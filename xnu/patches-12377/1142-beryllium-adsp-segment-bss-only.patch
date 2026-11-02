@@ -1,0 +1,28 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -1440,3 +1439,0 @@
+-	for (uint32_t off = 0; off < ADSP_PAS_REGION_SIZE; off += sizeof(uint32_t)) {
+-		*(volatile uint32_t *)(region + off) = 0;
+-	}
+@@ -1447,4 +1444,3 @@
+-		if (seg->filesz == 0) {
+-			continue;
+-		}
+-		if (seg->data == NULL || seg->filesz > seg->memsz || off + seg->memsz > ADSP_PAS_REGION_SIZE) {
++		if (seg->filesz > seg->memsz || off > ADSP_PAS_REGION_SIZE ||
++		    seg->memsz > ADSP_PAS_REGION_SIZE - off ||
++		    (seg->filesz != 0 && seg->data == NULL)) {
+@@ -1461,0 +1458,12 @@
++		}
++		uint64_t zero_off = off + seg->filesz;
++		uint64_t zero_size = seg->memsz - seg->filesz;
++		while (zero_size != 0 && (zero_off & (sizeof(uint32_t) - 1)) != 0) {
++			*(volatile uint8_t *)(region + zero_off++) = 0;
++			zero_size--;
++		}
++		for (; zero_size >= sizeof(uint32_t); zero_size -= sizeof(uint32_t), zero_off += sizeof(uint32_t)) {
++			*(volatile uint32_t *)(region + zero_off) = 0;
++		}
++		for (; zero_size != 0; zero_size--, zero_off++) {
++			*(volatile uint8_t *)(region + zero_off) = 0;

@@ -118,6 +118,7 @@ CI run [41302309171](https://github.com/anxoCastro/Bergamota/actions/runs/413023
 - What causes the item-423 SFR text. Patch 1139 observed item 423 unavailable/empty before PAS and a 256-byte generic message during the ready wait, but cannot prove when the text was written or identify its cause.
 - Whether the display visibly shows SpringBoard. The 1138 capture records SpringBoard/backboardd activity and USB ping succeeds, but the screen was not directly observed; SSH port 22 refused the connection.
 - The DSP-visible carveout contents and secure assignment after PAS handoff remain unverified; AP-side readback alone does not establish these. No source or device evidence so far shows a missing Linux prerequisite.
+- XNU 1141 zeroes the full 30 MiB carveout, while the audited Linux MDT loader only clears each PT_LOAD BSS tail and leaves inter-segment gaps untouched. Patch 1142 is a temporary A/B experiment for this gap-initialization difference; it is not an established cause. Build and device outcome are tracked in `NOTES.md`.
 - Whether the live Beryllium ADSP edge has Linux's SMEM items 478–480, what their actual sizes/indices and ownership are, and whether the edge is already active. Linux mainline's reference allocation and initialization are now traced, but not checked against the phone.
 - Whether Beryllium exposes the Linux-configured `avs/audio` → `msm/adsp/audio_pd` protection domain and its runtime PDR state before Q6 core requests are sent.
 - Whether `AVCS_GET_VERSIONS` is supported by the installed firmware and its response format/version.
