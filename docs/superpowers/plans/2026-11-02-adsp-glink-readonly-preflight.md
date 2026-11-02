@@ -85,13 +85,13 @@
 - Call it once from `beryllium_adsp_pas_start()` only after the existing Q6V5-ready log/branch succeeds.
 - Survey items 478/479/480 only in the host-0/host-2 private partition.
 
-- [ ] **Step 1: Add failing patch-contract checks.** Assert the survey call follows `Q6V5 ready observed`, item 478 requires size 32, item status is handled as found/absent/malformed, FIFO sizes are reported, and no write/allocation/mailbox/IRQ/GLINK/APR symbols occur in the survey function body.
-- [ ] **Step 2: Run the focused test and confirm failure.** Run `python3 tools/tests/test_adsp_pas_patch.py AdspPasPatchTests.test_glink_survey_is_read_only_and_after_ready`; expected: failure because the survey function does not exist.
-- [ ] **Step 3: Implement sample 1.** Read item sizes and descriptor words 0–3 with the current SMEM read path and barriers. Read the four words twice; mark sample 1 unstable if the two sets differ. Do not print physical offsets.
-- [ ] **Step 4: Implement sample 2.** Wait 100 ms, repeat the same bounded reads, and classify unchanged values as `stable during 100 ms`, changed values as `changed between samples`, or invalid/unstable data without interpreting it.
-- [ ] **Step 5: Log the `slave-kernel` name and value.** Add the direct read-only entry log at the successful Q6V5-ready point; do not change item 443.
-- [ ] **Step 6: Run the focused contract test.** Expected: survey is reachable only after ready, and its call graph contains no shared-memory mutation or GLINK/APR start.
-- [ ] **Step 7: Commit the survey implementation and safety checks.**
+- [x] **Step 1: Add failing patch-contract checks.** Assert the survey call follows `Q6V5 ready observed`, item 478 requires size 32, item status is handled as found/absent/malformed, FIFO sizes are reported, and no write/allocation/mailbox/IRQ/GLINK/APR symbols occur in the survey function body.
+- [x] **Step 2: Run the focused test and confirm failure.** Run `python3 tools/tests/test_adsp_pas_patch.py AdspPasPatchTests.test_glink_survey_is_read_only_and_after_ready`; expected: failure because the survey function does not exist.
+- [x] **Step 3: Implement sample 1.** Read item sizes and descriptor words 0–3 with the current SMEM read path and barriers. Read the four words twice; mark sample 1 unstable if the two sets differ. Do not print physical offsets.
+- [x] **Step 4: Implement sample 2.** Wait 100 ms, repeat the same bounded reads, and classify unchanged values as `stable during 100 ms`, changed values as `changed between samples`, or invalid/unstable data without interpreting it.
+- [x] **Step 5: Log the `slave-kernel` name and value.** Add the direct read-only entry log at the successful Q6V5-ready point; do not change item 443.
+- [x] **Step 6: Run the focused contract test.** Expected: survey is reachable only after ready, and its call graph contains no shared-memory mutation or GLINK/APR start.
+- [x] **Step 7: Commit the survey implementation and safety checks.**
 
 ### Task 4: Verify the ordered patch series and regression suite
 

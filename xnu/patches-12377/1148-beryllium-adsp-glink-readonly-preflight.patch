@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
-index c414786..c9c505e 100644
+index c414786..564249b 100644
 --- a/bsd/dev/beryllium_adsp.c
 +++ b/bsd/dev/beryllium_adsp.c
 @@ -27,6 +27,7 @@
@@ -10,7 +10,46 @@ index c414786..c9c505e 100644
  #include "beryllium_smp2p_negotiation.h"
  
  extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
-@@ -364,89 +365,117 @@ adsp_smem_wr32(uint32_t off, uint32_t value)
+@@ -58,6 +59,10 @@ extern vnode_t rootvnode;
+ #define ADSP_SMP2P_IN_ITEM       443u
+ #define ADSP_CRASH_REASON_ITEM   423u
+ #define ADSP_Q6V5_WDOG_SPI       162u
++#define ADSP_GLINK_DESCRIPTOR_ITEM 478u
++#define ADSP_GLINK_TX_FIFO_ITEM  479u
++#define ADSP_GLINK_RX_FIFO_ITEM  480u
++#define ADSP_GLINK_DESCRIPTOR_SIZE 32u
+ #define ADSP_SMP2P_OUT_ITEM      429u
+ #define ADSP_SMP2P_DOORBELL      10u
+ #define ADSP_SMP2P_ITEM_SIZE     (ADSP_SMP2P_HEADER_BYTES + ADSP_SMP2P_MAX_ENTRY * ADSP_SMP2P_ENTRY_BYTES)
+@@ -124,6 +129,8 @@ static bool adsp_firmware_probe_done;
+ static bool adsp_pas_requested;
+ static bool adsp_smp2p_known;
+ static bool adsp_remote_ready;
++static bool adsp_remote_ready_entry_valid;
++static uint32_t adsp_remote_ready_entry_value;
+ static bool adsp_remote_fatal;
+ static bool adsp_remote_handover;
+ static bool adsp_remote_stop_ack;
+@@ -144,6 +151,18 @@ static bool adsp_smp2p_remote_version_wait_reported;
+ static bool adsp_smp2p_kick_failure_reported;
+ static bool adsp_smp2p_negotiation_failed;
+ 
++struct adsp_glink_survey_item {
++	enum beryllium_adsp_item_result result;
++	uint32_t off;
++	uint32_t size;
++};
++
++struct adsp_glink_survey_items {
++	struct adsp_glink_survey_item descriptor;
++	struct adsp_glink_survey_item tx_fifo;
++	struct adsp_glink_survey_item rx_fifo;
++};
++
+ static uint16_t
+ adsp_u16le(const uint8_t *p)
+ {
+@@ -364,89 +383,117 @@ adsp_smem_wr32(uint32_t off, uint32_t value)
  	p[3] = (uint8_t)(value >> 24);
  }
  
@@ -183,7 +222,7 @@ index c414786..c9c505e 100644
  }
  
  /* Lock TCSR mutex 3 while editing the Apps<->ADSP private SMEM allocation list. */
-@@ -712,9 +741,8 @@ adsp_smp2p_out_snapshot(const char *stage)
+@@ -712,9 +759,8 @@ adsp_smp2p_out_snapshot(const char *stage)
  	uint32_t value = 0;
  	bool found = false;
  
@@ -195,7 +234,16 @@ index c414786..c9c505e 100644
  		printf("SWEET ADSP: outbound SMP2P readback (%s): item %u unavailable\n",
  		    stage, ADSP_SMP2P_OUT_ITEM);
  		return;
-@@ -916,7 +944,8 @@ adsp_smp2p_readonly_probe(bool quiet)
+@@ -892,6 +938,8 @@ adsp_smp2p_readonly_probe(bool quiet)
+ 	adsp_smp2p_quiet = quiet;
+ 	adsp_smp2p_known = false;
+ 	adsp_remote_ready = false;
++	adsp_remote_ready_entry_valid = false;
++	adsp_remote_ready_entry_value = 0;
+ 	adsp_remote_fatal = false;
+ 	adsp_remote_handover = false;
+ 	adsp_remote_stop_ack = false;
+@@ -916,7 +964,8 @@ adsp_smp2p_readonly_probe(bool quiet)
  		}
  	}
  	__asm__ volatile ("dmb sy" ::: "memory");
@@ -205,7 +253,29 @@ index c414786..c9c505e 100644
  		ADSP_SMP2P_LOG("SWEET ADSP: remote SMP2P inbound item %u unavailable\n", ADSP_SMP2P_IN_ITEM);
  		adsp_state = BERYLLIUM_ADSP_SMP2P_NOT_READY;
  		return;
-@@ -1018,9 +1047,9 @@ adsp_crash_reason_read(char *reason, uint32_t *item_size, bool *truncated)
+@@ -971,11 +1020,21 @@ adsp_smp2p_readonly_probe(bool quiet)
+ 		if (strcmp(name, "slave-kernel") == 0) {
+ 			if (found) {
+ 				ADSP_SMP2P_LOG("SWEET ADSP: duplicate slave-kernel SMP2P entry; rejecting snapshot\n");
++				adsp_smp2p_header_valid = false;
++				adsp_smp2p_known = false;
++				adsp_remote_ready = false;
++				adsp_remote_ready_entry_valid = false;
++				adsp_remote_ready_entry_value = 0;
++				adsp_remote_fatal = false;
++				adsp_remote_handover = false;
++				adsp_remote_stop_ack = false;
+ 				adsp_smp2p_ambiguous = true;
+ 				adsp_state = BERYLLIUM_ADSP_FAILED;
+ 				return;
+ 			}
+ 			found = true;
++			adsp_remote_ready_entry_valid = true;
++			adsp_remote_ready_entry_value = value;
+ 			adsp_smp2p_known = true;
+ 			fatal = (value & 1u) != 0;
+ 			ready = (value & (1u << 1)) != 0;
+@@ -1018,9 +1077,9 @@ adsp_crash_reason_read(char *reason, uint32_t *item_size, bool *truncated)
  	if (adsp_smem == NULL) {
  		adsp_smem = (volatile uint8_t *)ml_io_map(ADSP_SMEM_PA, ADSP_SMEM_SIZE);
  	}
@@ -218,6 +288,219 @@ index c414786..c9c505e 100644
  		return false;
  	}
  	count = MIN(reason_size, (uint32_t)128);
+@@ -1551,6 +1610,200 @@ adsp_metadata_alloc_contig(const struct adsp_full_bundle *bundle, vm_offset_t *k
+ 	return true;
+ }
+ 
++static void
++adsp_glink_survey_log_item(unsigned sample, const char *name, uint16_t item_id,
++    const struct adsp_glink_survey_item *item)
++{
++	switch (item->result) {
++	case BERYLLIUM_ADSP_ITEM_FOUND:
++		printf("SWEET ADSP: GLINK survey sample %u item %u (%s): found size=%u\n",
++		    sample, item_id, name, item->size);
++		break;
++	case BERYLLIUM_ADSP_ITEM_ABSENT:
++		printf("SWEET ADSP: GLINK survey sample %u item %u (%s): absent size=unknown\n",
++		    sample, item_id, name);
++		break;
++	case BERYLLIUM_ADSP_ITEM_MALFORMED:
++		printf("SWEET ADSP: GLINK survey sample %u item %u (%s): malformed size=unknown\n",
++		    sample, item_id, name);
++		break;
++	default:
++		printf("SWEET ADSP: GLINK survey sample %u item %u (%s): invalid lookup status\n",
++		    sample, item_id, name);
++		break;
++	}
++}
++
++static bool
++adsp_glink_survey_read_items(unsigned sample, struct adsp_glink_survey_items *items)
++{
++	if (items == NULL || adsp_smem == NULL) {
++		printf("SWEET ADSP: GLINK survey sample %u unavailable: SMEM is not mapped\n", sample);
++		return false;
++	}
++	items->descriptor.off = 0;
++	items->descriptor.size = 0;
++	items->tx_fifo.off = 0;
++	items->tx_fifo.size = 0;
++	items->rx_fifo.off = 0;
++	items->rx_fifo.size = 0;
++	__asm__ volatile ("dmb sy" ::: "memory");
++	items->descriptor.result = adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID,
++	    ADSP_GLINK_DESCRIPTOR_ITEM, &items->descriptor.off, &items->descriptor.size);
++	items->tx_fifo.result = adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID,
++	    ADSP_GLINK_TX_FIFO_ITEM, &items->tx_fifo.off, &items->tx_fifo.size);
++	items->rx_fifo.result = adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID,
++	    ADSP_GLINK_RX_FIFO_ITEM, &items->rx_fifo.off, &items->rx_fifo.size);
++	__asm__ volatile ("dmb sy" ::: "memory");
++	adsp_glink_survey_log_item(sample, "descriptor", ADSP_GLINK_DESCRIPTOR_ITEM,
++	    &items->descriptor);
++	adsp_glink_survey_log_item(sample, "tx-fifo", ADSP_GLINK_TX_FIFO_ITEM, &items->tx_fifo);
++	adsp_glink_survey_log_item(sample, "rx-fifo", ADSP_GLINK_RX_FIFO_ITEM, &items->rx_fifo);
++	if (items->descriptor.result == BERYLLIUM_ADSP_ITEM_MALFORMED ||
++	    items->tx_fifo.result == BERYLLIUM_ADSP_ITEM_MALFORMED ||
++	    items->rx_fifo.result == BERYLLIUM_ADSP_ITEM_MALFORMED) {
++		printf("SWEET ADSP: GLINK survey sample %u stopped on malformed private SMEM metadata\n",
++		    sample);
++		return false;
++	}
++	return true;
++}
++
++static bool
++adsp_glink_survey_read_indices(uint32_t descriptor_off,
++    struct beryllium_adsp_glink_indices *indices)
++{
++	struct beryllium_adsp_glink_indices first, second;
++
++	if (indices == NULL) {
++		return false;
++	}
++	__asm__ volatile ("dmb sy" ::: "memory");
++	first.tx_tail = adsp_smem_rd32(descriptor_off);
++	first.tx_head = adsp_smem_rd32(descriptor_off + 4);
++	first.rx_tail = adsp_smem_rd32(descriptor_off + 8);
++	first.rx_head = adsp_smem_rd32(descriptor_off + 12);
++	__asm__ volatile ("dmb sy" ::: "memory");
++	second.tx_tail = adsp_smem_rd32(descriptor_off);
++	second.tx_head = adsp_smem_rd32(descriptor_off + 4);
++	second.rx_tail = adsp_smem_rd32(descriptor_off + 8);
++	second.rx_head = adsp_smem_rd32(descriptor_off + 12);
++	__asm__ volatile ("dmb sy" ::: "memory");
++	if (!beryllium_adsp_glink_indices_equal(&first, &second)) {
++		return false;
++	}
++	*indices = second;
++	return true;
++}
++
++static bool
++adsp_glink_survey_item_equal(const struct adsp_glink_survey_item *a,
++    const struct adsp_glink_survey_item *b)
++{
++	if (a->result != b->result) {
++		return false;
++	}
++	return a->result != BERYLLIUM_ADSP_ITEM_FOUND ||
++	    (a->off == b->off && a->size == b->size);
++}
++
++static bool
++adsp_glink_survey_items_equal(const struct adsp_glink_survey_items *a,
++    const struct adsp_glink_survey_items *b)
++{
++	return adsp_glink_survey_item_equal(&a->descriptor, &b->descriptor) &&
++	    adsp_glink_survey_item_equal(&a->tx_fifo, &b->tx_fifo) &&
++	    adsp_glink_survey_item_equal(&a->rx_fifo, &b->rx_fifo);
++}
++
++static void
++adsp_glink_survey_log_index(unsigned sample, const char *name, uint32_t value,
++    const struct adsp_glink_survey_item *fifo)
++{
++	bool fifo_present = fifo != NULL && fifo->result == BERYLLIUM_ADSP_ITEM_FOUND &&
++	    fifo->size != 0;
++	uint32_t fifo_size = fifo == NULL ? 0 : fifo->size;
++	enum beryllium_adsp_glink_index_result result =
++	    beryllium_adsp_glink_check_index(value, fifo_present, fifo_size);
++
++	if (result == BERYLLIUM_ADSP_GLINK_INDEX_VALID) {
++		printf("SWEET ADSP: GLINK survey sample %u %s=%#x in-range\n", sample, name, value);
++	} else if (result == BERYLLIUM_ADSP_GLINK_INDEX_OUT_OF_RANGE) {
++		printf("SWEET ADSP: GLINK survey sample %u %s=%#x out-of-range size=%u\n",
++		    sample, name, value, fifo_size);
++	} else {
++		printf("SWEET ADSP: GLINK survey sample %u %s=%#x range-not-checked (FIFO absent or empty)\n",
++		    sample, name, value);
++	}
++}
++
++static void
++adsp_glink_survey_log_indices(unsigned sample,
++    const struct beryllium_adsp_glink_indices *indices,
++    const struct adsp_glink_survey_items *items)
++{
++	adsp_glink_survey_log_index(sample, "TX tail", indices->tx_tail, &items->tx_fifo);
++	adsp_glink_survey_log_index(sample, "TX head", indices->tx_head, &items->tx_fifo);
++	adsp_glink_survey_log_index(sample, "RX tail", indices->rx_tail, &items->rx_fifo);
++	adsp_glink_survey_log_index(sample, "RX head", indices->rx_head, &items->rx_fifo);
++}
++
++static void
++adsp_glink_readonly_survey(void)
++{
++	struct adsp_glink_survey_items first_items, second_items;
++	struct beryllium_adsp_glink_indices first_indices, second_indices;
++	bool first_stable, second_stable;
++
++	printf("SWEET ADSP: GLINK read-only survey started; items 478-480 only\n");
++	if (!adsp_glink_survey_read_items(1, &first_items)) {
++		return;
++	}
++	if (first_items.descriptor.result != BERYLLIUM_ADSP_ITEM_FOUND) {
++		printf("SWEET ADSP: GLINK survey stopped: descriptor item %u is unavailable\n",
++		    ADSP_GLINK_DESCRIPTOR_ITEM);
++		return;
++	}
++	if (!beryllium_adsp_glink_descriptor_size_valid(first_items.descriptor.size)) {
++		printf("SWEET ADSP: GLINK survey stopped: descriptor item %u size=%u expected=%u\n",
++		    ADSP_GLINK_DESCRIPTOR_ITEM, first_items.descriptor.size,
++		    ADSP_GLINK_DESCRIPTOR_SIZE);
++		return;
++	}
++	first_stable = adsp_glink_survey_read_indices(first_items.descriptor.off, &first_indices);
++	if (!first_stable) {
++		printf("SWEET ADSP: GLINK survey sample 1 unstable; descriptor indices suppressed\n");
++	} else {
++		printf("SWEET ADSP: GLINK survey sample 1 double-read stable\n");
++		adsp_glink_survey_log_indices(1, &first_indices, &first_items);
++	}
++
++	delay(100000);
++	if (!adsp_glink_survey_read_items(2, &second_items)) {
++		return;
++	}
++	if (!adsp_glink_survey_items_equal(&first_items, &second_items)) {
++		printf("SWEET ADSP: GLINK survey item metadata changed between samples; sample 2 indices not read\n");
++		return;
++	}
++	second_stable = adsp_glink_survey_read_indices(second_items.descriptor.off, &second_indices);
++	if (!second_stable) {
++		printf("SWEET ADSP: GLINK survey sample 2 unstable; descriptor indices suppressed\n");
++		return;
++	}
++	printf("SWEET ADSP: GLINK survey sample 2 double-read stable\n");
++	adsp_glink_survey_log_indices(2, &second_indices, &second_items);
++	if (!first_stable) {
++		printf("SWEET ADSP: GLINK survey has no cross-sample conclusion because sample 1 was unstable\n");
++		return;
++	}
++	if (beryllium_adsp_glink_indices_equal(&first_indices, &second_indices)) {
++		printf("SWEET ADSP: GLINK descriptor indices stable during 100 ms; this does not establish an idle edge\n");
++	} else {
++		printf("SWEET ADSP: GLINK descriptor indices changed between samples\n");
++	}
++}
++
+ static bool
+ beryllium_adsp_pas_start(void)
+ {
+@@ -1772,6 +2025,11 @@ beryllium_adsp_pas_start(void)
+ 	    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+ 	if (ready) {
+ 		printf("SWEET ADSP: Q6V5 ready observed; stopped before GLINK/APR/audio; QMP/XO retained\n");
++		if (adsp_remote_ready_entry_valid) {
++			printf("SWEET ADSP: Q6V5 ready source: item %u entry slave-kernel value=%#x (read-only)\n",
++			    ADSP_SMP2P_IN_ITEM, adsp_remote_ready_entry_value);
++		}
++		adsp_glink_readonly_survey();
+ 		result = true;
+ 		goto out;
+ 	}
 diff --git a/bsd/dev/beryllium_adsp_glink_survey.h b/bsd/dev/beryllium_adsp_glink_survey.h
 new file mode 100644
 index 0000000..f87e326

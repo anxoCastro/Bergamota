@@ -247,7 +247,64 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertNotIn("adsp_smem_lock(", lookup)
         self.assertNotIn("adsp_smem_unlock(", lookup)
         self.assertNotRegex(self.latest_driver, r"!\s*adsp_smem_private_item\(")
-        self.assertEqual(self.latest_driver.count("!= BERYLLIUM_ADSP_ITEM_FOUND"), 3)
+        for caller in ("adsp_smp2p_out_snapshot", "adsp_smp2p_readonly_probe",
+                       "adsp_crash_reason_read"):
+            self.assertIn("!= BERYLLIUM_ADSP_ITEM_FOUND",
+                          added_function_body(self.latest_driver, caller), caller)
+
+    def test_glink_survey_is_read_only_and_after_ready(self):
+        survey = added_function_body(self.latest_driver, "adsp_glink_readonly_survey")
+        read_items = added_function_body(self.latest_driver, "adsp_glink_survey_read_items")
+        log_item = added_function_body(self.latest_driver, "adsp_glink_survey_log_item")
+        read_indices = added_function_body(self.latest_driver, "adsp_glink_survey_read_indices")
+        log_indices = added_function_body(self.latest_driver, "adsp_glink_survey_log_indices")
+        item_equal = added_function_body(self.latest_driver, "adsp_glink_survey_item_equal")
+        items_equal = added_function_body(self.latest_driver, "adsp_glink_survey_items_equal")
+        log_index = added_function_body(self.latest_driver, "adsp_glink_survey_log_index")
+        start = added_function_body(self.latest_driver, "beryllium_adsp_pas_start")
+        ready = start[start.index("if (ready) {"):start.index("if (fatal) {")]
+
+        self.assertLess(ready.index("Q6V5 ready observed"),
+                        ready.index("adsp_glink_readonly_survey()"))
+        self.assertIn("BERYLLIUM_ADSP_ITEM_FOUND", log_item)
+        self.assertIn("BERYLLIUM_ADSP_ITEM_ABSENT", log_item)
+        self.assertIn("BERYLLIUM_ADSP_ITEM_MALFORMED", log_item)
+        self.assertIn("beryllium_adsp_glink_descriptor_size_valid", survey)
+        self.assertIn("ADSP_GLINK_DESCRIPTOR_ITEM", read_items)
+        self.assertIn("ADSP_GLINK_TX_FIFO_ITEM", read_items)
+        self.assertIn("ADSP_GLINK_RX_FIFO_ITEM", read_items)
+        self.assertIn("size=%u", log_item)
+        self.assertIn("delay(100000)", survey)
+        self.assertIn("stable during 100 ms", survey)
+        self.assertIn("changed between samples", survey)
+        self.assertEqual(read_indices.count("adsp_smem_rd32("), 8)
+        self.assertGreaterEqual(read_indices.count('"dmb sy"'), 2)
+        self.assertIn("beryllium_adsp_glink_indices_equal", read_indices)
+        self.assertIn("beryllium_adsp_glink_indices_equal", survey)
+        self.assertIn("adsp_glink_survey_item_equal", items_equal)
+        self.assertIn("Q6V5 ready source: item %u entry slave-kernel value=", ready)
+        self.assertIn("adsp_remote_ready_entry_value", ready)
+        self.assertIn("adsp_remote_ready_entry_value = value", self.latest_driver)
+
+        call_graph = "\n".join((survey, read_items, log_item, read_indices,
+                                  log_indices, item_equal, items_equal, log_index,
+                                  added_function_body(self.latest_driver,
+                                                      "adsp_smem_private_item")))
+        for forbidden in (
+            "adsp_smem_wr", "adsp_smem_alloc_private_item", "adsp_smem_lock(",
+            "adsp_smem_unlock(", "adsp_smp2p_kick", "sweet_gic_spi_",
+            "adsp_pas_call", "apr_", "glink_native", "mailbox",
+        ):
+            self.assertNotIn(forbidden, call_graph, forbidden)
+
+    def test_duplicate_smp2p_ready_entry_cannot_trigger_glink_survey(self):
+        probe = added_function_body(self.latest_driver, "adsp_smp2p_readonly_probe")
+        duplicate = probe[probe.index("duplicate slave-kernel SMP2P entry"):]
+        duplicate = duplicate[:duplicate.index("return;")]
+        self.assertIn("adsp_remote_ready = false", duplicate)
+        self.assertIn("adsp_remote_ready_entry_valid = false", duplicate)
+        self.assertIn("adsp_smp2p_header_valid = false", duplicate)
+        self.assertIn("adsp_smp2p_ambiguous = true", duplicate)
 
     def test_outbound_smp2p_readback_is_passive_and_brackets_pas_start(self):
         snapshot = added_function_body(self.latest_driver, "adsp_smp2p_out_snapshot")
