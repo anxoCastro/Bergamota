@@ -52,13 +52,23 @@
 - [x] Dispatch GitHub Actions; verify XNU 26.5, patch 1150 application, artifact checksum, and empty `errors.txt`.
 - [x] Package an image using the verified Beryllium Enxerto loader and ADT, with `sweetadsp=4`, both required ADSP markers, and no `ufsrw=1`/`rootrw=1`.
 - [x] Unpack and verify kernel, payload, both ADT markers, boot header, and SHA-256 values.
-- [ ] Recheck one Fastboot target, `product=beryllium`, and unlocked state; RAM boot is pending because the phone disappeared from USB. The isolated UDP capture is already listening.
-- [ ] RAM-boot only; record send/boot output, mode-4 APR progress, log hash, and boot continuation. Stop if the phone leaves Fastboot or observed preflight differs.
+- [x] Recheck one Fastboot target, `product=beryllium`, and unlocked state. It passed immediately before the test boot.
+- [x] RAM-boot only; record send/boot output, mode-4 APR progress, log hash, and boot continuation. The image was loaded with `fastboot boot`; no partition was written.
 
 ## Task 5: Handoff and commit
 
 - [x] Update `NOTES.md` after implementation/build/device milestones, recording exact observed results and unresolved work.
 - [x] Commit and push the completed source/docs/handoff without co-author trailer.
+
+## Follow-up: Diagnose the rejected peer OPEN
+
+**Observation:** the mode-4 boot completed PAS and GLINK base negotiation, sent `OPEN` for `apr_audio_svc`, and rejected the incoming peer `OPEN` before sending Q6Core. The first capture has no peer ID, `param2`, frame length, or channel-name bytes. Its later read-only root mount failed and `mount[3]` exited status 1; the capture contains no explicit kernel panic.
+
+- [x] Preserve the rejection behavior and add a bounded log of command, remote ID, `param2`, frame length, and at most 32 wire-data bytes in patch 1151.
+- [x] Extend ordered-patch contract coverage through 1151; focused test passes and full test discovery passes 39/39.
+- [ ] Commit and push patch 1151, tests, plan, design, and `NOTES.md`; dispatch the XNU 26.5 KDK build with `gh` and verify patch application, artifact checksums, and empty `errors.txt`.
+- [ ] Once exactly one unlocked `beryllium` Fastboot device enumerates, boot a new temporary image with `fastboot boot` and a fresh UDP capture. Record peer OPEN wire fields and the exact boot continuation.
+- [ ] Use the observed wire frame to select the next APR protocol change; do not infer channel success or audio from GLINK base negotiation alone.
 
 ## Completion report
 

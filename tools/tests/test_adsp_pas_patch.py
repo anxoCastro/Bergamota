@@ -18,6 +18,7 @@ NEGOTIATION_PATCH = ROOT / "xnu/patches-12377/1147-beryllium-adsp-smp2p-version-
 GLINK_PATCH = ROOT / "xnu/patches-12377/1148-beryllium-adsp-glink-readonly-preflight.patch"
 GLINK_MODE3_PATCH = ROOT / "xnu/patches-12377/1149-beryllium-adsp-glink-mode3.patch"
 APR_MODE4_PATCH = ROOT / "xnu/patches-12377/1150-beryllium-adsp-apr-q6core-mode4.patch"
+APR_OPEN_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1151-beryllium-adsp-apr-open-diagnostics.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -80,7 +81,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1150:
+                if not 1131 <= number <= 1151:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -633,6 +634,16 @@ class AdspPasPatchTests(unittest.TestCase):
             subprocess.run(["git", "apply", "--check", f"--include={target}", str(PATCH)],
                            cwd=work, check=True, capture_output=True, text=True)
 
+    def test_rejected_peer_open_logs_bounded_wire_fields(self):
+        self.assertTrue(APR_OPEN_DIAGNOSTICS_PATCH.is_file(),
+                        "patch 1151 must add diagnostics for the rejected peer OPEN")
+        open_body = added_function_body(self.latest_driver, "adsp_apr_open_channel")
+        self.assertIn("peer OPEN rejected: command=%u remote-id=%u param2=%#x", open_body)
+        self.assertIn("frame_bytes=%lu wire_data=", open_body)
+        self.assertIn("dump_bytes > 32", open_body)
+        self.assertIn("for (size_t i = 0; i < dump_bytes; i++)", open_body)
+        self.assertIn("return false", open_body)
+
 
 class AdspAprMode4Tests(unittest.TestCase):
     def test_compiled_apr_mode4_helpers(self):
@@ -709,7 +720,6 @@ class AdspAprMode4Tests(unittest.TestCase):
         self.assertNotIn("expected_head", rx_consume)
         self.assertIn("ADSP_APR_POLL_MS",
                       added_function_body(driver, "adsp_apr_poll_response"))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,23 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 9502dc5..9f626e8 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2486,7 +2486,17 @@ adsp_apr_open_channel(const struct adsp_glink_survey_items *items,
+ 		if (command == BERYLLIUM_ADSP_GLINK_CMD_OPEN) {
+ 			if (remote_open || param1 == 0 ||
+ 			    !beryllium_adsp_apr_open_name_valid(frame, frame_bytes, param1)) {
+-				printf("SWEET ADSP: APR GLINK OPEN rejected unexpected peer channel/name/id\n");
++				size_t dump_bytes = frame_bytes > 8 ? frame_bytes - 8 : 0;
++				if (dump_bytes > 32) {
++					dump_bytes = 32;
++				}
++				printf("SWEET ADSP: APR GLINK peer OPEN rejected: command=%u remote-id=%u param2=%#x frame_bytes=%lu wire_data=",
++				    (unsigned)command, (unsigned)param1, param2,
++				    (unsigned long)frame_bytes);
++				for (size_t i = 0; i < dump_bytes; i++) {
++					printf("%02x", (unsigned)frame[8 + i]);
++				}
++				printf("\n");
+ 				return false;
+ 			}
+ 			state->remote_channel_id = param1;

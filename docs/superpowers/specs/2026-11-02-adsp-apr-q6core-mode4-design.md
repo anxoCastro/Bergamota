@@ -32,6 +32,7 @@ References: [SDM845 DTS](https://github.com/torvalds/linux/blob/master/arch/arm6
 
 1. The mode-4 path runs only after mode 3 returns a valid base VERSION_ACK; modes 0–3 are unchanged.
 2. All incoming control frames are length-checked and 8-byte aligned before advancing RX tail. Unknown commands or malformed frames remain unread and terminate the probe.
+   For a rejected peer `OPEN`, diagnostics include its command, remote ID, `param2`, total frame length, and at most 32 bytes of frame data. Logging does not consume the frame or change the rejection path.
 3. The only transmitted APR command is the zero-initialized 20-byte Q6Core version query. No AFE/ASM service ID or mutating opcode is sent.
 4. RX data is accepted only for the exact channel ID, local receive-intent ID, single-fragment size fields (`left_size == 0`), and a bounded 512-byte buffer. The APR parser must validate the full envelope before reporting data.
 5. On every timeout or malformed state, log the stopping gate, leave remote-owned fields untouched, do not reset rings, and continue XNU boot.
