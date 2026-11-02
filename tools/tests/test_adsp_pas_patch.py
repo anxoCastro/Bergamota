@@ -76,7 +76,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1141:
+                if not 1131 <= number <= 1143:
                     continue
                 marker = "diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c"
                 if marker not in later.read_text(errors="replace"):
@@ -214,6 +214,14 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertIn("region[off + j] != seg->data[j]", verifier)
         self.assertIn("region[off + j] != 0", verifier)
         self.assertIn("readback mismatch", verifier)
+
+    def test_pas_metadata_allocation_stays_inside_linux_scm_dma_window(self):
+        allocator = added_function_body(self.latest_driver, "adsp_metadata_alloc_contig")
+        self.assertRegex(self.latest_driver,
+                         r"#define ADSP_PAS_METADATA_DMA_LIMIT\s+0x100000000ull")
+        self.assertIn("atop_64(ADSP_PAS_METADATA_DMA_LIMIT) - 1", allocator)
+        self.assertIn("PAGE_MASK, max_pnum, 0", allocator)
+        self.assertIn("PAS metadata address exceeds SCM DMA window", allocator)
 
     def test_adsp_qmp_wrapper_reuses_existing_open_channel(self):
         wlan = diff_section(self.patch, "bsd/dev/beryllium_wlan.c")

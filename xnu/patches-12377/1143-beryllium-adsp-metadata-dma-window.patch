@@ -1,0 +1,87 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index a88bdc3270a3ed2f127311e06c604ed2f346eac1..cc536741f573f92ea14f72029c48d1550063f417 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -51,6 +51,7 @@ extern vnode_t rootvnode;
+ #define ADSP_FW_META_MAX         0x00010000u     /* accept program-header tables in first 64 KiB */
+ #define ADSP_PAS_REGION_PA       0x8c500000ull
+ #define ADSP_PAS_REGION_SIZE     0x01e00000u
++#define ADSP_PAS_METADATA_DMA_LIMIT 0x100000000ull
+ #define ADSP_PAS_ID              1u
+ #define ADSP_SMEM_PA             0x86000000u
+ #define ADSP_SMEM_SIZE           0x00200000u
+@@ -1321,33 +1322,45 @@ static bool
+ static bool
+ adsp_metadata_alloc_contig(const struct adsp_full_bundle *bundle, vm_offset_t *kva_out, uint64_t *pa_out)
+ {
+-	vm_offset_t kva = 0;
+-	vm_size_t size = round_page(bundle->metadata_size);
+-	if (kmem_alloc_contig(kernel_map, &kva, size, PAGE_MASK, 0, 0,
+-	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET ADSP: contiguous PAS metadata allocation failed\n");
+-		return false;
+-	}
+-	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)kva);
+-	if (pn == 0) {
+-		printf("SWEET ADSP: PAS metadata page has no physical address\n");
+-		return false;
+-	}
+-	for (unsigned i = 1; i < size / PAGE_SIZE; i++) {
+-		if (pmap_find_phys(kernel_pmap, (addr64_t)(kva + i * PAGE_SIZE)) != pn + i) {
+-			printf("SWEET ADSP: PAS metadata pages are not physically contiguous\n");
+-			return false;
+-		}
+-	}
+-	memcpy((void *)kva, bundle->metadata, bundle->metadata_size);
+-	sweet_dma_sync_va((const void *)kva, size);
+-	for (unsigned i = 0; i < size / PAGE_SIZE; i++) {
+-		pmap_set_cache_attributes(pn + i, VM_WIMG_WCOMB);
+-	}
+-	sweet_dma_sync_va((const void *)kva, size);
+-	*kva_out = kva;
+-	*pa_out = ptoa_64(pn);
+-	printf("SWEET ADSP: PAS metadata %lu bytes at PA %#llx, contiguous and non-cacheable\n",
+-	    (unsigned long)bundle->metadata_size, (unsigned long long)*pa_out);
+-	return true;
++	vm_offset_t kva = 0;
++	vm_size_t size = round_page(bundle->metadata_size);
++	if (size == 0 || (uint64_t)size >= ADSP_PAS_METADATA_DMA_LIMIT) {
++		printf("SWEET ADSP: PAS metadata size exceeds SCM DMA window\n");
++		return false;
++	}
++	ppnum_t max_pnum = atop_64(ADSP_PAS_METADATA_DMA_LIMIT) - 1;
++	if (kmem_alloc_contig(kernel_map, &kva, size, PAGE_MASK, max_pnum, 0,
++	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("SWEET ADSP: contiguous PAS metadata allocation below 4 GiB failed\n");
++		return false;
++	}
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)kva);
++	if (pn == 0) {
++		printf("SWEET ADSP: PAS metadata page has no physical address\n");
++		return false;
++	}
++	for (unsigned i = 1; i < size / PAGE_SIZE; i++) {
++		if (pmap_find_phys(kernel_pmap, (addr64_t)(kva + i * PAGE_SIZE)) != pn + i) {
++			printf("SWEET ADSP: PAS metadata pages are not physically contiguous\n");
++			return false;
++		}
++	}
++	uint64_t metadata_pa = ptoa_64(pn);
++	if (metadata_pa >= ADSP_PAS_METADATA_DMA_LIMIT ||
++	    size > ADSP_PAS_METADATA_DMA_LIMIT - metadata_pa) {
++		printf("SWEET ADSP: PAS metadata address exceeds SCM DMA window: PA %#llx size %#lx\n",
++		    (unsigned long long)metadata_pa, (unsigned long)size);
++		return false;
++	}
++	memcpy((void *)kva, bundle->metadata, bundle->metadata_size);
++	sweet_dma_sync_va((const void *)kva, size);
++	for (unsigned i = 0; i < size / PAGE_SIZE; i++) {
++		pmap_set_cache_attributes(pn + i, VM_WIMG_WCOMB);
++	}
++	sweet_dma_sync_va((const void *)kva, size);
++	*kva_out = kva;
++	*pa_out = metadata_pa;
++	printf("SWEET ADSP: PAS metadata %lu bytes at PA %#llx, below 4 GiB, contiguous and non-cacheable\n",
++	    (unsigned long)bundle->metadata_size, (unsigned long long)*pa_out);
++	return true;
+ }
