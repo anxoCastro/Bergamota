@@ -16,6 +16,7 @@ PATCH = ROOT / "xnu/patches-12377/1132-beryllium-adsp-pas-startup.patch"
 PREFLIGHT_PATCH = ROOT / "xnu/patches-12377/1131-beryllium-adsp-apr.patch"
 NEGOTIATION_PATCH = ROOT / "xnu/patches-12377/1147-beryllium-adsp-smp2p-version-negotiation.patch"
 GLINK_PATCH = ROOT / "xnu/patches-12377/1148-beryllium-adsp-glink-readonly-preflight.patch"
+GLINK_MODE3_PATCH = ROOT / "xnu/patches-12377/1149-beryllium-adsp-glink-mode3.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -78,7 +79,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1148:
+                if not 1131 <= number <= 1149:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -231,6 +232,88 @@ class AdspPasPatchTests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "GLINK survey helper checks passed")
+
+    def test_compiled_glink_mode3_helpers(self):
+        header_path = "bsd/dev/beryllium_adsp_glink_start.h"
+        harness = ROOT / "tools/tests/test_adsp_glink_mode3.c"
+        self.assertTrue(GLINK_MODE3_PATCH.is_file(),
+                        "patch 1149 must provide the production GLINK-start helper header")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--include=bsd/dev/beryllium_adsp_glink_survey.h",
+                            str(GLINK_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(GLINK_MODE3_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            executable = work / "test-glink-mode3"
+            subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                "-I", str((work / header_path).parent), str(harness),
+                "-o", str(executable),
+            ], check=True, capture_output=True, text=True)
+            result = subprocess.run([str(executable)], check=False,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "GLINK mode-3 helper checks passed")
+
+    def test_mode3_glink_is_gated_by_ready_and_owns_only_ap_fields(self):
+        self.assertTrue(GLINK_MODE3_PATCH.is_file(), "patch 1149 is missing")
+        probe = added_function_body(self.latest_driver, "beryllium_adsp_probe")
+        start = added_function_body(self.latest_driver, "beryllium_adsp_pas_start")
+        glink = added_function_body(self.latest_driver, "adsp_glink_mode3_start")
+        prepare = added_function_body(self.latest_driver, "adsp_glink_tx_fifo_prepare")
+        allocate = added_function_body(self.latest_driver, "adsp_glink_allocate_tx_fifo_locked")
+        send_version = added_function_body(self.latest_driver, "adsp_glink_send_version")
+        transmit = added_function_body(self.latest_driver, "adsp_glink_send_packet")
+        kick = added_function_body(self.latest_driver, "adsp_glink_kick")
+        receive = added_function_body(self.latest_driver, "adsp_glink_poll_version")
+        consume = added_function_body(self.latest_driver, "adsp_glink_rx_consume")
+        readonly = added_function_body(self.latest_driver, "adsp_glink_readonly_survey")
+
+        self.assertIn("beryllium_adsp_glink_mode_valid(mode)", probe)
+        self.assertIn("beryllium_adsp_glink_mode_requests_pas(mode)", probe)
+        self.assertIn("beryllium_adsp_glink_mode_requests_glink(mode)", probe)
+        self.assertNotIn("adsp_smem_wr", readonly)
+        self.assertNotIn("adsp_smem_alloc_private_item", readonly)
+        self.assertNotIn("adsp_glink_kick", readonly)
+        self.assertLess(start.index("Q6V5 ready observed"),
+                        start.index("adsp_glink_mode3_start()"))
+        self.assertLess(glink.index("adsp_glink_cold_preflight"),
+                        glink.index("adsp_glink_tx_fifo_prepare"))
+        self.assertLess(glink.index("adsp_glink_tx_fifo_prepare"),
+                        glink.index("adsp_glink_cold_indices_after_allocation"))
+        self.assertLess(glink.index("adsp_glink_cold_indices_after_allocation"),
+                        glink.index("adsp_glink_send_version"))
+        self.assertIn("adsp_smem_lock()", prepare)
+        self.assertIn("adsp_smem_unlock()", prepare)
+        self.assertLess(prepare.index("adsp_smem_lock()"),
+                        prepare.index("adsp_smem_private_item("))
+        self.assertIn("ADSP_GLINK_TX_FIFO_ITEM", allocate)
+        self.assertIn("free_cached - free_uncached", allocate)
+        self.assertIn('"dmb sy"', allocate)
+        self.assertNotIn("ADSP_GLINK_RX_FIFO_ITEM", allocate)
+        self.assertIn("BERYLLIUM_ADSP_GLINK_COMMAND_VERSION_ACK", receive)
+        self.assertIn("delay(1000)", receive)
+        self.assertIn("ADSP_GLINK_POLL_MS", receive)
+        self.assertIn("feature mismatch", receive)
+        self.assertIn("adsp_glink_send_packet", send_version)
+        self.assertIn("ADSP_GLINK_DOORBELL", kick)
+        self.assertNotIn("ADSP_SMP2P_DOORBELL", kick)
+        self.assertIn("beryllium_adsp_glink_indices_valid", transmit)
+        self.assertIn("cold_start && !beryllium_adsp_glink_cold_indices_valid", transmit)
+        self.assertIn("adsp_smem_wr32(items->descriptor.off + 4", transmit)
+        self.assertIn("adsp_glink_kick", transmit)
+        self.assertIn("adsp_smem_wr32(items->descriptor.off + 8", consume)
+        self.assertNotIn("adsp_pas_call", glink)
+        self.assertNotRegex(glink + prepare + allocate + transmit + receive + consume,
+                            r"adsp_smem_wr32\([^\n]*(?:descriptor_off|descriptor\.off)\s*\+\s*(?:0|12)\b")
+        self.assertNotRegex(glink + prepare + allocate + transmit + receive + consume,
+                            r"adsp_smem_wr(?:8|16|32)\([^\n]*ADSP_GLINK_RX_FIFO_ITEM")
+        self.assertNotIn("ADSP_GLINK_RX_FIFO_ITEM,", prepare)
+
 
     def test_smem_lookup_classifies_absent_and_malformed(self):
         lookup = added_function_body(self.latest_driver, "adsp_smem_private_item")

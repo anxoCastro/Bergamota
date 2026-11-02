@@ -1,0 +1,652 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index cf887b7..d36ad16 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -28,6 +28,7 @@
+ #include "sweet_board.h"
+ #include "beryllium_adsp.h"
+ #include "beryllium_adsp_glink_survey.h"
++#include "beryllium_adsp_glink_start.h"
+ #include "beryllium_smp2p_negotiation.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+@@ -63,6 +64,9 @@ extern vnode_t rootvnode;
+ #define ADSP_GLINK_TX_FIFO_ITEM  479u
+ #define ADSP_GLINK_RX_FIFO_ITEM  480u
+ #define ADSP_GLINK_DESCRIPTOR_SIZE 32u
++#define ADSP_GLINK_TX_FIFO_SIZE  0x4000u
++#define ADSP_GLINK_DOORBELL      8u
++#define ADSP_GLINK_POLL_MS       2000u
+ #define ADSP_SMP2P_OUT_ITEM      429u
+ #define ADSP_SMP2P_DOORBELL      10u
+ #define ADSP_SMP2P_ITEM_SIZE     (ADSP_SMP2P_HEADER_BYTES + ADSP_SMP2P_MAX_ENTRY * ADSP_SMP2P_ENTRY_BYTES)
+@@ -127,6 +131,7 @@ static bool adsp_firmware_metadata_valid;
+ static bool adsp_probe_enabled;
+ static bool adsp_firmware_probe_done;
+ static bool adsp_pas_requested;
++static bool adsp_glink_requested;
+ static bool adsp_smp2p_known;
+ static bool adsp_remote_ready;
+ static bool adsp_remote_ready_entry_valid;
+@@ -1868,6 +1873,395 @@ adsp_glink_readonly_survey(void)
+ 	}
+ }
+ 
++static bool
++adsp_glink_start_items_valid(const struct adsp_glink_survey_items *items,
++    bool require_tx)
++{
++	if (items == NULL || items->descriptor.result != BERYLLIUM_ADSP_ITEM_FOUND ||
++	    !beryllium_adsp_glink_descriptor_size_valid(items->descriptor.size) ||
++	    (items->descriptor.off & 3u) != 0 ||
++	    items->rx_fifo.result != BERYLLIUM_ADSP_ITEM_FOUND ||
++	    (items->rx_fifo.off & 3u) != 0 ||
++	    !beryllium_adsp_glink_rx_fifo_size_valid(items->rx_fifo.size)) {
++		return false;
++	}
++	if (items->tx_fifo.result == BERYLLIUM_ADSP_ITEM_FOUND) {
++		return (items->tx_fifo.off & 3u) == 0 &&
++		    items->tx_fifo.size == ADSP_GLINK_TX_FIFO_SIZE &&
++		    beryllium_adsp_glink_tx_fifo_size_valid(items->tx_fifo.size);
++	}
++	return !require_tx && items->tx_fifo.result == BERYLLIUM_ADSP_ITEM_ABSENT;
++}
++
++static bool
++adsp_glink_cold_preflight(struct adsp_glink_survey_items *baseline)
++{
++	struct adsp_glink_survey_items first_items, second_items;
++	struct beryllium_adsp_glink_indices first_indices, second_indices;
++
++	if (baseline == NULL || !adsp_glink_survey_read_items(1, &first_items) ||
++	    !adsp_glink_start_items_valid(&first_items, false)) {
++		printf("SWEET ADSP: GLINK mode 3 stopped: descriptor/FIFO preflight failed\n");
++		return false;
++	}
++	if (!adsp_glink_survey_read_indices(first_items.descriptor.off, &first_indices) ||
++	    !beryllium_adsp_glink_indices_zero(&first_indices)) {
++		printf("SWEET ADSP: GLINK mode 3 stopped: first ring sample is unstable or nonzero\n");
++		return false;
++	}
++	delay(100000);
++	if (!adsp_glink_survey_read_items(2, &second_items) ||
++	    !adsp_glink_start_items_valid(&second_items, false) ||
++	    !adsp_glink_survey_items_equal(&first_items, &second_items) ||
++	    !adsp_glink_survey_read_indices(second_items.descriptor.off, &second_indices) ||
++	    !beryllium_adsp_glink_indices_equal(&first_indices, &second_indices) ||
++	    !beryllium_adsp_glink_indices_zero(&second_indices)) {
++		printf("SWEET ADSP: GLINK mode 3 stopped: items or ring indices changed in the 100 ms preflight\n");
++		return false;
++	}
++	*baseline = second_items;
++	printf("SWEET ADSP: GLINK mode 3 cold preflight passed: descriptor size 32, RX FIFO size %u, all indices zero/stable%s\n",
++	    baseline->rx_fifo.size,
++	    baseline->tx_fifo.result == BERYLLIUM_ADSP_ITEM_ABSENT ? "; TX item absent" : "; TX item already present");
++	return true;
++}
++
++/* Caller holds TCSR mutex 3 and has validated both private item lists. */
++static bool
++adsp_glink_allocate_tx_fifo_locked(uint32_t *data_off_out)
++{
++	const uint32_t top = ADSP_SMEM_SIZE - 0x1000;
++	uint32_t count, part_off = 0, part_size = 0, hosts_found = 0;
++	uint32_t free_uncached, free_cached, alloc_span, new_free;
++	bool partition_found = false;
++
++	if (data_off_out == NULL || adsp_smem_rd32(top) != ADSP_SMEM_TOC_MAGIC) {
++		return false;
++	}
++	count = adsp_smem_rd32(top + 8);
++	if (count == 0 || count > ADSP_SMEM_MAX_PARTITIONS ||
++	    !adsp_range(ADSP_SMEM_SIZE, top + ADSP_SMEM_TOC_BYTES,
++	    (uint64_t)count * ADSP_SMEM_TOC_ENTRY_BYTES)) {
++		return false;
++	}
++	for (uint32_t i = 0; i < count; i++) {
++		uint32_t ent = top + ADSP_SMEM_TOC_BYTES + i * ADSP_SMEM_TOC_ENTRY_BYTES;
++		uint32_t candidate_off = adsp_smem_rd32(ent);
++		uint32_t candidate_size = adsp_smem_rd32(ent + 4);
++		uint32_t hosts = adsp_smem_rd32(ent + 12);
++		uint16_t host0 = (uint16_t)hosts, host1 = (uint16_t)(hosts >> 16);
++		if (!((host0 == ADSP_LOCAL_PID && host1 == ADSP_REMOTE_PID) ||
++		    (host0 == ADSP_REMOTE_PID && host1 == ADSP_LOCAL_PID))) {
++			continue;
++		}
++		if (partition_found) {
++			printf("SWEET ADSP: GLINK mode 3 stopped: duplicate Apps/ADSP private partitions\n");
++			return false;
++		}
++		partition_found = true;
++		hosts_found = hosts;
++		part_off = candidate_off;
++		part_size = candidate_size;
++	}
++	if (!partition_found || !part_off || part_size < ADSP_SMEM_PART_HDR_BYTES ||
++	    !adsp_range(ADSP_SMEM_SIZE, part_off, part_size) ||
++	    adsp_smem_rd32(part_off) != ADSP_SMEM_PART_MAGIC ||
++	    adsp_smem_rd32(part_off + 8) != part_size ||
++	    adsp_smem_rd16(part_off + 4) != (uint16_t)hosts_found ||
++	    adsp_smem_rd16(part_off + 6) != (uint16_t)(hosts_found >> 16)) {
++		printf("SWEET ADSP: GLINK mode 3 stopped: Apps/ADSP private partition header changed\n");
++		return false;
++	}
++	free_uncached = adsp_smem_rd32(part_off + 12);
++	free_cached = adsp_smem_rd32(part_off + 16);
++	alloc_span = ADSP_SMEM_PRIVATE_HDR + ADSP_GLINK_TX_FIFO_SIZE;
++	if (free_uncached < ADSP_SMEM_PART_HDR_BYTES || free_uncached > free_cached ||
++	    free_cached > part_size || alloc_span > free_cached - free_uncached ||
++	    alloc_span > UINT32_MAX - free_uncached) {
++		printf("SWEET ADSP: GLINK mode 3 stopped: private SMEM has no valid room for TX FIFO (%#x/%#x/%#x)\n",
++		    free_uncached, free_cached, part_size);
++		return false;
++	}
++	new_free = free_uncached + alloc_span;
++	uint32_t header_off = part_off + free_uncached;
++	if (!adsp_range(ADSP_SMEM_SIZE, header_off, alloc_span)) {
++		return false;
++	}
++	adsp_smem_wr32(header_off, ADSP_SMEM_PRIVATE_CANARY |
++	    ((uint32_t)ADSP_GLINK_TX_FIFO_ITEM << 16));
++	adsp_smem_wr32(header_off + 4, ADSP_GLINK_TX_FIFO_SIZE);
++	adsp_smem_wr32(header_off + 8, 0); /* no payload or header padding */
++	adsp_smem_wr32(header_off + 12, 0);
++	__asm__ volatile ("dmb sy" ::: "memory");
++	adsp_smem_wr32(part_off + 12, new_free);
++	*data_off_out = header_off + ADSP_SMEM_PRIVATE_HDR;
++	return true;
++}
++
++static bool
++adsp_glink_tx_fifo_prepare(uint32_t *data_off_out, uint32_t *data_size_out)
++{
++	enum beryllium_adsp_item_result item_result;
++	uint32_t data_off = 0, data_size = 0;
++	bool allocated = false, ok = false;
++
++	if (data_off_out == NULL || data_size_out == NULL || adsp_smem == NULL ||
++	    !adsp_smem_lock()) {
++		return false;
++	}
++	item_result = adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID,
++	    ADSP_GLINK_TX_FIFO_ITEM, &data_off, &data_size);
++	if (item_result == BERYLLIUM_ADSP_ITEM_ABSENT) {
++		if (!adsp_glink_allocate_tx_fifo_locked(&data_off)) {
++			goto out;
++		}
++		allocated = true;
++		item_result = adsp_smem_private_item(ADSP_LOCAL_PID, ADSP_REMOTE_PID,
++		    ADSP_GLINK_TX_FIFO_ITEM, &data_off, &data_size);
++	}
++	if (item_result != BERYLLIUM_ADSP_ITEM_FOUND || data_size != ADSP_GLINK_TX_FIFO_SIZE) {
++		printf("SWEET ADSP: GLINK mode 3 stopped: TX FIFO lookup result=%u size=%u expected=%u\n",
++		    (unsigned)item_result, data_size, ADSP_GLINK_TX_FIFO_SIZE);
++		goto out;
++	}
++	ok = true;
++out:
++	adsp_smem_unlock();
++	if (!ok) {
++		return false;
++	}
++	*data_off_out = data_off;
++	*data_size_out = data_size;
++	printf("SWEET ADSP: GLINK TX FIFO item %u %s at +%#x size=%u; private allocation lock released\n",
++	    ADSP_GLINK_TX_FIFO_ITEM, allocated ? "allocated" : "validated", data_off, data_size);
++	return true;
++}
++
++static bool
++adsp_glink_cold_indices_after_allocation(const struct adsp_glink_survey_items *items,
++    struct beryllium_adsp_glink_indices *indices)
++{
++	return items != NULL && indices != NULL &&
++	    adsp_glink_start_items_valid(items, true) &&
++	    adsp_glink_survey_read_indices(items->descriptor.off, indices) &&
++	    beryllium_adsp_glink_cold_indices_valid(indices,
++	    items->tx_fifo.size, items->rx_fifo.size);
++}
++
++static bool
++adsp_glink_items_match_baseline(const struct adsp_glink_survey_items *baseline,
++	const struct adsp_glink_survey_items *current)
++{
++	if (baseline == NULL || current == NULL ||
++	    !adsp_glink_survey_item_equal(&baseline->descriptor, &current->descriptor) ||
++	    !adsp_glink_survey_item_equal(&baseline->rx_fifo, &current->rx_fifo)) {
++		return false;
++	}
++	if (baseline->tx_fifo.result == BERYLLIUM_ADSP_ITEM_FOUND) {
++		return adsp_glink_survey_item_equal(&baseline->tx_fifo, &current->tx_fifo);
++	}
++	return baseline->tx_fifo.result == BERYLLIUM_ADSP_ITEM_ABSENT &&
++	    current->tx_fifo.result == BERYLLIUM_ADSP_ITEM_FOUND &&
++	    current->tx_fifo.size == ADSP_GLINK_TX_FIFO_SIZE;
++}
++
++static bool
++adsp_glink_kick(void)
++{
++	if (!adsp_smp2p_map_ipc()) {
++		return false;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	*(volatile uint32_t *)(adsp_smp2p_ipc + 12) = 1u << ADSP_GLINK_DOORBELL;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return true;
++}
++
++static bool
++adsp_glink_send_packet(const struct adsp_glink_survey_items *items,
++	uint16_t command, uint16_t version, uint32_t features, bool cold_start)
++{
++	struct beryllium_adsp_glink_indices indices;
++	uint8_t wire[BERYLLIUM_ADSP_GLINK_MESSAGE_BYTES];
++	uint32_t available, next;
++	if (items == NULL || !adsp_glink_start_items_valid(items, true) ||
++	    !adsp_smp2p_map_ipc() ||
++	    !adsp_glink_survey_read_indices(items->descriptor.off, &indices) ||
++	    !beryllium_adsp_glink_indices_valid(&indices,
++	    items->tx_fifo.size, items->rx_fifo.size) ||
++	    (cold_start && !beryllium_adsp_glink_cold_indices_valid(&indices,
++	    items->tx_fifo.size, items->rx_fifo.size)) ||
++	    !beryllium_adsp_glink_ring_available(indices.tx_head, indices.tx_tail,
++	    items->tx_fifo.size, &available) || available < sizeof(wire) ||
++	    !beryllium_adsp_glink_ring_advance(indices.tx_head, sizeof(wire),
++	    items->tx_fifo.size, &next)) {
++		printf("SWEET ADSP: GLINK TX stopped: item, indices, or 16-byte ring reserve invalid\n");
++		return false;
++	}
++	beryllium_adsp_glink_encode(wire, command, version, features);
++	for (uint32_t i = 0; i < sizeof(wire); i += 4) {
++		uint32_t pos = indices.tx_head + i;
++		if (pos >= items->tx_fifo.size) {
++			pos -= items->tx_fifo.size;
++		}
++		adsp_smem_wr32(items->tx_fifo.off + pos, adsp_u32le(wire + i));
++	}
++	__asm__ volatile ("dmb sy" ::: "memory");
++	adsp_smem_wr32(items->descriptor.off + 4, next); /* AP-owned TX head */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	if (!adsp_glink_kick()) {
++		printf("SWEET ADSP: GLINK TX head published but mailbox client %u mapping failed\n",
++		    ADSP_GLINK_DOORBELL);
++		return false;
++	}
++	printf("SWEET ADSP: GLINK TX command %u version %u features %#x head=%#x mailbox client %u rung\n",
++	    command, version, features, next, ADSP_GLINK_DOORBELL);
++	return true;
++}
++
++static bool
++adsp_glink_send_version(const struct adsp_glink_survey_items *items)
++{
++	return adsp_glink_send_packet(items,
++	    BERYLLIUM_ADSP_GLINK_COMMAND_VERSION,
++	    BERYLLIUM_ADSP_GLINK_VERSION, 0, true);
++}
++
++static void
++adsp_glink_rx_copy(const struct adsp_glink_survey_item *rx_fifo,
++	uint32_t tail, uint8_t *wire)
++{
++	for (uint32_t i = 0; i < BERYLLIUM_ADSP_GLINK_MESSAGE_BYTES; i += 4) {
++		uint32_t pos = tail + i;
++		if (pos >= rx_fifo->size) {
++			pos -= rx_fifo->size;
++		}
++		uint32_t word = adsp_smem_rd32(rx_fifo->off + pos);
++		wire[i + 0] = (uint8_t)word;
++		wire[i + 1] = (uint8_t)(word >> 8);
++		wire[i + 2] = (uint8_t)(word >> 16);
++		wire[i + 3] = (uint8_t)(word >> 24);
++	}
++}
++
++static bool
++adsp_glink_rx_consume(const struct adsp_glink_survey_items *items,
++	uint32_t tail)
++{
++	uint32_t next;
++	if (items == NULL || tail >= items->rx_fifo.size ||
++	    adsp_smem_rd32(items->descriptor.off + 8) != tail ||
++	    !beryllium_adsp_glink_ring_advance(tail,
++	    BERYLLIUM_ADSP_GLINK_MESSAGE_BYTES, items->rx_fifo.size, &next)) {
++		return false;
++	}
++	__asm__ volatile ("dmb sy" ::: "memory");
++	adsp_smem_wr32(items->descriptor.off + 8, next); /* AP-owned RX tail */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return true;
++}
++
++static bool
++adsp_glink_poll_version(const struct adsp_glink_survey_items *items)
++{
++	for (unsigned ms = 0; ms < ADSP_GLINK_POLL_MS; ms++) {
++		struct beryllium_adsp_glink_message message;
++		uint8_t wire[BERYLLIUM_ADSP_GLINK_MESSAGE_BYTES];
++		uint32_t head, tail, head_again, tail_again, used;
++		__asm__ volatile ("dmb sy" ::: "memory");
++		head = adsp_smem_rd32(items->descriptor.off + 12); /* remote-owned RX head */
++		tail = adsp_smem_rd32(items->descriptor.off + 8);
++		__asm__ volatile ("dmb sy" ::: "memory");
++		head_again = adsp_smem_rd32(items->descriptor.off + 12);
++		tail_again = adsp_smem_rd32(items->descriptor.off + 8);
++		if (head != head_again || tail != tail_again) {
++			delay(1000);
++			continue;
++		}
++		if (!beryllium_adsp_glink_ring_used(head, tail,
++		    items->rx_fifo.size, &used)) {
++			printf("SWEET ADSP: GLINK RX stopped: remote head or AP tail is out of range/unaligned\n");
++			return false;
++		}
++		if (used < BERYLLIUM_ADSP_GLINK_MESSAGE_BYTES) {
++			delay(1000);
++			continue;
++		}
++		adsp_glink_rx_copy(&items->rx_fifo, tail, wire);
++		__asm__ volatile ("dmb sy" ::: "memory");
++		if (adsp_smem_rd32(items->descriptor.off + 8) != tail) {
++			printf("SWEET ADSP: GLINK RX stopped: AP tail changed while reading packet\n");
++			return false;
++		}
++		enum beryllium_adsp_glink_packet_result packet =
++		    beryllium_adsp_glink_decode(wire, sizeof(wire), &message);
++		if (packet == BERYLLIUM_ADSP_GLINK_PACKET_VERSION_ACK) {
++			if (message.features != 0) {
++				printf("SWEET ADSP: GLINK VERSION_ACK feature mismatch: local offer=0 remote=%#x; leaving packet unread\n",
++				    message.features);
++				return false;
++			}
++			if (!adsp_glink_rx_consume(items, tail)) {
++				printf("SWEET ADSP: GLINK RX stopped: could not advance AP-owned RX tail\n");
++				return false;
++			}
++			printf("SWEET ADSP: GLINK VERSION_ACK v%u features %#x received; base negotiation complete\n",
++			    message.version, message.features);
++			return true;
++		}
++		if (packet == BERYLLIUM_ADSP_GLINK_PACKET_VERSION) {
++			printf("SWEET ADSP: GLINK VERSION v%u features %#x received; sending base VERSION_ACK\n",
++			    message.version, message.features);
++			if (!adsp_glink_send_packet(items,
++			    BERYLLIUM_ADSP_GLINK_COMMAND_VERSION_ACK,
++			    BERYLLIUM_ADSP_GLINK_VERSION, 0, false) ||
++			    !adsp_glink_rx_consume(items, tail)) {
++				printf("SWEET ADSP: GLINK VERSION response stopped: ACK send or RX-tail update failed\n");
++				return false;
++			}
++			continue;
++		}
++		printf("SWEET ADSP: GLINK RX stopped without consuming packet: decode=%u command=%u version=%u\n",
++		    (unsigned)packet, message.command, message.version);
++		return false;
++	}
++	printf("SWEET ADSP: GLINK VERSION_ACK timeout after %u ms; no APR/audio operation followed\n",
++	    ADSP_GLINK_POLL_MS);
++	return false;
++}
++
++static void
++adsp_glink_mode3_start(void)
++{
++	struct adsp_glink_survey_items baseline, current;
++	struct beryllium_adsp_glink_indices indices;
++	uint32_t tx_off, tx_size;
++
++	printf("SWEET ADSP: explicit GLINK-only startup requested (sweetadsp=3)\n");
++	if (!adsp_glink_cold_preflight(&baseline)) {
++		return;
++	}
++	if (!adsp_glink_tx_fifo_prepare(&tx_off, &tx_size)) {
++		return;
++	}
++	if (!adsp_glink_survey_read_items(3, &current) ||
++	    !adsp_glink_items_match_baseline(&baseline, &current) ||
++	    current.tx_fifo.off != tx_off || current.tx_fifo.size != tx_size ||
++	    !adsp_glink_cold_indices_after_allocation(&current, &indices)) {
++		printf("SWEET ADSP: GLINK mode 3 stopped: post-allocation metadata or zero-index check failed\n");
++		return;
++	}
++	if (!adsp_glink_send_version(&current)) {
++		printf("SWEET ADSP: GLINK mode 3 VERSION request was not sent\n");
++		return;
++	}
++	if (adsp_glink_poll_version(&current)) {
++		printf("SWEET ADSP: GLINK mode 3 complete; stopped before APR/channel/audio startup\n");
++	} else {
++		printf("SWEET ADSP: GLINK mode 3 ended without VERSION_ACK; QMP/XO remain on\n");
++	}
++}
++
+ static bool
+ beryllium_adsp_pas_start(void)
+ {
+@@ -2088,12 +2482,17 @@ beryllium_adsp_pas_start(void)
+ 	printf("SWEET ADSP: watchdog SPI 162 IRQ delta during PAS start window=%u\n",
+ 	    sweet_q6v5_wdog_irq_count_get() - wdog_irq_count_before);
+ 	if (ready) {
+-		printf("SWEET ADSP: Q6V5 ready observed; stopped before GLINK/APR/audio; QMP/XO retained\n");
++		printf("SWEET ADSP: Q6V5 ready observed; QMP/XO retained\n");
+ 		if (adsp_remote_ready_entry_valid) {
+ 			printf("SWEET ADSP: Q6V5 ready source: item %u entry slave-kernel value=%#x (read-only)\n",
+ 			    ADSP_SMP2P_IN_ITEM, adsp_remote_ready_entry_value);
+ 		}
+-		adsp_glink_readonly_survey();
++		if (adsp_glink_requested) {
++			adsp_glink_mode3_start();
++		} else {
++			printf("SWEET ADSP: stopped before GLINK/APR/audio; mode 2 remains read-only at the GLINK edge\n");
++			adsp_glink_readonly_survey();
++		}
+ 		result = true;
+ 		goto out;
+ 	}
+@@ -2127,14 +2526,17 @@ beryllium_adsp_probe(void)
+ 		return;
+ 	}
+ 	(void)PE_parse_boot_argn("sweetadsp", &mode, sizeof(mode));
+-	if (mode != 1 && mode != 2) {
++	if (!beryllium_adsp_glink_mode_valid(mode)) {
+ 		return;
+ 	}
+ 	adsp_probe_enabled = true;
+-	adsp_pas_requested = mode == 2;
++	adsp_pas_requested = beryllium_adsp_glink_mode_requests_pas(mode);
++	adsp_glink_requested = beryllium_adsp_glink_mode_requests_glink(mode);
+ 	adsp_state = BERYLLIUM_ADSP_PREFLIGHT;
+-	printf("SWEET ADSP: opt-in %s\n", adsp_pas_requested ?
+-	    "PAS startup mode requested; early SMP2P probe remains read-only" : "read-only preflight (PAS/SMEM writes disabled)");
++	printf("SWEET ADSP: opt-in %s\n", adsp_glink_requested ?
++	    "PAS plus GLINK-only startup requested; early SMP2P probe remains read-only" :
++	    (adsp_pas_requested ? "PAS startup mode requested; early SMP2P probe remains read-only" :
++	    "read-only preflight (PAS/SMEM writes disabled)"));
+ 	adsp_smp2p_readonly_probe(false);
+ 	printf("SWEET ADSP: early SMP2P snapshot complete; state=%u\n", (unsigned)adsp_state);
+ }
+diff --git a/bsd/dev/beryllium_adsp_glink_start.h b/bsd/dev/beryllium_adsp_glink_start.h
+new file mode 100644
+index 0000000..b519e8f
+--- /dev/null
++++ b/bsd/dev/beryllium_adsp_glink_start.h
+@@ -0,0 +1,178 @@
++#ifndef _BERYLLIUM_ADSP_GLINK_START_H_
++#define _BERYLLIUM_ADSP_GLINK_START_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include "beryllium_adsp_glink_survey.h"
++
++#define BERYLLIUM_ADSP_GLINK_COMMAND_VERSION 0u
++#define BERYLLIUM_ADSP_GLINK_COMMAND_VERSION_ACK 1u
++#define BERYLLIUM_ADSP_GLINK_VERSION 1u
++#define BERYLLIUM_ADSP_GLINK_TX_RESERVE 16u
++#define BERYLLIUM_ADSP_GLINK_MESSAGE_BYTES 8u
++
++enum beryllium_adsp_glink_packet_result {
++	BERYLLIUM_ADSP_GLINK_PACKET_MALFORMED = 0,
++	BERYLLIUM_ADSP_GLINK_PACKET_VERSION,
++	BERYLLIUM_ADSP_GLINK_PACKET_VERSION_ACK,
++	BERYLLIUM_ADSP_GLINK_PACKET_UNSUPPORTED,
++};
++
++struct beryllium_adsp_glink_message {
++	uint16_t command;
++	uint16_t version;
++	uint32_t features;
++};
++
++static inline bool
++beryllium_adsp_glink_mode_valid(int mode)
++{
++	return mode >= 1 && mode <= 3;
++}
++
++static inline bool
++beryllium_adsp_glink_mode_requests_pas(int mode)
++{
++	return mode == 2 || mode == 3;
++}
++
++static inline bool
++beryllium_adsp_glink_mode_requests_glink(int mode)
++{
++	return mode == 3;
++}
++
++static inline bool
++beryllium_adsp_glink_tx_fifo_size_valid(uint32_t size)
++{
++	return size > BERYLLIUM_ADSP_GLINK_TX_RESERVE + BERYLLIUM_ADSP_GLINK_MESSAGE_BYTES &&
++	    (size & 7u) == 0;
++}
++
++static inline bool
++beryllium_adsp_glink_rx_fifo_size_valid(uint32_t size)
++{
++	return size >= BERYLLIUM_ADSP_GLINK_MESSAGE_BYTES && (size & 7u) == 0;
++}
++
++static inline bool
++beryllium_adsp_glink_indices_zero(const struct beryllium_adsp_glink_indices *indices)
++{
++	return indices != NULL && indices->tx_tail == 0 && indices->tx_head == 0 &&
++	    indices->rx_tail == 0 && indices->rx_head == 0;
++}
++
++static inline bool
++beryllium_adsp_glink_indices_valid(
++    const struct beryllium_adsp_glink_indices *indices,
++    uint32_t tx_size, uint32_t rx_size)
++{
++	if (indices == NULL || !beryllium_adsp_glink_tx_fifo_size_valid(tx_size) ||
++	    !beryllium_adsp_glink_rx_fifo_size_valid(rx_size)) {
++		return false;
++	}
++	return indices->tx_tail < tx_size && indices->tx_head < tx_size &&
++	    indices->rx_tail < rx_size && indices->rx_head < rx_size &&
++	    (indices->tx_tail & 7u) == 0 && (indices->tx_head & 7u) == 0 &&
++	    (indices->rx_tail & 7u) == 0 && (indices->rx_head & 7u) == 0;
++}
++
++static inline bool
++beryllium_adsp_glink_cold_indices_valid(
++	const struct beryllium_adsp_glink_indices *indices,
++	uint32_t tx_size, uint32_t rx_size)
++{
++	return beryllium_adsp_glink_indices_valid(indices, tx_size, rx_size) &&
++	    beryllium_adsp_glink_indices_zero(indices);
++}
++
++/* Return bytes available to TX after the GLINK 16-byte reserve. */
++static inline bool
++beryllium_adsp_glink_ring_available(uint32_t head, uint32_t tail,
++    uint32_t size, uint32_t *available)
++{
++	uint32_t free_bytes;
++	if (available == NULL || !beryllium_adsp_glink_tx_fifo_size_valid(size) ||
++	    head >= size || tail >= size || (head & 7u) != 0 || (tail & 7u) != 0) {
++		return false;
++	}
++	free_bytes = tail <= head ? size - head + tail : tail - head;
++	*available = free_bytes < BERYLLIUM_ADSP_GLINK_TX_RESERVE ? 0 :
++	    free_bytes - BERYLLIUM_ADSP_GLINK_TX_RESERVE;
++	return true;
++}
++
++static inline bool
++beryllium_adsp_glink_ring_used(uint32_t head, uint32_t tail,
++	uint32_t size, uint32_t *used)
++{
++	if (used == NULL || !beryllium_adsp_glink_rx_fifo_size_valid(size) ||
++	    head >= size || tail >= size || (head & 7u) != 0 || (tail & 7u) != 0) {
++		return false;
++	}
++	*used = head >= tail ? head - tail : size - tail + head;
++	return true;
++}
++
++static inline bool
++beryllium_adsp_glink_ring_advance(uint32_t index, uint32_t count,
++    uint32_t size, uint32_t *next)
++{
++	if (next == NULL || size == 0 || (size & 7u) != 0 || index >= size ||
++	    (index & 7u) != 0 || count > size || (count & 7u) != 0) {
++		return false;
++	}
++	if (count >= size - index) {
++		*next = count - (size - index);
++	} else {
++		*next = index + count;
++	}
++	return *next < size;
++}
++
++static inline void
++beryllium_adsp_glink_encode(uint8_t *wire, uint16_t command,
++    uint16_t version, uint32_t features)
++{
++	if (wire == NULL) {
++		return;
++	}
++	wire[0] = (uint8_t)command;
++	wire[1] = (uint8_t)(command >> 8);
++	wire[2] = (uint8_t)version;
++	wire[3] = (uint8_t)(version >> 8);
++	wire[4] = (uint8_t)features;
++	wire[5] = (uint8_t)(features >> 8);
++	wire[6] = (uint8_t)(features >> 16);
++	wire[7] = (uint8_t)(features >> 24);
++}
++
++static inline enum beryllium_adsp_glink_packet_result
++beryllium_adsp_glink_decode(const uint8_t *wire, size_t length,
++    struct beryllium_adsp_glink_message *message)
++{
++	uint16_t command, version;
++	if (wire == NULL || message == NULL || length != BERYLLIUM_ADSP_GLINK_MESSAGE_BYTES) {
++		return BERYLLIUM_ADSP_GLINK_PACKET_MALFORMED;
++	}
++	command = (uint16_t)wire[0] | ((uint16_t)wire[1] << 8);
++	version = (uint16_t)wire[2] | ((uint16_t)wire[3] << 8);
++	message->command = command;
++	message->version = version;
++	message->features = (uint32_t)wire[4] | ((uint32_t)wire[5] << 8) |
++	    ((uint32_t)wire[6] << 16) | ((uint32_t)wire[7] << 24);
++	if (version != BERYLLIUM_ADSP_GLINK_VERSION) {
++		return BERYLLIUM_ADSP_GLINK_PACKET_UNSUPPORTED;
++	}
++	if (command == BERYLLIUM_ADSP_GLINK_COMMAND_VERSION) {
++		return BERYLLIUM_ADSP_GLINK_PACKET_VERSION;
++	}
++	if (command == BERYLLIUM_ADSP_GLINK_COMMAND_VERSION_ACK) {
++		return BERYLLIUM_ADSP_GLINK_PACKET_VERSION_ACK;
++	}
++	return BERYLLIUM_ADSP_GLINK_PACKET_UNSUPPORTED;
++}
++
++#endif /* _BERYLLIUM_ADSP_GLINK_START_H_ */
