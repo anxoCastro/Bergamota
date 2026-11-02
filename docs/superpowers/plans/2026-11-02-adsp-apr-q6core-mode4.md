@@ -49,16 +49,16 @@
 
 ## Task 4: Build and temporary device test
 
-- [ ] Dispatch GitHub Actions using `gh`, pinned to the branch head; inspect XNU version, patch application, artifact checksum, and empty `errors.txt`.
-- [ ] Package an image using the verified Beryllium Enxerto loader and ADT, with `sweetadsp=4`, read-only root args, and no `ufsrw=1`/`rootrw=1`.
-- [ ] Unpack and verify kernel, payload, marker, boot header, and SHA-256 values.
-- [ ] Recheck one Fastboot target, `product=beryllium`, and unlocked state; begin UDP capture before RAM boot.
+- [x] Dispatch GitHub Actions; verify XNU 26.5, patch 1150 application, artifact checksum, and empty `errors.txt`.
+- [x] Package an image using the verified Beryllium Enxerto loader and ADT, with `sweetadsp=4`, both required ADSP markers, and no `ufsrw=1`/`rootrw=1`.
+- [x] Unpack and verify kernel, payload, both ADT markers, boot header, and SHA-256 values.
+- [ ] Recheck one Fastboot target, `product=beryllium`, and unlocked state; RAM boot is pending because the phone disappeared from USB. The isolated UDP capture is already listening.
 - [ ] RAM-boot only; record send/boot output, mode-4 APR progress, log hash, and boot continuation. Stop if the phone leaves Fastboot or observed preflight differs.
 
 ## Task 5: Handoff and commit
 
-- [ ] Update `NOTES.md` after implementation/build/device milestones, recording exact observed results and unresolved work.
-- [ ] Commit and push the completed source/docs/handoff without co-author trailer.
+- [x] Update `NOTES.md` after implementation/build/device milestones, recording exact observed results and unresolved work.
+- [x] Commit and push the completed source/docs/handoff without co-author trailer.
 
 ## Completion report
 
