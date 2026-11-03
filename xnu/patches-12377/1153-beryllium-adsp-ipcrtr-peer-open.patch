@@ -1,0 +1,63 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 8a1864f..4bf5b8d 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2441,6 +2441,7 @@ adsp_apr_open_channel(const struct adsp_glink_survey_items *items,
+ 	uint8_t open_frame[8 + BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES] = { 0 };
+ 	bool local_open_ack = false, remote_open = false;
+ 	bool ignored_fastrpc_open = false;
++	bool ignored_ipcrtr_open = false;
+ 	if (items == NULL || state == NULL) {
+ 		return false;
+ 	}
+@@ -2490,6 +2491,11 @@ adsp_apr_open_channel(const struct adsp_glink_survey_items *items,
+ 				ignored_fastrpc_open = true;
+ 				printf("SWEET ADSP: APR GLINK ignoring unhandled peer channel fastrpcglink-apps-dsp remote-id=%u; no OPEN_ACK sent\n",
+ 				    (unsigned)param1);
++			} else if (!ignored_ipcrtr_open && !remote_open && param1 != 0 &&
++			    beryllium_adsp_apr_ipcrtr_open_valid(frame, frame_bytes, param1)) {
++				ignored_ipcrtr_open = true;
++				printf("SWEET ADSP: APR GLINK ignoring unhandled peer channel IPCRTR remote-id=%u; QRTR not implemented, no OPEN_ACK sent\n",
++				    (unsigned)param1);
+ 			} else if (remote_open || param1 == 0 ||
+ 			    !beryllium_adsp_apr_open_name_valid(frame, frame_bytes, param1)) {
+ 				size_t dump_bytes = frame_bytes > 8 ? frame_bytes - 8 : 0;
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index 428153f..7affda6 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -18,6 +18,8 @@
+ #define BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES 14u
+ #define BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME "fastrpcglink-apps-dsp"
+ #define BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME_BYTES 22u
++#define BERYLLIUM_ADSP_IPCRTR_CHANNEL_NAME "IPCRTR"
++#define BERYLLIUM_ADSP_IPCRTR_CHANNEL_NAME_BYTES 7u
+ #define BERYLLIUM_ADSP_APR_INTENT_BYTES 512u
+ #define BERYLLIUM_ADSP_APR_INTENT_COUNT 20u
+ #define BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS 64u
+@@ -197,6 +199,25 @@ beryllium_adsp_apr_fastrpc_open_valid(const uint8_t *frame, size_t frame_bytes,
+ 	return true;
+ }
+ 
++static inline bool
++beryllium_adsp_apr_ipcrtr_open_valid(const uint8_t *frame, size_t frame_bytes,
++	uint16_t remote_channel_id)
++{
++	if (frame == NULL || remote_channel_id == 0 || frame_bytes != 16 ||
++	    beryllium_adsp_apr_get16(frame) != BERYLLIUM_ADSP_GLINK_CMD_OPEN ||
++	    beryllium_adsp_apr_get16(frame + 2) != remote_channel_id ||
++	    (beryllium_adsp_apr_get32(frame + 4) & 0xffffu) !=
++	    BERYLLIUM_ADSP_IPCRTR_CHANNEL_NAME_BYTES) {
++		return false;
++	}
++	for (size_t i = 0; i < BERYLLIUM_ADSP_IPCRTR_CHANNEL_NAME_BYTES; i++) {
++		if (frame[8 + i] != (uint8_t)BERYLLIUM_ADSP_IPCRTR_CHANNEL_NAME[i]) {
++			return false;
++		}
++	}
++	return true;
++}
++
+ static inline bool
+ beryllium_adsp_apr_parse_remote_intents(const uint8_t *frame, size_t frame_bytes,
+ 	uint16_t remote_channel_id, struct beryllium_adsp_glink_intent *intents,

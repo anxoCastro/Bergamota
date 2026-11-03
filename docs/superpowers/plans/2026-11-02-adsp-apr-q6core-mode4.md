@@ -101,12 +101,22 @@
 
 ## Task 7: Build and RAM-boot the FastRPC OPEN change
 
-- [ ] Dispatch and verify the XNU 26.5 KDK build with `gh`; confirm patch application, checksum manifest and empty `errors.txt`.
-- [ ] Package a read-only `sweetadsp=4` image, then verify kernel/payload bytes, ADT regions and the absence of root-write flags.
-- [ ] Immediately before boot, confirm one unlocked Fastboot target with product `beryllium`.
-- [ ] Start a fresh UDP/5140 capture and use only `fastboot boot`; record APR channel progress and boot continuation. Do not flash any partition.
+- [x] Dispatch and verify the XNU 26.5 KDK build with `gh`; confirm patch application, checksum manifest and empty `errors.txt` (run `41543909522`, success).
+- [x] Package a read-only `sweetadsp=4` image, then verify kernel/payload bytes, ADT regions and the absence of root-write flags.
+- [x] Immediately before boot, confirm one unlocked Fastboot target with product `beryllium`.
+- [x] Start a fresh UDP/5140 capture and use only `fastboot boot`; record APR channel progress and boot continuation. The boot was RAM-only; the capture shows FastRPC and IPCRTR peer OPENs, then mode 4 stops before Q6Core. No partition was flashed. The later boot capture reaches `exec mount` but contains no explicit panic or SpringBoard confirmation.
 
-**Expected:** the device consumes the recognized sibling OPEN without an ACK, then continues waiting for `apr_audio_svc`; boot outcome must be reported only from the captured evidence.
+**Observed instead of the original expected next event:** after consuming FastRPC without ACK, the device sends an exact `IPCRTR` OPEN. The current driver rejects it, so no APR/Q6Core request is sent. See the new follow-up below.
+
+## Follow-up: Consume one unhandled ADSP QRTR transport OPEN
+
+**Observation:** patch 1152's RAM-boot capture shows command 2, remote ID 2, `param2=7`, a 16-byte frame, and wire data `IPCRTR\0\0`. Qualcomm's SDM845 vendor DTS identifies IPCRTR as the `lpass` IPC-router GLINK transport. The XNU ADSP path does not implement QRTR.
+
+- [x] Add failing helper and driver-contract checks for the exact `IPCRTR` name/frame and one-time consume-without-ACK behavior.
+- [x] Implement patch 1153 to consume at most one valid `IPCRTR` OPEN before APR is open, without ACK or QRTR packet handling; preserve rejection of duplicates and all other names.
+- [x] Run the compiled helper, focused ADSP tests, full suite, ordered patch application through 1153, and `git diff --check` (41/41; patch applies with `--whitespace=error`).
+- [ ] Commit/push the patch and handoff; dispatch the XNU 26.5 KDK build and verify the artifact.
+- [ ] Package read-only mode-4 image and RAM-boot only when an unlocked `beryllium` Fastboot target is visible. Observe whether `apr_audio_svc` opens after the FastRPC and IPCRTR siblings; do not claim APR reachability without the captured Q6Core result.
 
 ## Completion report
 
