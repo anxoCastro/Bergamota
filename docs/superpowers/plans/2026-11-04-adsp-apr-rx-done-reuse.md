@@ -44,7 +44,7 @@
 - [x] Run the focused checks against patches through 1159 and observe expected failures.
 - [x] Add `BERYLLIUM_ADSP_GLINK_CMD_RX_DONE_W_REUSE = 14`, recognize it in frame-length parsing, and route it through the strict completion path with a distinct diagnostic.
 - [x] Replay patches 1131–1160, ensure the staged source matches, and run focused plus full tests (44/44 focused, 47/47 full; exact apply and source comparison passed).
-- [ ] Commit and push the patch, tests, spec, plan, and handoff; dispatch the XNU 26.5 GitHub Actions build.
+- [x] Commit and push the patch, tests, spec, plan, and handoff; dispatch the XNU 26.5 GitHub Actions build (`0147b720203facee4164f6ecfec5a5bca723c8bb`, run 41738200069).
 - [ ] Verify the pinned CI commit and kernel artifact, then package a read-only image with `sweetarm64e=1` and the existing ADSP 4 arguments.
 - [ ] RAM-boot the image and capture whether the matching reuse acknowledgement advances to a validated Q6Core response; also record mount/UI state without inferring from missing log lines.
 - [ ] Update `NOTES.md` with exact patch/commit, CI and artifact IDs, image/capture hashes, results, and remaining blocker. (Current code/test and prior retry-boot handoff recorded; add CI and patch-1160 boot evidence after those milestones.)
