@@ -115,8 +115,20 @@
 - [x] Add failing helper and driver-contract checks for the exact `IPCRTR` name/frame and one-time consume-without-ACK behavior.
 - [x] Implement patch 1153 to consume at most one valid `IPCRTR` OPEN before APR is open, without ACK or QRTR packet handling; preserve rejection of duplicates and all other names.
 - [x] Run the compiled helper, focused ADSP tests, full suite, ordered patch application through 1153, and `git diff --check` (41/41; patch applies with `--whitespace=error`).
-- [ ] Commit/push the patch and handoff; dispatch the XNU 26.5 KDK build and verify the artifact.
-- [ ] Package read-only mode-4 image and RAM-boot only when an unlocked `beryllium` Fastboot target is visible. Observe whether `apr_audio_svc` opens after the FastRPC and IPCRTR siblings; do not claim APR reachability without the captured Q6Core result.
+- [x] Commit/push the patch and handoff (`acafef7`); dispatch XNU 26.5 KDK build run `41651340363`.
+- [x] Verify the build artifact: run succeeded on head `acafef7843486c849930160acb34fe88b5d569f3`, artifact `13243160225`, SHA256SUMS verified, and `errors.txt` empty.
+- [x] Package the read-only image and RAM-boot after checking `beryllium`/unlocked state. Capture hash and exact boot result are in `NOTES.md`; no partition was flashed.
+- [x] Record the observed next OPEN. Capture saw FastRPC then `glink_ssr`, so mode 4 still stopped before Q6Core.
+
+## Task 9: Consume one unsupported GLINK SSR sibling OPEN
+
+**Observation:** 1153's RAM-boot capture reports command 2, remote ID 2, `param2=10`, a 24-byte frame, and bytes `glink_ssr\0` followed by six pad bytes. Qualcomm's G-Link SSR documentation describes restart notifications and channel cleanup carried over G-Link. This XNU probe has no SSR service implementation, so its bounded read-only APR experiment recognizes the exact OPEN and leaves it unacknowledged. If the ADSP requires SSR setup before APR, Q6Core will remain unreachable; a device boot will test this without sending cleanup or restart messages.
+
+- [x] Add failing helper and driver-contract checks for exact `glink_ssr` name/frame and one-time consume-without-ACK behavior; record the red result before implementation.
+- [x] Implement patch 1154 with a nonzero matching remote ID, name length 10 including NUL, and exact 24-byte frame; preserve rejection of duplicates and other names.
+- [x] Run focused ADSP tests (39/39), full suite (42/42), and ordered patch-application/whitespace checks.
+- [ ] Commit/push patch 1154, tests, plan, design, and handoff without a co-author trailer; dispatch the XNU 26.5 KDK build with `gh` and verify its artifact.
+- [ ] Package a read-only mode-4 image; recheck one unlocked `beryllium` Fastboot target immediately before `fastboot boot`; start a fresh UDP capture. Record APR/Q6Core and boot results, and do not infer audio playback from APR reachability.
 
 ## Completion report
 

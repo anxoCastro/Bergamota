@@ -21,6 +21,7 @@ APR_MODE4_PATCH = ROOT / "xnu/patches-12377/1150-beryllium-adsp-apr-q6core-mode4
 APR_OPEN_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1151-beryllium-adsp-apr-open-diagnostics.patch"
 FASTRPC_OPEN_PATCH = ROOT / "xnu/patches-12377/1152-beryllium-adsp-fastrpc-peer-open.patch"
 IPCRTR_OPEN_PATCH = ROOT / "xnu/patches-12377/1153-beryllium-adsp-ipcrtr-peer-open.patch"
+GLINK_SSR_OPEN_PATCH = ROOT / "xnu/patches-12377/1154-beryllium-adsp-glink-ssr-peer-open.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -83,7 +84,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1153:
+                if not 1131 <= number <= 1154:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -675,6 +676,19 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertNotIn("adsp_apr_send_control", ipcrtr_open)
         self.assertNotIn("return false", ipcrtr_open)
 
+    def test_known_glink_ssr_peer_open_is_consumed_without_ack(self):
+        open_body = added_function_body(self.latest_driver, "adsp_apr_open_channel")
+        self.assertIn("bool ignored_glink_ssr_open = false", open_body)
+        self.assertIn("beryllium_adsp_apr_glink_ssr_open_valid", open_body)
+        self.assertIn("ignoring unhandled peer channel glink_ssr", open_body)
+        self.assertIn("ignored_glink_ssr_open = true", open_body)
+        ssr_start = open_body.index("if (!ignored_glink_ssr_open")
+        ssr_end = open_body.index("} else if (remote_open", ssr_start)
+        ssr_open = open_body[ssr_start:ssr_end]
+        self.assertIn("!remote_open", ssr_open)
+        self.assertNotIn("adsp_apr_send_control", ssr_open)
+        self.assertNotIn("return false", ssr_open)
+
 
 class AdspAprMode4Tests(unittest.TestCase):
     def test_compiled_apr_mode4_helpers(self):
@@ -704,6 +718,9 @@ class AdspAprMode4Tests(unittest.TestCase):
                            check=True, capture_output=True, text=True)
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(IPCRTR_OPEN_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(GLINK_SSR_OPEN_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             subprocess.run([
