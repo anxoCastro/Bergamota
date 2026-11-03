@@ -758,14 +758,21 @@ class AdspPasPatchTests(unittest.TestCase):
             intent,
             r"struct beryllium_adsp_glink_intent \w+\s*\[\s*"
             r"BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS\s*\]")
-        self.assertIn("beryllium_adsp_apr_parse_remote_intents", intent)
-        self.assertLess(intent.index("beryllium_adsp_apr_parse_remote_intents"),
-                        intent.index("adsp_glink_rx_consume_frame"))
+        parse_start = intent.index("if (!beryllium_adsp_apr_parse_remote_intents")
+        consume_start = intent.index("if (!adsp_glink_rx_consume_frame")
+        parser_failure = intent[parse_start:consume_start]
+        self.assertIn("return false;", parser_failure)
+        self.assertNotIn("adsp_glink_rx_consume_frame", parser_failure)
         self.assertNotRegex(intent,
                             r"state->remote_intent_count\s*(?:\+\+|\+=|=(?!=))")
         self.assertIn("state->remote_intent_count", intent)
-        self.assertIn("frame_bytes <= copy_bytes", intent)
-        self.assertIn("dump_bytes", intent)
+        self.assertIn("size_t dump_bytes = frame_bytes <= copy_bytes ?", intent)
+        self.assertIn("frame_bytes : copy_bytes;", intent)
+        self.assertIn("for (size_t i = 0; i < dump_bytes; i++)", intent)
+        dump_loop_start = intent.index(
+            "for (size_t i = 0; i < dump_bytes; i++)")
+        dump_loop_end = intent.index("}", dump_loop_start)
+        self.assertIn("frame[i]", intent[dump_loop_start:dump_loop_end])
 
 
 class AdspAprMode4Tests(unittest.TestCase):
