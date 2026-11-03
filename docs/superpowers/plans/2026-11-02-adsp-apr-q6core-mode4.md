@@ -128,7 +128,7 @@
 - [x] Implement patch 1154 with a nonzero matching remote ID, name length 10 including NUL, and exact 24-byte frame; preserve rejection of duplicates and other names.
 - [x] Run focused ADSP tests (39/39), full suite (42/42), and ordered patch-application/whitespace checks.
 - [x] Commit/push patch 1154, tests, plan, design, and handoff without a co-author trailer (`a70e1af`).
-- [x] Dispatch XNU 26.5 KDK build run `41664276962` on head `9bff197e087caeb1927e12d68846b552cf79ec60`; first attempt failed after 1h0m13s with the GitHub annotation “hosted runner lost communication with the server,” without a Build log or artifact. `gh run rerun 41664276962 --failed` queued a retry on the same head.
+- [x] Dispatch XNU 26.5 KDK build run `41664276962` on head `9bff197e087caeb1927e12d68846b552cf79ec60`; first attempt failed after 1h0m13s with the GitHub annotation “hosted runner lost communication with the server,” without a Build log or artifact. `gh run rerun 41664276962 --failed` started retry job `126052595900` on the same head.
 - [ ] Verify patch application, artifact checksums, and empty `errors.txt`.
 - [ ] Package a read-only mode-4 image; recheck one unlocked `beryllium` Fastboot target immediately before `fastboot boot`; start a fresh UDP capture. Record APR/Q6Core and boot results, and do not infer audio playback from APR reachability.
 
