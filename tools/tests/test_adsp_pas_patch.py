@@ -87,7 +87,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1158:
+                if not 1131 <= number <= 1159:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -743,6 +743,29 @@ class AdspPasPatchTests(unittest.TestCase):
         rejection = wait[reject_start:consume_start]
         self.assertIn("return false", rejection)
         self.assertNotIn("adsp_glink_rx_consume_frame", rejection)
+
+    def test_response_wait_discards_valid_remote_intents(self):
+        response = added_function_body(self.latest_driver,
+                                       "adsp_apr_poll_response")
+        intent_start = response.index(
+            "if (command == BERYLLIUM_ADSP_GLINK_CMD_INTENT)")
+        intent_end = response.index(
+            "if (command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE)", intent_start)
+        intent = response[intent_start:intent_end]
+
+        self.assertNotIn("adsp_apr_record_remote_intents", intent)
+        self.assertRegex(
+            intent,
+            r"struct beryllium_adsp_glink_intent \w+\s*\[\s*"
+            r"BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS\s*\]")
+        self.assertIn("beryllium_adsp_apr_parse_remote_intents", intent)
+        self.assertLess(intent.index("beryllium_adsp_apr_parse_remote_intents"),
+                        intent.index("adsp_glink_rx_consume_frame"))
+        self.assertNotRegex(intent,
+                            r"state->remote_intent_count\s*(?:\+\+|\+=|=(?!=))")
+        self.assertIn("state->remote_intent_count", intent)
+        self.assertIn("frame_bytes <= copy_bytes", intent)
+        self.assertIn("dump_bytes", intent)
 
 
 class AdspAprMode4Tests(unittest.TestCase):
