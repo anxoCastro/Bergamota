@@ -15,6 +15,8 @@ The new `sweetadsp=4` mode runs the existing PAS start and Q6V5-ready gate, perf
 - **Inference:** the XNU audio path has no ADSP QRTR endpoint, so consume at most one exact `IPCRTR` peer OPEN without ACK and continue waiting for direct `apr_audio_svc`. Do not send QRTR packets or claim that QRTR is initialized. Reject duplicates and malformed/unrecognized channels.
 - A third Beryllium capture observed another peer OPEN, remote ID 2, length 10, 24-byte aligned frame, name `glink_ssr`. Qualcomm's G-Link SSR documentation describes restart notifications and channel cleanup over G-Link; the ADSP probe has no SSR service implementation.
 - **Inference / next probe:** consume at most one exact `glink_ssr` OPEN without ACK and continue the bounded APR wait. This tests initial channel ordering only; the probe does not participate in SSR cleanup if the ADSP restarts.
+- A fourth Beryllium capture observed peer OPEN remote ID 4, `param2=19`, a 32-byte aligned frame, and the NUL-terminated name `LOOPBACK_CTL_LPASS`. The `ios-apollo` [notes](https://github.com/aTechGeekDev/ios-apollo/blob/main/NOTES.md) report this channel left unanswered while its audio path opens; its [GLINK handler](https://github.com/aTechGeekDev/ios-apollo/blob/main/xnu/patches/0139-apollo-audio-mi10t-port.patch) leaves unregistered peer channels unanswered.
+- **Inference / bounded probe:** consume at most one exact `LOOPBACK_CTL_LPASS` OPEN without ACK and continue waiting for APR. This is a related-port precedent, not a Qualcomm guarantee; Beryllium's next capture must show whether Q6Core is reached. Do not implement or claim the loopback protocol.
 - Linux native GLINK sends an `OPEN` request with a NUL-terminated channel name, waits for both a matching remote `OPEN_ACK` and a remote `OPEN`, then acknowledges the remote's channel ID. It advertises local intents as `(size, id)` pairs and sends data through a remote intent ID.
 - Linux Q6Core sends a 20-byte APR header-only sequential command with opcode `0x001292c`; it waits 100 ms for a response. A firmware-version response uses opcode `0x001292d` and carries five 32-bit version/count fields followed by three 32-bit fields per service.
 - APR header size is 20 bytes. The request uses type `SEQ_CMD`, version 0, source domain APPS (5), destination domain ADSP (4), and service ID 3 at both ends. A basic APR result uses opcode `0x000110e8` and carries the original opcode and status.
@@ -25,7 +27,7 @@ References: [SDM845 DTS](https://github.com/torvalds/linux/blob/master/arch/arm6
 
 - Keep `sweetadsp=0`, `1`, `2`, and `3` behavior unchanged; only explicit `sweetadsp=4` requests APR.
 - Enter APR only after PAS succeeds, Q6V5 ready is observed, and mode 3's base VERSION exchange completes.
-- Open only the exact NUL-terminated channel name `apr_audio_svc` (14 bytes including NUL), local channel ID 1. Require both the matching peer `OPEN` and peer `OPEN_ACK`; send one `OPEN_ACK` for the peer ID. During this wait, consume at most one exact OPEN each for `fastrpcglink-apps-dsp`, `IPCRTR`, and `glink_ssr` without ACK.
+- Open only the exact NUL-terminated channel name `apr_audio_svc` (14 bytes including NUL), local channel ID 1. Require both the matching peer `OPEN` and peer `OPEN_ACK`; send one `OPEN_ACK` for the peer ID. During this wait, consume at most one exact OPEN each for `fastrpcglink-apps-dsp`, `IPCRTR`, `glink_ssr`, and `LOOPBACK_CTL_LPASS` without ACK.
 - Mirror SDM845's `<512 20>` receive-intent parameters using AP-local buffers and IDs 1–20. Never write GLINK SMEM descriptor/FIFO indices other than AP-owned TX head and RX tail, or any remote-owned item.
 - Parse remote intents only for the opened peer channel, with a bounded count and sizes. Send the APR request only when the peer has offered an intent large enough for 20 bytes; do not issue `RX_INTENT_REQ` in this version.
 - Send exactly one APR `AVCS_CMD_GET_FWK_VERSION` request: 20 bytes, service 3, APPS 5 to ADSP 4, zero ports/token, opcode `0x001292c`.
@@ -37,7 +39,7 @@ References: [SDM845 DTS](https://github.com/torvalds/linux/blob/master/arch/arm6
 ## Safety gates
 
 1. The mode-4 path runs only after mode 3 returns a valid base VERSION_ACK; modes 0–3 are unchanged.
-2. All incoming control frames are length-checked and 8-byte aligned before advancing RX tail. Unknown commands or malformed frames remain unread and terminate the probe. The exceptions are one exact, nonzero-ID OPEN each for `fastrpcglink-apps-dsp`, `IPCRTR`, and `glink_ssr`; consume each without ACK, then keep waiting for APR. Duplicates remain unread and terminate the probe.
+2. All incoming control frames are length-checked and 8-byte aligned before advancing RX tail. Unknown commands or malformed frames remain unread and terminate the probe. The exceptions are one exact, nonzero-ID OPEN each for `fastrpcglink-apps-dsp`, `IPCRTR`, `glink_ssr`, and `LOOPBACK_CTL_LPASS`; consume each without ACK, then keep waiting for APR. Duplicates remain unread and terminate the probe.
    For a rejected peer `OPEN`, diagnostics include its command, remote ID, `param2`, total frame length, and at most 32 bytes of frame data. Logging does not consume the frame or change the rejection path.
 3. The only transmitted APR command is the zero-initialized 20-byte Q6Core version query. No AFE/ASM service ID or mutating opcode is sent.
 4. RX data is accepted only for the exact channel ID, local receive-intent ID, single-fragment size fields (`left_size == 0`), and a bounded 512-byte buffer. The APR parser must validate the full envelope before reporting data.
@@ -57,7 +59,7 @@ The SSR exception is limited to this initial bounded probe. It does not implemen
 
 - Compiled helper tests cover APR request bytes, APR and recognized sibling OPEN channel-name validation, bounded GLINK frame sizing, remote intent parsing, and valid/malformed firmware-version and basic-result APR responses.
 - Static patch-contract tests prove modes 0–3 remain unchanged, mode 4 follows successful mode 3, only `apr_audio_svc`/service 3/Q6Core version opcode are used, intent ownership is local, and no AFE/ASM/PCM/codec or shutdown path is reachable.
-- The ordered XNU patch series through 1150 applies; local helper builds use `-Wall -Wextra -Werror`; KDK-enabled GitHub Actions build succeeds with empty `errors.txt`.
+- The ordered XNU patch series through 1155 applies; local helper builds use `-Wall -Wextra -Werror`; KDK-enabled GitHub Actions build succeeds with empty `errors.txt`.
 - The temporary image has `sweetadsp=4`, the verified Beryllium ADT/Enxerto loader, and no filesystem write flags. Hashes and Fastboot product are verified before RAM boot.
 - The device capture identifies channel-open progress, intent exchange, APR request and exact response or timeout. No partition or GPT operation is performed.
 - Any claim about audio remains out of scope: a Q6Core version response establishes APR reachability, not audio playback.
