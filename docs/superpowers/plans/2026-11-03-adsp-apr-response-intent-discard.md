@@ -43,7 +43,7 @@
 - [x] In the staging driver, replace only the response-wait INTENT handling: validate into a local array, log bounded raw bytes and retained count on parser failure, then consume and discard on success. Keep RX_DONE and TX_DATA handling unchanged.
 - [x] Generate patch 1159 from the staging source baseline through patch 1158; extend ordered patch replay in `test_adsp_pas_patch.py` through 1159 and rerun the new test.
 - [x] Run the focused ADSP test file and full `python3 -I -m unittest discover -s tools/tests -v`; inspect patch application and whitespace results.
-- [ ] Commit and push the patch, regression, design, plan, and handoff. Dispatch GitHub Actions for the current 26.5 configuration and verify the pinned commit, job log, artifact checksums, and built kernel.
+- [x] Commit and push the patch, regression, design, plan, and handoff. Dispatch GitHub Actions for the current 26.5 configuration and verify the pinned commit, job log, artifact checksums, and built kernel.
 - [ ] Package a read-only RAM image with the previously validated loader and arguments; unpack and compare loader/payload and verify no `ufsrw=1` or `rootrw=1`.
 - [ ] If Fastboot still reports one unlocked `beryllium` target, boot the image with `fastboot boot` only. Capture APR response progress and mount/UI state; do not infer a final state from absent log lines.
 - [ ] Update `NOTES.md` with exact commit, CI IDs, artifact/image hashes, boot/capture result, and any remaining blocker.
