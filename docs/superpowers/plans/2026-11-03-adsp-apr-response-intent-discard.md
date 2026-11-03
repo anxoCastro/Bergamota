@@ -45,7 +45,7 @@
 - [x] Run the focused ADSP test file and full `python3 -I -m unittest discover -s tools/tests -v`; inspect patch application and whitespace results.
 - [x] Complete the fresh review: strengthen the regression for parser-failure non-consumption and bounded dump iteration; split CI dispatch from artifact verification status.
 - [x] Commit and push the patch, regression, design, plan, and handoff; dispatch GitHub Actions for the current 26.5 configuration.
-- [ ] Verify the pinned commit, job log, artifact checksums, and built kernel.
-- [ ] Package a read-only RAM image with the previously validated loader and arguments; unpack and compare loader/payload and verify no `ufsrw=1` or `rootrw=1`.
+- [x] Verify the pinned commit, job log, artifact checksums, and built kernel.
+- [x] Package a read-only RAM image with the previously validated loader and arguments; unpack and compare loader/payload and verify no `ufsrw=1` or `rootrw=1`.
 - [ ] If Fastboot still reports one unlocked `beryllium` target, boot the image with `fastboot boot` only. Capture APR response progress and mount/UI state; do not infer a final state from absent log lines.
 - [ ] Update `NOTES.md` with exact commit, CI IDs, artifact/image hashes, boot/capture result, and any remaining blocker.
