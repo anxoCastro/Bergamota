@@ -68,6 +68,6 @@
 - [x] Generate patch 1156 from the staged 1155 source, apply it with `git apply --whitespace=error`, and byte-check it against the staged diff.
 - [x] Verify ordered driver patch replay through 1156 and `git diff --check` for tracked source/docs/tests.
 - [x] Commit and push patch, tests, design updates, and handoff (`8d141ab`).
-- [ ] Dispatch XNU workflow on `macos-26-intel`; verify success, patch 1156 in the log, `errors.txt` empty, and artifact checksums.
-- [ ] Rebuild the existing read-only payload and header-v1 RAM image; unpack and byte-compare loader/payload.
+- [x] Dispatch XNU workflow on `macos-26-intel`; verify success, patch 1156 in the log, `errors.txt` empty, and artifact checksums (`41696663847`, artifact `13263903417`).
+- [x] Rebuild the existing read-only payload and header-v1 RAM image; unpack and byte-compare loader/payload.
 - [ ] If one unlocked `beryllium` Fastboot target is available, verify product/unlocked immediately before `fastboot boot`, collect UDP/5140, and record whether the probe sends Q6Core and its response.
