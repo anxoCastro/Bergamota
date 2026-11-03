@@ -25,6 +25,7 @@ GLINK_SSR_OPEN_PATCH = ROOT / "xnu/patches-12377/1154-beryllium-adsp-glink-ssr-p
 LOOPBACK_CTL_LPASS_OPEN_PATCH = ROOT / "xnu/patches-12377/1155-beryllium-adsp-loopback-ctl-lpass-peer-open.patch"
 APR_APPS2_OPEN_PATCH = ROOT / "xnu/patches-12377/1156-beryllium-adsp-apr-apps2-peer-open.patch"
 APR_INTENT_ID_ZERO_PATCH = ROOT / "xnu/patches-12377/1158-beryllium-adsp-apr-intent-id-zero.patch"
+APR_RX_DONE_REUSE_PATCH = ROOT / "xnu/patches-12377/1160-beryllium-adsp-apr-rx-done-reuse.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -87,7 +88,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1159:
+                if not 1131 <= number <= 1160:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -750,7 +751,7 @@ class AdspPasPatchTests(unittest.TestCase):
         intent_start = response.index(
             "if (command == BERYLLIUM_ADSP_GLINK_CMD_INTENT)")
         intent_end = response.index(
-            "if (command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE)", intent_start)
+            "if (command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE", intent_start)
         intent = response[intent_start:intent_end]
 
         self.assertNotIn("adsp_apr_record_remote_intents", intent)
@@ -773,6 +774,31 @@ class AdspPasPatchTests(unittest.TestCase):
             "for (size_t i = 0; i < dump_bytes; i++)")
         dump_loop_end = intent.index("}", dump_loop_start)
         self.assertIn("frame[i]", intent[dump_loop_start:dump_loop_end])
+
+    def test_response_wait_accepts_matching_rx_done_w_reuse(self):
+        response = added_function_body(self.latest_driver,
+                                       "adsp_apr_poll_response")
+        completion_start = response.index(
+            "if (command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE")
+        completion_end = response.index(
+            "if (command == BERYLLIUM_ADSP_GLINK_CMD_TX_DATA)",
+            completion_start)
+        completion = response[completion_start:completion_end]
+
+        branch_condition = completion[:completion.index("{")]
+        self.assertIn("BERYLLIUM_ADSP_GLINK_CMD_RX_DONE_W_REUSE", branch_condition)
+        validation_start = completion.index("if (param1 !=")
+        validation_end = completion.index("{", validation_start)
+        validation = completion[validation_start:validation_end]
+        self.assertIn("param1 != state->remote_channel_id", validation)
+        self.assertIn("param2 != state->request_intent_id", validation)
+        self.assertIn("request_intent_done", validation)
+        consume = validation.index("!adsp_glink_rx_consume_frame")
+        self.assertLess(validation.index("param1 != state->remote_channel_id"), consume)
+        self.assertLess(validation.index("param2 != state->request_intent_id"), consume)
+        self.assertLess(validation.index("request_intent_done"), consume)
+        self.assertLess(consume, completion.index("request_intent_done = true"))
+        self.assertNotIn("state->remote_intent_count", completion)
 
 
 class AdspAprMode4Tests(unittest.TestCase):
@@ -821,6 +847,9 @@ class AdspAprMode4Tests(unittest.TestCase):
                             "patch 1158 must allow valid remote intent ID zero")
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(APR_INTENT_ID_ZERO_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(APR_RX_DONE_REUSE_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             subprocess.run([

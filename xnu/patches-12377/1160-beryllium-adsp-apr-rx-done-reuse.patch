@@ -1,0 +1,45 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 6c36db9..201d115 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2752,14 +2752,17 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 			    (unsigned long)state->remote_intent_count);
+ 			continue;
+ 		}
+-		if (command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE) {
++		if (command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE ||
++		    command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE_W_REUSE) {
++			const char *ack = command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE_W_REUSE ?
++			    "RX_DONE_W_REUSE" : "RX_DONE";
+ 			if (param1 != state->remote_channel_id || param2 != state->request_intent_id ||
+ 			    request_intent_done || !adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {
+-				printf("SWEET ADSP: APR response wait rejected unexpected remote RX_DONE\n");
++				printf("SWEET ADSP: APR response wait rejected unexpected remote %s\n", ack);
+ 				return false;
+ 			}
+ 			request_intent_done = true;
+-			printf("SWEET ADSP: remote RX_DONE confirmed for request intent %u\n", param2);
++			printf("SWEET ADSP: remote %s confirmed for request intent %u\n", ack, param2);
+ 			continue;
+ 		}
+ 		if (command == BERYLLIUM_ADSP_GLINK_CMD_TX_DATA) {
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index 4ca9e61..8dfb5f7 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -35,6 +35,7 @@
+ #define BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK 4u
+ #define BERYLLIUM_ADSP_GLINK_CMD_INTENT 5u
+ #define BERYLLIUM_ADSP_GLINK_CMD_RX_DONE 6u
++#define BERYLLIUM_ADSP_GLINK_CMD_RX_DONE_W_REUSE 14u
+ #define BERYLLIUM_ADSP_GLINK_CMD_TX_DATA 9u
+ 
+ enum beryllium_adsp_glink_frame_status {
+@@ -138,6 +139,7 @@ beryllium_adsp_apr_glink_frame_bytes(const uint8_t *frame, size_t available,
+ 		break;
+ 	case BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK:
+ 	case BERYLLIUM_ADSP_GLINK_CMD_RX_DONE:
++	case BERYLLIUM_ADSP_GLINK_CMD_RX_DONE_W_REUSE:
+ 		raw_bytes = 8;
+ 		break;
+ 	case BERYLLIUM_ADSP_GLINK_CMD_INTENT:

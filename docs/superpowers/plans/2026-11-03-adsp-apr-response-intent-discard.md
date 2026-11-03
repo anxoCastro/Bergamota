@@ -46,6 +46,7 @@
 - [x] Complete the fresh review: strengthen the regression for parser-failure non-consumption and bounded dump iteration; split CI dispatch from artifact verification status.
 - [x] Commit and push the patch, regression, design, plan, and handoff; dispatch GitHub Actions for the current 26.5 configuration.
 - [x] Verify the pinned commit, job log, artifact checksums, and built kernel.
-- [x] Package a read-only RAM image with the previously validated loader and arguments; unpack and compare loader/payload and verify no `ufsrw=1` or `rootrw=1`.
-- [ ] If Fastboot still reports one unlocked `beryllium` target, boot the image with `fastboot boot` only. Capture APR response progress and mount/UI state; do not infer a final state from absent log lines.
-- [ ] Update `NOTES.md` with exact commit, CI IDs, artifact/image hashes, boot/capture result, and any remaining blocker.
+- [x] Package a read-only RAM image and verify loader/payload; after the first boot exposed a missing `sweetarm64e=1`, repack and verify a corrected variant, still without `ufsrw=1` or `rootrw=1`.
+- [x] Boot the corrected image with `fastboot boot` only. The RAM boot passes launchd and reaches `mount_hfs`; the capture records 64 discarded valid INTENT frames and stops on unknown GLINK command 14 before a validated Q6Core response.
+- [x] Update `NOTES.md` with exact commit, CI IDs, artifact/image hashes, boot/capture result, and remaining blocker.
+- [ ] With the handset back in Fastboot, repeat the corrected RAM boot and capture the complete mount/SpringBoard state; then investigate why APR response polling stops on GLINK command 14. Do not infer a phone panic from the USB disconnect alone.

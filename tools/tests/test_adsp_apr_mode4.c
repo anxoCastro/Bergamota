@@ -45,6 +45,9 @@ main(void)
 	uint8_t loopback_ctl_lpass_open_frame[32] = { 0 };
 	uint8_t apr_apps2_open_frame[24] = { 0 };
 	uint8_t intent_frame[24] = { 0 };
+	const uint8_t rx_done_w_reuse_frame[8] = {
+	    0x0e, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
+	};
 	const uint8_t captured_zero_intent_frame[16] = {
 	    0x05, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00,
 	    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -298,6 +301,13 @@ main(void)
 	put32(intent_frame + 20, 0);
 	assert(!beryllium_adsp_apr_parse_remote_intents(intent_frame, sizeof(intent_frame),
 	    5, intents, 2, &intent_count));
+	assert(beryllium_adsp_apr_glink_frame_bytes(rx_done_w_reuse_frame,
+	    sizeof(rx_done_w_reuse_frame) - 1, &frame_bytes) ==
+	    BERYLLIUM_ADSP_GLINK_FRAME_INCOMPLETE);
+	assert(beryllium_adsp_apr_glink_frame_bytes(rx_done_w_reuse_frame,
+	    sizeof(rx_done_w_reuse_frame), &frame_bytes) ==
+	    BERYLLIUM_ADSP_GLINK_FRAME_COMPLETE);
+	assert(frame_bytes == sizeof(rx_done_w_reuse_frame));
 
 	put16(data_frame, BERYLLIUM_ADSP_GLINK_CMD_TX_DATA);
 	put16(data_frame + 2, 7);
