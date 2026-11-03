@@ -22,6 +22,7 @@ APR_OPEN_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1151-beryllium-adsp-apr-o
 FASTRPC_OPEN_PATCH = ROOT / "xnu/patches-12377/1152-beryllium-adsp-fastrpc-peer-open.patch"
 IPCRTR_OPEN_PATCH = ROOT / "xnu/patches-12377/1153-beryllium-adsp-ipcrtr-peer-open.patch"
 GLINK_SSR_OPEN_PATCH = ROOT / "xnu/patches-12377/1154-beryllium-adsp-glink-ssr-peer-open.patch"
+LOOPBACK_CTL_LPASS_OPEN_PATCH = ROOT / "xnu/patches-12377/1155-beryllium-adsp-loopback-ctl-lpass-peer-open.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -84,7 +85,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1154:
+                if not 1131 <= number <= 1155:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -689,6 +690,19 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertNotIn("adsp_apr_send_control", ssr_open)
         self.assertNotIn("return false", ssr_open)
 
+    def test_known_loopback_ctl_lpass_peer_open_is_consumed_without_ack(self):
+        open_body = added_function_body(self.latest_driver, "adsp_apr_open_channel")
+        self.assertIn("bool ignored_loopback_ctl_lpass_open = false", open_body)
+        self.assertIn("beryllium_adsp_apr_loopback_ctl_lpass_open_valid", open_body)
+        self.assertIn("ignoring unhandled peer channel LOOPBACK_CTL_LPASS", open_body)
+        self.assertIn("ignored_loopback_ctl_lpass_open = true", open_body)
+        loopback_start = open_body.index("if (!ignored_loopback_ctl_lpass_open")
+        loopback_end = open_body.index("} else if (remote_open", loopback_start)
+        loopback_open = open_body[loopback_start:loopback_end]
+        self.assertIn("!remote_open", loopback_open)
+        self.assertNotIn("adsp_apr_send_control", loopback_open)
+        self.assertNotIn("return false", loopback_open)
+
 
 class AdspAprMode4Tests(unittest.TestCase):
     def test_compiled_apr_mode4_helpers(self):
@@ -721,6 +735,11 @@ class AdspAprMode4Tests(unittest.TestCase):
                            check=True, capture_output=True, text=True)
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(GLINK_SSR_OPEN_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            self.assertTrue(LOOPBACK_CTL_LPASS_OPEN_PATCH.is_file(),
+                            "patch 1155 must provide the exact LOOPBACK_CTL_LPASS validator")
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(LOOPBACK_CTL_LPASS_OPEN_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             subprocess.run([

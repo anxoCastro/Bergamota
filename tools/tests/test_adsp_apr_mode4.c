@@ -42,6 +42,7 @@ main(void)
 	uint8_t fastrpc_open_frame[32] = { 0 };
 	uint8_t ipcrtr_open_frame[16] = { 0 };
 	uint8_t glink_ssr_open_frame[24] = { 0 };
+	uint8_t loopback_ctl_lpass_open_frame[32] = { 0 };
 	uint8_t intent_frame[24] = { 0 };
 	uint8_t data_frame[40] = { 0 };
 	uint8_t response[BERYLLIUM_ADSP_APR_MAX_DATA_BYTES];
@@ -165,6 +166,41 @@ main(void)
 	glink_ssr_open_frame[8] ^= 1;
 	assert(!beryllium_adsp_apr_glink_ssr_open_valid(glink_ssr_open_frame,
 	    sizeof(glink_ssr_open_frame), 3));
+	put16(loopback_ctl_lpass_open_frame, BERYLLIUM_ADSP_GLINK_CMD_OPEN);
+	put16(loopback_ctl_lpass_open_frame + 2, 4);
+	put32(loopback_ctl_lpass_open_frame + 4,
+	    BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME_BYTES);
+	memcpy(loopback_ctl_lpass_open_frame + 8,
+	    BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME,
+	    BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME_BYTES);
+	assert(beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
+	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame), 4));
+	put16(loopback_ctl_lpass_open_frame, BERYLLIUM_ADSP_GLINK_CMD_INTENT);
+	assert(!beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
+	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame), 4));
+	put16(loopback_ctl_lpass_open_frame, BERYLLIUM_ADSP_GLINK_CMD_OPEN);
+	assert(!beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
+	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame) - 8, 4));
+	assert(!beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
+	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame), 0));
+	assert(!beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
+	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame), 3));
+	put32(loopback_ctl_lpass_open_frame + 4,
+	    BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME_BYTES - 1);
+	assert(!beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
+	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame), 4));
+	put32(loopback_ctl_lpass_open_frame + 4,
+	    0x10000u | BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME_BYTES);
+	assert(!beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
+	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame), 4));
+	put32(loopback_ctl_lpass_open_frame + 4,
+	    BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME_BYTES);
+	loopback_ctl_lpass_open_frame[8] ^= 1;
+	assert(!beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
+	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame), 4));
+	loopback_ctl_lpass_open_frame[8] ^= 1;
+	assert(!beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
+	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame) + 8, 4));
 	put32(open_frame + 4, BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES - 1);
 	assert(!beryllium_adsp_apr_open_name_valid(open_frame, frame_bytes, 7));
 	put32(open_frame + 4, 0x10000u | BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES);

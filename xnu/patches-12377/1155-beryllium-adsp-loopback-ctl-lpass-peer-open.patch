@@ -1,0 +1,64 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 4fba71e..428401b 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2443,6 +2443,7 @@ adsp_apr_open_channel(const struct adsp_glink_survey_items *items,
+ 	bool ignored_fastrpc_open = false;
+ 	bool ignored_ipcrtr_open = false;
+ 	bool ignored_glink_ssr_open = false;
++	bool ignored_loopback_ctl_lpass_open = false;
+ 	if (items == NULL || state == NULL) {
+ 		return false;
+ 	}
+@@ -2502,6 +2503,11 @@ adsp_apr_open_channel(const struct adsp_glink_survey_items *items,
+ 				ignored_glink_ssr_open = true;
+ 				printf("SWEET ADSP: APR GLINK ignoring unhandled peer channel glink_ssr remote-id=%u; SSR protocol not implemented, no OPEN_ACK sent\n",
+ 				    (unsigned)param1);
++			} else if (!ignored_loopback_ctl_lpass_open && !remote_open && param1 != 0 &&
++			    beryllium_adsp_apr_loopback_ctl_lpass_open_valid(frame, frame_bytes, param1)) {
++				ignored_loopback_ctl_lpass_open = true;
++				printf("SWEET ADSP: APR GLINK ignoring unhandled peer channel LOOPBACK_CTL_LPASS remote-id=%u; no OPEN_ACK sent\n",
++				    (unsigned)param1);
+ 			} else if (remote_open || param1 == 0 ||
+ 			    !beryllium_adsp_apr_open_name_valid(frame, frame_bytes, param1)) {
+ 				size_t dump_bytes = frame_bytes > 8 ? frame_bytes - 8 : 0;
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index 3cbddf7..56019c0 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -22,6 +22,8 @@
+ #define BERYLLIUM_ADSP_IPCRTR_CHANNEL_NAME_BYTES 7u
+ #define BERYLLIUM_ADSP_GLINK_SSR_CHANNEL_NAME "glink_ssr"
+ #define BERYLLIUM_ADSP_GLINK_SSR_CHANNEL_NAME_BYTES 10u
++#define BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME "LOOPBACK_CTL_LPASS"
++#define BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME_BYTES 19u
+ #define BERYLLIUM_ADSP_APR_INTENT_BYTES 512u
+ #define BERYLLIUM_ADSP_APR_INTENT_COUNT 20u
+ #define BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS 64u
+@@ -239,6 +241,26 @@ beryllium_adsp_apr_glink_ssr_open_valid(const uint8_t *frame, size_t frame_bytes
+ 	return true;
+ }
+ 
++static inline bool
++beryllium_adsp_apr_loopback_ctl_lpass_open_valid(const uint8_t *frame,
++	size_t frame_bytes, uint16_t remote_channel_id)
++{
++	if (frame == NULL || remote_channel_id == 0 || frame_bytes != 32 ||
++	    beryllium_adsp_apr_get16(frame) != BERYLLIUM_ADSP_GLINK_CMD_OPEN ||
++	    beryllium_adsp_apr_get16(frame + 2) != remote_channel_id ||
++	    beryllium_adsp_apr_get32(frame + 4) !=
++	    BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME_BYTES) {
++		return false;
++	}
++	for (size_t i = 0; i < BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME_BYTES; i++) {
++		if (frame[8 + i] !=
++		    (uint8_t)BERYLLIUM_ADSP_LOOPBACK_CTL_LPASS_CHANNEL_NAME[i]) {
++			return false;
++		}
++	}
++	return true;
++}
++
+ static inline bool
+ beryllium_adsp_apr_parse_remote_intents(const uint8_t *frame, size_t frame_bytes,
+ 	uint16_t remote_channel_id, struct beryllium_adsp_glink_intent *intents,
