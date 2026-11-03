@@ -800,6 +800,103 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertLess(consume, completion.index("request_intent_done = true"))
         self.assertNotIn("state->remote_intent_count", completion)
 
+    def test_compiled_response_wait_completion_guard(self):
+        response = added_function_body(self.latest_driver,
+                                       "adsp_apr_poll_response")
+        completion_start = response.index(
+            "if (command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE")
+        completion_end = response.index(
+            "if (command == BERYLLIUM_ADSP_GLINK_CMD_TX_DATA)",
+            completion_start)
+        completion = response[completion_start:completion_end]
+        validation_start = completion.index("if (param1 !=") + len("if (")
+        validation_end = completion.index(") {", validation_start)
+        guard = completion[validation_start:validation_end]
+
+        harness = f"""#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+struct response_state {{
+    uint16_t remote_channel_id;
+    uint32_t request_intent_id;
+}};
+
+static bool consume_result;
+static unsigned consume_calls;
+
+static bool
+adsp_glink_rx_consume_frame(void *items, uint32_t tail, size_t frame_bytes)
+{{
+    (void)items;
+    (void)tail;
+    (void)frame_bytes;
+    consume_calls++;
+    return consume_result;
+}}
+
+static bool
+run_completion(uint16_t channel, uint32_t intent, bool was_done,
+    bool can_consume, bool *done_after)
+{{
+    const struct response_state state_storage = {{ 5, 0 }};
+    const struct response_state *state = &state_storage;
+    void *items = NULL;
+    uint32_t tail = 0;
+    size_t frame_bytes = 8;
+    uint16_t param1 = channel;
+    uint32_t param2 = intent;
+    bool request_intent_done = was_done;
+
+    consume_result = can_consume;
+    consume_calls = 0;
+    if ({guard}) {{
+        *done_after = request_intent_done;
+        return false;
+    }}
+    request_intent_done = true;
+    *done_after = request_intent_done;
+    return true;
+}}
+
+static void
+expect_completion(uint16_t channel, uint32_t intent, bool was_done,
+    bool can_consume, bool expected, bool expected_done,
+    unsigned expected_consumes)
+{{
+    bool done_after = was_done;
+    bool accepted = run_completion(channel, intent, was_done, can_consume,
+        &done_after);
+    assert(accepted == expected);
+    assert(done_after == expected_done);
+    assert(consume_calls == expected_consumes);
+}}
+
+int
+main(void)
+{{
+    expect_completion(5, 0, false, true, true, true, 1);
+    expect_completion(4, 0, false, true, false, false, 0);
+    expect_completion(5, 1, false, true, false, false, 0);
+    expect_completion(5, 0, true, true, false, true, 0);
+    expect_completion(5, 0, false, false, false, false, 1);
+    return 0;
+}}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "test-rx-done-reuse-guard.c"
+            executable = work / "test-rx-done-reuse-guard"
+            source.write_text(harness)
+            subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                str(source), "-o", str(executable),
+            ], check=True, capture_output=True, text=True)
+            result = subprocess.run([str(executable)], check=False,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
 
 class AdspAprMode4Tests(unittest.TestCase):
     def test_compiled_apr_mode4_helpers(self):
