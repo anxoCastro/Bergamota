@@ -44,6 +44,7 @@
 - [x] Remove only the `id == 0` rejection from the helper; retain size bounds and duplicate detection. Generate patch 1158 from the staged 1157 baseline.
 - [x] Extend helper compilation through 1158; verify 0 is accepted and duplicate zero is rejected. Patch application and staged-source byte comparison pass.
 - [x] Run focused ADSP tests (42/42) and full `python3 -I -m unittest discover -s tools/tests -v` (45/45).
-- [ ] Commit and push patch, regression, design, plan, and handoff; dispatch CI and verify run, job, artifact hashes, and kernel build result.
+- [x] Commit and push patch, regression, design, plan, and handoff (`abae8c9d307f2e381a6913478e7fa19557af59ed`); dispatch CI run 41716939811/job 126199305412. Verify its final result and artifact next.
+- [ ] Verify CI run 41716939811, job log, artifact checksums, and built kernel.
 - [ ] Package and validate a read-only RAM image; use `fastboot boot` only if the host sees an unlocked `beryllium` target. Capture whether APR progresses beyond the rejected INTENT and record mount/UI status without inferring from missing logs.
 - [ ] Obtain one fresh whole-branch review, fix any Critical/Important findings with RED→GREEN coverage, then finalize the handoff.
