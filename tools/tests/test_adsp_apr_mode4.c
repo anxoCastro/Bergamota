@@ -43,6 +43,7 @@ main(void)
 	uint8_t ipcrtr_open_frame[16] = { 0 };
 	uint8_t glink_ssr_open_frame[24] = { 0 };
 	uint8_t loopback_ctl_lpass_open_frame[32] = { 0 };
+	uint8_t apr_apps2_open_frame[24] = { 0 };
 	uint8_t intent_frame[24] = { 0 };
 	uint8_t data_frame[40] = { 0 };
 	uint8_t response[BERYLLIUM_ADSP_APR_MAX_DATA_BYTES];
@@ -201,6 +202,44 @@ main(void)
 	loopback_ctl_lpass_open_frame[8] ^= 1;
 	assert(!beryllium_adsp_apr_loopback_ctl_lpass_open_valid(
 	    loopback_ctl_lpass_open_frame, sizeof(loopback_ctl_lpass_open_frame) + 8, 4));
+	put16(apr_apps2_open_frame, BERYLLIUM_ADSP_GLINK_CMD_OPEN);
+	put16(apr_apps2_open_frame + 2, 6);
+	put32(apr_apps2_open_frame + 4, BERYLLIUM_ADSP_APR_APPS2_CHANNEL_NAME_BYTES);
+	memcpy(apr_apps2_open_frame + 8, BERYLLIUM_ADSP_APR_APPS2_CHANNEL_NAME,
+	    BERYLLIUM_ADSP_APR_APPS2_CHANNEL_NAME_BYTES);
+	assert(beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame), 6));
+	assert(!beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame) - 8, 6));
+	assert(!beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame), 0));
+	assert(!beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame), 5));
+	put16(apr_apps2_open_frame, BERYLLIUM_ADSP_GLINK_CMD_INTENT);
+	assert(!beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame), 6));
+	put16(apr_apps2_open_frame, BERYLLIUM_ADSP_GLINK_CMD_OPEN);
+	put32(apr_apps2_open_frame + 4,
+	    BERYLLIUM_ADSP_APR_APPS2_CHANNEL_NAME_BYTES - 1);
+	assert(!beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame), 6));
+	put32(apr_apps2_open_frame + 4, BERYLLIUM_ADSP_APR_APPS2_CHANNEL_NAME_BYTES);
+	put32(apr_apps2_open_frame + 4,
+	    0x10000u | BERYLLIUM_ADSP_APR_APPS2_CHANNEL_NAME_BYTES);
+	assert(!beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame), 6));
+	put32(apr_apps2_open_frame + 4, BERYLLIUM_ADSP_APR_APPS2_CHANNEL_NAME_BYTES);
+	apr_apps2_open_frame[8] ^= 1;
+	assert(!beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame), 6));
+	apr_apps2_open_frame[8] ^= 1;
+	apr_apps2_open_frame[17] = 1;
+	assert(!beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame), 6));
+	apr_apps2_open_frame[17] = 0;
+	apr_apps2_open_frame[23] = 1;
+	assert(!beryllium_adsp_apr_apps2_open_valid(apr_apps2_open_frame,
+	    sizeof(apr_apps2_open_frame), 6));
 	put32(open_frame + 4, BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES - 1);
 	assert(!beryllium_adsp_apr_open_name_valid(open_frame, frame_bytes, 7));
 	put32(open_frame + 4, 0x10000u | BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES);
