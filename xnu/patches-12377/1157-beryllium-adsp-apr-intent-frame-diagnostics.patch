@@ -1,0 +1,26 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index a6fee6e..8e17066 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2631,8 +2631,19 @@ adsp_apr_wait_remote_intent(const struct adsp_glink_survey_items *items,
+ 		if (status != BERYLLIUM_ADSP_GLINK_FRAME_COMPLETE ||
+ 		    beryllium_adsp_apr_get16(frame) != BERYLLIUM_ADSP_GLINK_CMD_INTENT ||
+ 		    !adsp_apr_record_remote_intents(state, frame, frame_bytes)) {
+-			printf("SWEET ADSP: APR intent wait stopped on malformed/unknown GLINK command=%u\n",
+-			    beryllium_adsp_apr_get16(frame));
++			size_t dump_bytes = frame_bytes != 0 && frame_bytes <= copy_bytes ?
++			    frame_bytes : copy_bytes;
++			printf("SWEET ADSP: APR intent frame rejected status=%u command=%u "
++			    "param1=%#x param2=%#x frame_bytes=%lu copied=%lu raw_bytes=%lu raw=",
++			    (unsigned)status, (unsigned)beryllium_adsp_apr_get16(frame),
++			    (unsigned)beryllium_adsp_apr_get16(frame + 2),
++			    (unsigned)beryllium_adsp_apr_get32(frame + 4),
++			    (unsigned long)frame_bytes, (unsigned long)copy_bytes,
++			    (unsigned long)dump_bytes);
++			for (size_t i = 0; i < dump_bytes; i++) {
++				printf("%02x", (unsigned)frame[i]);
++			}
++			printf("\n");
+ 			return false;
+ 		}
+ 		if (!adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {

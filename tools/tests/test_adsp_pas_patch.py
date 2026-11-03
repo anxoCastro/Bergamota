@@ -86,7 +86,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1156:
+                if not 1131 <= number <= 1157:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -716,6 +716,32 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertNotIn("!remote_open", apps2_open)
         self.assertNotIn("adsp_apr_send_control", apps2_open)
         self.assertNotIn("return false", apps2_open)
+
+    def test_remote_intent_rejection_logs_bounded_frame_without_consuming_it(self):
+        wait = added_function_body(self.latest_driver, "adsp_apr_wait_remote_intent")
+        self.assertIn("#define ADSP_APR_GLINK_FRAME_MAX 528u", self.latest_driver)
+        self.assertIn(
+            'printf("SWEET ADSP: APR intent frame rejected status=%u command=%u "',
+            wait,
+        )
+        self.assertIn(
+            '"param1=%#x param2=%#x frame_bytes=%lu copied=%lu raw_bytes=%lu raw=",',
+            wait,
+        )
+        self.assertIn(
+            "size_t dump_bytes = frame_bytes != 0 && frame_bytes <= copy_bytes ?",
+            wait,
+        )
+        self.assertIn("frame_bytes : copy_bytes;", wait)
+        self.assertIn("size_t copy_bytes = used < sizeof(frame) ? used : sizeof(frame);",
+                      wait)
+        self.assertIn("for (size_t i = 0; i < dump_bytes; i++)", wait)
+        self.assertIn('printf("%02x", (unsigned)frame[i])', wait)
+        reject_start = wait.index("if (status != BERYLLIUM_ADSP_GLINK_FRAME_COMPLETE")
+        consume_start = wait.index("if (!adsp_glink_rx_consume_frame")
+        rejection = wait[reject_start:consume_start]
+        self.assertIn("return false", rejection)
+        self.assertNotIn("adsp_glink_rx_consume_frame", rejection)
 
 
 class AdspAprMode4Tests(unittest.TestCase):
