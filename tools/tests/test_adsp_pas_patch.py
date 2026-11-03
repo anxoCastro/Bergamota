@@ -24,6 +24,7 @@ IPCRTR_OPEN_PATCH = ROOT / "xnu/patches-12377/1153-beryllium-adsp-ipcrtr-peer-op
 GLINK_SSR_OPEN_PATCH = ROOT / "xnu/patches-12377/1154-beryllium-adsp-glink-ssr-peer-open.patch"
 LOOPBACK_CTL_LPASS_OPEN_PATCH = ROOT / "xnu/patches-12377/1155-beryllium-adsp-loopback-ctl-lpass-peer-open.patch"
 APR_APPS2_OPEN_PATCH = ROOT / "xnu/patches-12377/1156-beryllium-adsp-apr-apps2-peer-open.patch"
+APR_INTENT_ID_ZERO_PATCH = ROOT / "xnu/patches-12377/1158-beryllium-adsp-apr-intent-id-zero.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -86,7 +87,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1157:
+                if not 1131 <= number <= 1158:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -785,6 +786,11 @@ class AdspAprMode4Tests(unittest.TestCase):
                             "patch 1156 must provide the exact apr_apps2 validator")
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(APR_APPS2_OPEN_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            self.assertTrue(APR_INTENT_ID_ZERO_PATCH.is_file(),
+                            "patch 1158 must allow valid remote intent ID zero")
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(APR_INTENT_ID_ZERO_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             subprocess.run([

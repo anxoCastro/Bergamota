@@ -45,6 +45,10 @@ main(void)
 	uint8_t loopback_ctl_lpass_open_frame[32] = { 0 };
 	uint8_t apr_apps2_open_frame[24] = { 0 };
 	uint8_t intent_frame[24] = { 0 };
+	const uint8_t captured_zero_intent_frame[16] = {
+	    0x05, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00,
+	    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	};
 	uint8_t data_frame[40] = { 0 };
 	uint8_t response[BERYLLIUM_ADSP_APR_MAX_DATA_BYTES];
 	struct beryllium_adsp_apr_response parsed = { 0 };
@@ -279,6 +283,21 @@ main(void)
 	put32(intent_frame + 4, 2);
 	assert(!beryllium_adsp_apr_parse_remote_intents(intent_frame, sizeof(intent_frame),
 	    7, intents, 1, &intent_count));
+	assert(beryllium_adsp_apr_glink_frame_bytes(captured_zero_intent_frame,
+	    sizeof(captured_zero_intent_frame), &frame_bytes));
+	assert(frame_bytes == sizeof(captured_zero_intent_frame));
+	assert(beryllium_adsp_apr_parse_remote_intents(captured_zero_intent_frame,
+	    frame_bytes, 5, intents, 2, &intent_count));
+	assert(intent_count == 1 && intents[0].id == 0 && intents[0].size == 128);
+	put16(intent_frame, BERYLLIUM_ADSP_GLINK_CMD_INTENT);
+	put16(intent_frame + 2, 5);
+	put32(intent_frame + 4, 2);
+	put32(intent_frame + 8, 128);
+	put32(intent_frame + 12, 0);
+	put32(intent_frame + 16, 128);
+	put32(intent_frame + 20, 0);
+	assert(!beryllium_adsp_apr_parse_remote_intents(intent_frame, sizeof(intent_frame),
+	    5, intents, 2, &intent_count));
 
 	put16(data_frame, BERYLLIUM_ADSP_GLINK_CMD_TX_DATA);
 	put16(data_frame + 2, 7);

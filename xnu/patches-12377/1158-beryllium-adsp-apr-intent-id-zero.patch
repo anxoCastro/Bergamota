@@ -1,0 +1,13 @@
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index c9df952..4ca9e61 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -304,7 +304,7 @@ beryllium_adsp_apr_parse_remote_intents(const uint8_t *frame, size_t frame_bytes
+ 	for (size_t i = 0; i < count; i++) {
+ 		uint32_t size = beryllium_adsp_apr_get32(frame + 8 + i * 8);
+ 		uint32_t id = beryllium_adsp_apr_get32(frame + 12 + i * 8);
+-		if (size == 0 || size > 0x4000u || id == 0) {
++		if (size == 0 || size > 0x4000u) {
+ 			return false;
+ 		}
+ 		for (size_t prior = 0; prior < i; prior++) {

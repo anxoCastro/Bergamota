@@ -47,5 +47,5 @@
 - [x] Run focused ADSP tests (42/42) and full `python3 -I -m unittest discover -s tools/tests -v` (45/45).
 - [x] Dispatch the fork's XNU kernel workflow with `gh`; verify successful job, patch 1157 in the log, empty `errors.txt`, artifact checksums, and kernel hash (`41706624115`, artifact `13268806811`).
 - [x] Rebuild and unpack the read-only header-v1 RAM image; compare the loader and payload byte-for-byte and confirm no write-enabled root arguments.
-- [ ] If USB enumerates an unlocked `beryllium` Fastboot target, collect UDP/5140 and use `fastboot boot`; record the exact frame and whether mount/SpringBoard is visible. Otherwise finish the build/image handoff and leave device validation pending.
-- [ ] Commit and push the tested patch, tests, design, plan, and exact handoff in `NOTES.md`.
+- [x] Recheck Fastboot, collect UDP/5140, and use `fastboot boot`; record the exact frame and boot result. (The frame was captured; the log ends in `mount-phase-1` with no final mount, panic, or SpringBoard result.)
+- [x] Commit and push the tested patch, tests, design, plan, and exact handoff in `NOTES.md`.
