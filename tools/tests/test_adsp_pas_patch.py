@@ -27,6 +27,7 @@ APR_APPS2_OPEN_PATCH = ROOT / "xnu/patches-12377/1156-beryllium-adsp-apr-apps2-p
 APR_INTENT_ID_ZERO_PATCH = ROOT / "xnu/patches-12377/1158-beryllium-adsp-apr-intent-id-zero.patch"
 APR_RX_DONE_REUSE_PATCH = ROOT / "xnu/patches-12377/1160-beryllium-adsp-apr-rx-done-reuse.patch"
 APR_REJECTED_PAYLOAD_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1161-beryllium-adsp-apr-rejected-payload-diagnostics.patch"
+APR_V1_RESPONSE_HEADER_PATCH = ROOT / "xnu/patches-12377/1162-beryllium-adsp-apr-v1-response-header.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -89,7 +90,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1161:
+                if not 1131 <= number <= 1162:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -975,6 +976,11 @@ class AdspAprMode4Tests(unittest.TestCase):
                            check=True, capture_output=True, text=True)
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(APR_REJECTED_PAYLOAD_DIAGNOSTICS_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            self.assertTrue(APR_V1_RESPONSE_HEADER_PATCH.is_file(),
+                            "patch 1162 must decode bounded APR response headers")
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(APR_V1_RESPONSE_HEADER_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             subprocess.run([

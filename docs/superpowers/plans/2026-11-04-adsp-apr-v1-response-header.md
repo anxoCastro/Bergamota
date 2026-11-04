@@ -36,8 +36,8 @@
 - Consumes: current `beryllium_adsp_apr_parse_response()` from patches through 1161.
 - Produces: a compiled regression fixture that mirrors the captured prefix and expects a valid v1 response.
 
-- [ ] Add the 64-byte captured prefix and a 148-byte synthetic packet fixture; assert parse kind, version 2.8.0.0, and service count 8.
-- [ ] Run `python3 -I -m unittest discover -s tools/tests -p 'test_adsp_pas_patch.py' -v` and confirm the new assertion fails because the v1 header is rejected.
+- [x] Add the 64-byte captured prefix and a 148-byte synthetic packet fixture; assert parse kind, version 2.8.0.0, and service count 8.
+- [x] Run the focused regression against patch 1161 and confirm it fails at the APR v1 parse-kind assertion.
 
 ### Task 2: Parse bounded APR v1 headers in patch 1162
 
@@ -50,10 +50,10 @@
 - Consumes: the APR response parser and the failing fixture from Task 1.
 - Produces: `beryllium_adsp_apr_parse_response()` that validates version/message type/header bounds and parses payloads from `packet + header_bytes`.
 
-- [ ] Update the patch replay and C fixture setup to apply 1162 after 1161.
-- [ ] Implement version 0/1, response type 1, header-size bounds, exact packet size, dynamic basic-result/body offsets, and exact service-count length.
-- [ ] Add rejection cases for unsupported version, wrong message type, short/oversized header, packet-size mismatch, and inconsistent service count.
-- [ ] Run the focused file suite and full `python3 -I -m unittest discover -s tools/tests -v`; verify 1162 applies with `--whitespace=error` and replayed source byte-matches.
+- [x] Update the patch replay and C fixture setup to apply 1162 after 1161.
+- [x] Implement version 0/1, response type 1, header-size bounds, exact packet size, dynamic basic-result/body offsets, and exact service-count length.
+- [x] Add rejection cases for unsupported version, wrong message type, short/oversized header, packet-size mismatch, and inconsistent service count; retain reserved-field checks.
+- [x] Run the focused suite (46/46) and full `python3 -I -m unittest discover -s tools/tests -v` (49/49); replay all 13 relevant APR patches through 1162 with `--whitespace=error`.
 
 ### Task 3: Review, CI, image, and RAM-boot validation
 

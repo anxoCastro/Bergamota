@@ -1,0 +1,78 @@
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index ee2708c..a2b5b8b 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -357,15 +357,32 @@ static inline enum beryllium_adsp_apr_response_kind
+ beryllium_adsp_apr_parse_response(const uint8_t *packet, size_t packet_bytes,
+ 	struct beryllium_adsp_apr_response *response)
+ {
++	uint16_t header_field;
+ 	uint16_t packet_size;
++	uint8_t header_version;
++	uint8_t header_words;
++	uint8_t message_type;
++	size_t header_bytes;
+ 	uint32_t opcode;
++	const uint8_t *body;
++
+ 	if (packet == NULL || response == NULL || packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES) {
+ 		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
+ 	}
++	header_field = beryllium_adsp_apr_get16(packet);
++	header_version = (uint8_t)(header_field & 0x000fu);
++	header_words = (uint8_t)((header_field & 0x00f0u) >> 4);
++	message_type = (uint8_t)((header_field & 0x0300u) >> 8);
++	header_bytes = (size_t)header_words * 4u;
++	if (header_version > 1u || message_type != 1u ||
++	    (header_field & 0xfc00u) != 0 ||
++	    header_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    header_bytes > packet_bytes) {
++		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
++	}
+ 	packet_size = beryllium_adsp_apr_get16(packet + 2);
+ 	opcode = beryllium_adsp_apr_get32(packet + 16);
+-	if (beryllium_adsp_apr_get16(packet) != BERYLLIUM_ADSP_APR_RSP_HDR_FIELD ||
+-	    packet_size != packet_bytes || packet[4] != BERYLLIUM_ADSP_APR_Q6CORE_SERVICE ||
++	if (packet_size != packet_bytes || packet[4] != BERYLLIUM_ADSP_APR_Q6CORE_SERVICE ||
+ 	    packet[5] != BERYLLIUM_ADSP_APR_DOMAIN_ADSP ||
+ 	    beryllium_adsp_apr_get16(packet + 6) != 0 ||
+ 	    packet[8] != BERYLLIUM_ADSP_APR_Q6CORE_SERVICE ||
+@@ -374,25 +391,27 @@ beryllium_adsp_apr_parse_response(const uint8_t *packet, size_t packet_bytes,
+ 	    beryllium_adsp_apr_get32(packet + 12) != 0) {
+ 		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
+ 	}
++	body = packet + header_bytes;
+ 	if (opcode == BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT) {
+-		if (packet_bytes != BERYLLIUM_ADSP_APR_HEADER_BYTES + 8u ||
+-		    beryllium_adsp_apr_get32(packet + 20) != BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION) {
++		if (packet_bytes != header_bytes + 8u ||
++		    beryllium_adsp_apr_get32(body) != BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION) {
+ 			return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
+ 		}
+-		response->status = beryllium_adsp_apr_get32(packet + 24);
++		response->status = beryllium_adsp_apr_get32(body + 4);
+ 		return BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT;
+ 	}
+-	if (opcode != BERYLLIUM_ADSP_APR_RSP_GET_FWK_VERSION || packet_bytes < 40 ||
+-	    ((packet_bytes - 40u) % 12u) != 0) {
++	if (opcode != BERYLLIUM_ADSP_APR_RSP_GET_FWK_VERSION ||
++	    packet_bytes < header_bytes + 20u ||
++	    ((packet_bytes - header_bytes - 20u) % 12u) != 0) {
+ 		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
+ 	}
+-	response->major = beryllium_adsp_apr_get32(packet + 20);
+-	response->minor = beryllium_adsp_apr_get32(packet + 24);
+-	response->branch = beryllium_adsp_apr_get32(packet + 28);
+-	response->subbranch = beryllium_adsp_apr_get32(packet + 32);
+-	response->service_count = beryllium_adsp_apr_get32(packet + 36);
++	response->major = beryllium_adsp_apr_get32(body);
++	response->minor = beryllium_adsp_apr_get32(body + 4);
++	response->branch = beryllium_adsp_apr_get32(body + 8);
++	response->subbranch = beryllium_adsp_apr_get32(body + 12);
++	response->service_count = beryllium_adsp_apr_get32(body + 16);
+ 	if (response->service_count > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES / 12u ||
+-	    packet_bytes != 40u + (size_t)response->service_count * 12u) {
++	    packet_bytes != header_bytes + 20u + (size_t)response->service_count * 12u) {
+ 		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
+ 	}
+ 	return BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION;

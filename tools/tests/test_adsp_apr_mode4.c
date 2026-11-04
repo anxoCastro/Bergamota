@@ -52,8 +52,20 @@ main(void)
 	    0x05, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00,
 	    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	};
+	const uint8_t captured_apr_v1_response_prefix[64] = {
+	    0x81, 0x01, 0x94, 0x00, 0x03, 0x04, 0x00, 0x00,
+	    0x03, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x2d, 0x29, 0x01, 0x00, 0x02, 0x01, 0x00, 0x04,
+	    0x45, 0xcf, 0xc4, 0xe7, 0x00, 0x00, 0x00, 0x00,
+	    0x02, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x08, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+	    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	};
 	uint8_t data_frame[40] = { 0 };
 	uint8_t response[BERYLLIUM_ADSP_APR_MAX_DATA_BYTES];
+	uint8_t captured_apr_v1_response[148] = { 0 };
+	uint8_t malformed_apr_response[148];
 	struct beryllium_adsp_apr_response parsed = { 0 };
 	struct beryllium_adsp_glink_intent intents[2];
 	size_t frame_bytes = 0;
@@ -353,6 +365,48 @@ main(void)
 	    BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION);
 	assert(parsed.major == 1 && parsed.minor == 2 && parsed.branch == 3);
 	assert(parsed.subbranch == 4 && parsed.service_count == 2);
+	memcpy(captured_apr_v1_response, captured_apr_v1_response_prefix,
+	    sizeof(captured_apr_v1_response_prefix));
+	assert(beryllium_adsp_apr_parse_response(captured_apr_v1_response,
+	    sizeof(captured_apr_v1_response), &parsed) ==
+	    BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION);
+	assert(parsed.major == 2 && parsed.minor == 8 && parsed.branch == 0);
+	assert(parsed.subbranch == 0 && parsed.service_count == 8);
+	memcpy(malformed_apr_response, captured_apr_v1_response,
+	    sizeof(captured_apr_v1_response));
+	put16(malformed_apr_response, 0x0182); /* unsupported APR version */
+	assert(beryllium_adsp_apr_parse_response(malformed_apr_response,
+	    sizeof(captured_apr_v1_response), &parsed) ==
+	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
+	memcpy(malformed_apr_response, captured_apr_v1_response,
+	    sizeof(captured_apr_v1_response));
+	put16(malformed_apr_response, 0x0281); /* command, not response */
+	assert(beryllium_adsp_apr_parse_response(malformed_apr_response,
+	    sizeof(captured_apr_v1_response), &parsed) ==
+	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
+	memcpy(malformed_apr_response, captured_apr_v1_response,
+	    sizeof(captured_apr_v1_response));
+	put16(malformed_apr_response, 0x0141); /* header is only 16 bytes */
+	assert(beryllium_adsp_apr_parse_response(malformed_apr_response,
+	    sizeof(captured_apr_v1_response), &parsed) ==
+	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
+	memcpy(malformed_apr_response, captured_apr_v1_response,
+	    sizeof(captured_apr_v1_response));
+	put16(malformed_apr_response + 2, 20);
+	assert(beryllium_adsp_apr_parse_response(malformed_apr_response, 20,
+	    &parsed) == BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
+	memcpy(malformed_apr_response, captured_apr_v1_response,
+	    sizeof(captured_apr_v1_response));
+	put32(malformed_apr_response + 48, 9); /* count exceeds exact body */
+	assert(beryllium_adsp_apr_parse_response(malformed_apr_response,
+	    sizeof(captured_apr_v1_response), &parsed) ==
+	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
+	memcpy(malformed_apr_response, captured_apr_v1_response,
+	    sizeof(captured_apr_v1_response));
+	put16(malformed_apr_response, 0x0581); /* reserved header-field bits */
+	assert(beryllium_adsp_apr_parse_response(malformed_apr_response,
+	    sizeof(captured_apr_v1_response), &parsed) ==
+	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
 	response[4] = BERYLLIUM_ADSP_APR_Q6CORE_SERVICE + 1;
 	assert(beryllium_adsp_apr_parse_response(response, 64, &parsed) ==
 	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
@@ -369,10 +423,10 @@ main(void)
 	assert(beryllium_adsp_apr_parse_response(response, 64, &parsed) ==
 	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
 	response[9] = BERYLLIUM_ADSP_APR_DOMAIN_APPS;
-	response[0] ^= 1;
+	put16(response, 0x0152);
 	assert(beryllium_adsp_apr_parse_response(response, 64, &parsed) ==
 	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
-	response[0] ^= 1;
+	put16(response, BERYLLIUM_ADSP_APR_RSP_HDR_FIELD);
 
 	put16(response + 2, 63);
 	assert(beryllium_adsp_apr_parse_response(response, 64, &parsed) ==
@@ -398,6 +452,16 @@ main(void)
 	assert(beryllium_adsp_apr_parse_response(response, 28, &parsed) ==
 	    BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT);
 	assert(parsed.status == 0x80000001);
+	make_apr_header(response, 40, BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT);
+	put16(response, 0x0181); /* v1 header with 12 optional bytes */
+	put32(response + 32, BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION);
+	put32(response + 36, 0x80000002);
+	assert(beryllium_adsp_apr_parse_response(response, 40, &parsed) ==
+	    BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT);
+	assert(parsed.status == 0x80000002);
+	make_apr_header(response, 28, BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT);
+	put32(response + 20, BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION);
+	put32(response + 24, 0x80000001);
 	response[5] = 5;
 	assert(beryllium_adsp_apr_parse_response(response, 28, &parsed) ==
 	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
