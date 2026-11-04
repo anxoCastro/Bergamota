@@ -11,7 +11,7 @@
 ## Task 2: Review, CI, and package the diagnostic image
 
 - [x] Independent review of `36e9d17..656aae6` found no Critical/Important or functional findings; note the stored unified-diff context whitespace reported by whole-range `git diff --check`.
-- [ ] Commit and push without co-author trailers; run GitHub Actions against the committed SHA.
+- [x] Commit and push without co-author trailers; dispatch GitHub Actions run `41844885356` against `e441ddce2562aa0144f2386253ccce68e543cf42`.
 - [ ] Verify the artifact checksums, empty `errors.txt`, patch application, and build completion.
 - [ ] Package a RAM-boot image with the known ADT/loader and rootrw args, then unpack and byte-compare its components.
 
