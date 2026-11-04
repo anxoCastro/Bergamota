@@ -222,9 +222,11 @@ ownership: if the stream is already in bypass, it keeps that mapping and uses
 the buffer's physical address only after confirming every page is contiguous;
 if the stream has a translated or fault mapping, or a candidate context is
 already active, it stops without taking it over. When it installs its own
-translation, it restores the previous SMR/S2CR routing and prior context-bank
-enable state on shutdown; the now-disabled candidate bank's programmed table
-registers remain in place. Beryllium uses stream `0x1821`, and the audited
+translation, it first reserves an invalid SMR and an unused context bank and
+refuses a candidate bank whose `SCTLR.M` is already set. It restores the prior
+SMR/S2CR routing and prior context-bank enable state on shutdown; the
+now-disabled candidate bank's programmed table registers remain in place.
+Beryllium uses stream `0x1821`, and the audited
 Linux DTS does not declare Redwood's fixed IOVA pool, so both the stream and
 allocation range need to come from Beryllium's own state.
 
