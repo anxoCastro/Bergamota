@@ -14,6 +14,14 @@ Use the already working, read-only `AVCS_CMD_GET_FWK_VERSION` exchange to expose
 
 References: [Linux Q6Core response and service lookup](https://github.com/torvalds/linux/blob/master/sound/soc/qcom/qdsp6/q6core.c), [SDM845 service IDs](https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/qcom/sdm845.dtsi), [Beryllium audio routes](https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/qcom/sdm845-xiaomi-beryllium-common.dtsi), [Beryllium WCD9340 description](https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/qcom/sdm845-wcd9340.dtsi), [postmarketOS Beryllium update](https://gitlab.com/postmarketOS/pmaports/-/merge_requests/1962), [Linaro Poco F1 status](https://static.linaro.org/connect/lvc21/presentations/lvc21-101.pdf).
 
+## Related iOS ports
+
+- HakiOS separates ADSP power-up and GLINK/APR transport from the audio stream path. Its ADSP step queries service state and versions; separate sound code owns the AFE port, ADM route, ASM stream, DMA buffers, and board amplifier.
+- The public HakiOS-based Xiaomi 15 port targets XNU 12377 / iOS 26 and reports speaker playback through ADSP, AudioReach, and CS35L43 amplifiers. Its sources place the DSP path in `redwood_sound.c` and the iOS-facing CoreAudio bridge in a userland `AudioServerPlugIn` that writes to `/dev/redwood-audio`.
+- Those sources are useful for layer boundaries and command sequencing, but their SM8750 ports, amplifiers, DMA stream IDs, TDM wiring, and AudioReach topology are device-specific. They are not values to reuse on Beryllium. Derive Beryllium's path from its live/device-tree facts and Linux routing, then validate it in small steps.
+
+References: [HakiOS ADSP transport](https://github.com/oosexgang/hakios-xnu-kernel/blob/main/drivers/audio/hakios.adsp.c), [HakiOS sound driver](https://github.com/oosexgang/hakios-xnu-kernel/blob/main/drivers/audio/hakios.sound.c), [HakiOS iOS 26 Xiaomi 15 status](https://github.com/superboyyy/hakios-arm64e-dada), [Dada AFE/ASM/ADM audio path](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/base/xnu/files/bsd/dev/redwood_sound.c), [Dada CoreAudio plugin](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/userland/userland/src/audio_plugin.c).
+
 ## Design
 
 - Extend the existing bounded Q6Core response structure to hold at most `512 / 12` service entries, matching the existing APR response payload limit and parser count check.
