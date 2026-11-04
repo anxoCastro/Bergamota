@@ -177,6 +177,24 @@ consider a dedicated translation for full stream `0x1821`; any existing
 translated or fault mapping must remain untouched unless its ownership is
 established.
 
+Two implementation details make that probe important. First, the current
+XNU `sweet_smmu_map_sid()` helper is not safe to call blindly for audio: when
+it finds an exact, unmasked SMR for a SID, it changes that entry's S2CR to
+point at XNU's shared identity-map context (unless it already points there).
+It declines masked matches, but it can retarget an exact existing route. The
+Q6ASM path needs per-buffer IOVA translations, so it needs an explicitly
+owned mapping strategy that preserves and restores prior SMMU routing.
+
+Second, a probe result of `0` means only that no valid SMR matched. The helper
+also prints `sCR0.USFCFG`, which determines how an unmatched stream is handled;
+it is not a classification from a default S2CR. Linux's ARM SMMU driver
+initializes invalid SMRs and unassigned S2CRs to bypass unless
+`CONFIG_ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT` is enabled, and sets `USFCFG` to
+fault unmatched streams under that option. Those are Linux initialization
+rules, not evidence of the iOS boot's current state. Preserve the raw `sCR0`
+observation and do not call an unmatched SID "bypass" without interpreting its
+`USFCFG` bit.
+
 The TAS2559 driver is another required layer: the DTS gives it I2C addresses
 `0x4c`/`0x4d` and reset GPIOs, while the driver loads its firmware and exposes
 the configuration and volume controls used by UCM. The DAI's pinmux and the
@@ -248,6 +266,7 @@ these paths already work in XNU.
 - [Q6ASM APR core driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6asm.c)
 - [Q6ADM driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6adm.c)
 - [Q6 routing driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6routing.c)
+- [ARM SMMU v1/v2 driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/iommu/arm/arm-smmu/arm-smmu.c)
 - [Beryllium ALSA UCM profile](https://gitlab.com/sdm845-mainline/alsa-ucm-conf/-/blob/sdm845-phones/ucm2/Xiaomi/beryllium/HiFi.conf)
 - [HakiOS Redwood Q6AFE/Q6ASM/Q6ADM + SMMU path](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/base/xnu/files/bsd/dev/redwood_sound.c)
 - [HakiOS Redwood iOS AudioServerPlugIn](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/userland/userland/src/audio_plugin.c)
