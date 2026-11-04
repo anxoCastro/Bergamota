@@ -308,6 +308,11 @@ main(void)
 	    sizeof(rx_done_w_reuse_frame), &frame_bytes) ==
 	    BERYLLIUM_ADSP_GLINK_FRAME_COMPLETE);
 	assert(frame_bytes == sizeof(rx_done_w_reuse_frame));
+	assert(beryllium_adsp_apr_response_dump_bytes(0) == 0);
+	assert(beryllium_adsp_apr_response_dump_bytes(1) == 1);
+	assert(beryllium_adsp_apr_response_dump_bytes(64) == 64);
+	assert(beryllium_adsp_apr_response_dump_bytes(65) == 64);
+	assert(beryllium_adsp_apr_response_dump_bytes(512) == 64);
 
 	put16(data_frame, BERYLLIUM_ADSP_GLINK_CMD_TX_DATA);
 	put16(data_frame + 2, 7);

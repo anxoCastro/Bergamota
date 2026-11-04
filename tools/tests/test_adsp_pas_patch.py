@@ -26,6 +26,7 @@ LOOPBACK_CTL_LPASS_OPEN_PATCH = ROOT / "xnu/patches-12377/1155-beryllium-adsp-lo
 APR_APPS2_OPEN_PATCH = ROOT / "xnu/patches-12377/1156-beryllium-adsp-apr-apps2-peer-open.patch"
 APR_INTENT_ID_ZERO_PATCH = ROOT / "xnu/patches-12377/1158-beryllium-adsp-apr-intent-id-zero.patch"
 APR_RX_DONE_REUSE_PATCH = ROOT / "xnu/patches-12377/1160-beryllium-adsp-apr-rx-done-reuse.patch"
+APR_REJECTED_PAYLOAD_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1161-beryllium-adsp-apr-rejected-payload-diagnostics.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -88,7 +89,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1160:
+                if not 1131 <= number <= 1161:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -897,6 +898,30 @@ main(void)
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_malformed_apr_response_dump_is_bounded(self):
+        response = added_function_body(self.latest_driver,
+                                       "adsp_apr_poll_response")
+        tx_start = response.index(
+            "if (command == BERYLLIUM_ADSP_GLINK_CMD_TX_DATA)")
+        tx_end = response.index(
+            'printf("SWEET ADSP: APR response wait stopped on unexpected GLINK',
+            tx_start)
+        tx_data = response[tx_start:tx_end]
+        diagnostic_start = tx_data.index(
+            "if (parsed == BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED)")
+        diagnostic_end = tx_data.index(
+            'printf("SWEET ADSP: APR payload failed', diagnostic_start)
+        diagnostic = tx_data[diagnostic_start:diagnostic_end]
+
+        self.assertIn(
+            "beryllium_adsp_apr_response_dump_bytes(payload_bytes)", diagnostic)
+        self.assertIn('raw_bytes=%lu raw=', diagnostic)
+        loop_start = diagnostic.index("for (size_t i = 0; i < dump_bytes; i++)")
+        loop_end = diagnostic.index("}", loop_start)
+        self.assertIn('printf("%02x", (unsigned)payload[i])',
+                      diagnostic[loop_start:loop_end])
+        self.assertNotIn("adsp_apr_rx_buffers", diagnostic)
+
 
 class AdspAprMode4Tests(unittest.TestCase):
     def test_compiled_apr_mode4_helpers(self):
@@ -947,6 +972,9 @@ class AdspAprMode4Tests(unittest.TestCase):
                            check=True, capture_output=True, text=True)
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(APR_RX_DONE_REUSE_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(APR_REJECTED_PAYLOAD_DIAGNOSTICS_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             subprocess.run([

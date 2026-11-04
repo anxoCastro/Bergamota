@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 201d115..9954904 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2803,6 +2803,16 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 				    response.status);
+ 				return true;
+ 			}
++			if (parsed == BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED) {
++				size_t dump_bytes =
++				    beryllium_adsp_apr_response_dump_bytes(payload_bytes);
++				printf("SWEET ADSP: rejected APR response payload_bytes=%lu raw_bytes=%lu raw=",
++				    (unsigned long)payload_bytes, (unsigned long)dump_bytes);
++				for (size_t i = 0; i < dump_bytes; i++) {
++					printf("%02x", (unsigned)payload[i]);
++				}
++				printf("\n");
++			}
+ 			printf("SWEET ADSP: APR payload failed header/opcode/length validation; response intent released\n");
+ 			return false;
+ 		}
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index 8dfb5f7..ee2708c 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -30,6 +30,7 @@
+ #define BERYLLIUM_ADSP_APR_INTENT_COUNT 20u
+ #define BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS 64u
+ #define BERYLLIUM_ADSP_APR_MAX_DATA_BYTES 512u
++#define BERYLLIUM_ADSP_APR_RESPONSE_DUMP_MAX_BYTES 64u
+ 
+ #define BERYLLIUM_ADSP_GLINK_CMD_OPEN 2u
+ #define BERYLLIUM_ADSP_GLINK_CMD_OPEN_ACK 4u
+@@ -64,6 +65,13 @@ struct beryllium_adsp_apr_response {
+ 	uint32_t status;
+ };
+ 
++static inline size_t
++beryllium_adsp_apr_response_dump_bytes(size_t payload_bytes)
++{
++	return payload_bytes < BERYLLIUM_ADSP_APR_RESPONSE_DUMP_MAX_BYTES ?
++	    payload_bytes : BERYLLIUM_ADSP_APR_RESPONSE_DUMP_MAX_BYTES;
++}
++
+ static inline uint16_t
+ beryllium_adsp_apr_get16(const uint8_t *p)
+ {
