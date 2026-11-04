@@ -127,15 +127,39 @@ flowchart LR
     ucm -.->|configuration and volume| tas
 ```
 
-For PCM playback, `q6asm_dai_prepare()` maps the PCM period buffer into the
-DSP shared-memory pool, opens an ASM write stream using the multi-channel PCM
-format, registers the session with q6routing, and sends the PCM media-format
-block. `q6routing_stream_open()` opens an ADM COPP for the selected output
-port and matrix-maps the ASM session to that COPP. The ASM trigger sends RUN;
-on RUN completion, Linux queues period writes and continues submitting them
-as write-done events arrive. The AFE back-end DAI prepares the stream
-parameters, sends the padded port configuration, and starts QUAT. Shutdown
-stops the AFE port and closes/unmaps the ASM stream and its buffers.
+For PCM playback, `q6asm_dai_prepare()` first maps the PCM buffer into the DSP
+shared-memory pool. Linux maps one contiguous region, rounds its size up to
+4 KiB, and sends `ASM_CMD_SHARED_MEM_MAP_REGIONS` with
+`ADSP_MEMORY_MAP_SHMEM8_4K_POOL` (pool ID `3`). The request contains one
+address/size region and returns a memory-map handle. The DAI then sends
+`OPEN_WRITE_V3`, registers the session with q6routing, and sends the
+multi-channel PCM media-format block. `q6routing_stream_open()` opens an ADM
+COPP for the selected output port and matrix-maps the ASM session to that
+COPP. The ASM trigger sends RUN; on RUN completion Linux submits period-sized
+`ASM_DATA_CMD_WRITE_V2` requests using the returned map handle, and continues
+queuing periods as write-done events arrive. The AFE back-end DAI prepares the
+stream parameters, sends the padded port configuration, and starts QUAT.
+Shutdown stops the AFE port and closes/unmaps the ASM stream and its buffers.
+
+The inherited SDM845 Q6ASM DAI node spells its Apps SMMU specifier as
+`<&apps_smmu 0x1821 0x0>`. The Linux Q6ASM DAI reads the first cell, masks it
+with `SID_MASK_DEFAULT` (`0xF`), and gets the value `1`; when IOMMU data is
+present, it forms the DSP buffer address as
+`dma_buffer.addr | (1ULL << 32)`. That local `sid` variable is the low-nibble
+value encoded in the Q6ASM address. It must not be confused with the full
+`0x1821` Apps SMMU stream matcher. XNU's existing `sweet_smmu_map_sid()` takes
+the latter kind of hardware stream ID and installs an Apps SMMU mapping.
+Passing `1` to that helper just because Linux calls its low-nibble value
+`sid` would conflate two different fields.
+
+The XNU port needs to reproduce Linux's DMA address, Q6ASM memory-map handle,
+and period-write lifecycle, but the exact relationship between the Q6ASM
+address's high word and the Apps SMMU's hardware match must be established
+before sending ASM commands. The current source audit has not established
+that mapping on XNU or validated a DSP-visible PCM buffer. Before any Q6ASM
+map/write experiment, inspect the existing Apps SMMU SMR/S2CR entry for the
+full `0x1821` stream matcher and trace how Linux's DMA address is consumed by
+the DSP. This is a source-level requirement, not a tested XNU implementation.
 
 The TAS2559 driver is another required layer: the DTS gives it I2C addresses
 `0x4c`/`0x4d` and reset GPIOs, while the driver loads its firmware and exposes
@@ -152,22 +176,25 @@ open Q6ASM/Q6ADM, configure WCD9340 or TAS firmware, manipulate GPIO/pinctrl,
 or expose an iOS audio device. The test vector may enable the QUAT clock and
 port, but it must never be described as audible playback.
 
-The next actual-playback milestone must port the ASM stream lifecycle and
-Linux shared-memory mapping semantics, the ADM COPP open/matrix map, and the
-period write/run loop. It must then add the Beryllium QUAT pinmux, TAS I2C/GPIO
-and firmware/configuration path, and an iOS 26 AudioServerPlugIn/HAL bridge.
-The current XNU AFE lifecycle test supplies none of those layers. The
-headphone/microphone path additionally requires WCD9340 and SLIMbus support.
+The next actual-playback milestone is to resolve and record the Linux/Q6ASM
+DMA-address and Apps SMMU mapping contract, then port the ASM map/open/format
+lifecycle, the ADM COPP open/matrix map, and the period write/run loop. It
+must then add the Beryllium QUAT pinmux, TAS I2C/GPIO and firmware/configuration
+path, and an iOS 26 AudioServerPlugIn/HAL bridge. The current XNU AFE lifecycle
+test supplies none of those layers. The headphone/microphone path additionally
+requires WCD9340 and SLIMbus support.
 Linux's working topology is a source reference, not evidence that any of
 these paths already work in XNU.
 
 ## Primary source references
 
 - [Beryllium common DTS](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/arch/arm64/boot/dts/qcom/sdm845-xiaomi-beryllium-common.dtsi)
+- [SDM845 SoC DTS, including the Q6ASM DAI Apps SMMU specifier](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/arch/arm64/boot/dts/qcom/sdm845.dtsi)
 - [Q6AFE core driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6afe.c)
 - [Q6AFE DAI driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6afe-dai.c)
 - [SDM845 machine driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/sdm845.c)
 - [Q6ASM DAI driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6asm-dai.c)
+- [Q6ASM APR core driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6asm.c)
 - [Q6ADM driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6adm.c)
 - [Q6 routing driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6routing.c)
 - [Beryllium ALSA UCM profile](https://gitlab.com/sdm845-mainline/alsa-ucm-conf/-/blob/sdm845-phones/ucm2/Xiaomi/beryllium/HiFi.conf)
