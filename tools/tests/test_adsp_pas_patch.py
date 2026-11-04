@@ -29,6 +29,7 @@ APR_RX_DONE_REUSE_PATCH = ROOT / "xnu/patches-12377/1160-beryllium-adsp-apr-rx-d
 APR_REJECTED_PAYLOAD_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1161-beryllium-adsp-apr-rejected-payload-diagnostics.patch"
 APR_V1_RESPONSE_HEADER_PATCH = ROOT / "xnu/patches-12377/1162-beryllium-adsp-apr-v1-response-header.patch"
 APR_SERVICE_API_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1163-beryllium-adsp-q6core-service-api-diagnostics.patch"
+AFE_GET_PARAM_PATCH = ROOT / "xnu/patches-12377/1164-beryllium-adsp-afe-get-param-readonly.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -91,7 +92,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1163:
+                if not 1131 <= number <= 1164:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -910,7 +911,7 @@ main(void)
             tx_start)
         tx_data = response[tx_start:tx_end]
         diagnostic_start = tx_data.index(
-            "if (parsed == BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED)")
+            "if (!parsed_valid)")
         diagnostic_end = tx_data.index(
             'printf("SWEET ADSP: APR payload failed', diagnostic_start)
         diagnostic = tx_data[diagnostic_start:diagnostic_end]
@@ -988,6 +989,11 @@ class AdspAprMode4Tests(unittest.TestCase):
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(APR_SERVICE_API_DIAGNOSTICS_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
+            self.assertTrue(AFE_GET_PARAM_PATCH.is_file(),
+                            "patch 1164 must provide the bounded AFE GET_PARAM probe")
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(AFE_GET_PARAM_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
@@ -999,7 +1005,7 @@ class AdspAprMode4Tests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "APR mode-4 helper checks passed")
 
-    def test_mode4_is_a_single_read_only_q6core_request_after_glink(self):
+    def test_mode4_keeps_q6core_first_and_only_reads_afe_config(self):
         self.assertTrue(APR_MODE4_PATCH.is_file(), "patch 1150 is missing")
         patch = APR_MODE4_PATCH.read_text()
         driver = diff_section(patch, "bsd/dev/beryllium_adsp.c")
@@ -1011,7 +1017,9 @@ class AdspAprMode4Tests(unittest.TestCase):
         self.assertIn("ADSP_APR_CMD_GET_FWK_VERSION", driver)
         self.assertIn("BERYLLIUM_ADSP_APR_INTENT_COUNT", driver)
         self.assertIn("BERYLLIUM_ADSP_APR_INTENT_BYTES", driver)
-        self.assertNotRegex(driver, r"q6afe|q6asm|AFE_PORT|ASM_STREAM|codec_start|pas_shutdown")
+        self.assertNotRegex(driver, r"q6afe|q6asm|ASM_STREAM|codec_start|pas_shutdown")
+        self.assertNotRegex(driver,
+                            r"AFE_PORT_CMD_(?:SET_PARAM|DEVICE_START|DEVICE_STOP)")
         self.assertNotIn("RX_INTENT_REQ", driver)
         self.assertNotIn('adsp_pas_call("SHUTDOWN"', driver)
         start_header = diff_section(patch, "bsd/dev/beryllium_adsp_glink_start.h")
@@ -1053,6 +1061,27 @@ class AdspAprMode4Tests(unittest.TestCase):
         self.assertIn("api_branch_version", header)
         self.assertNotRegex(patch, r"AFE_PORT_CMD|ASM_STREAM_CMD|q6afe|q6asm")
         self.assertNotIn("apr_send_pkt", patch)
+
+    def test_afe_get_param_patch_is_version_gated_and_read_only(self):
+        self.assertTrue(AFE_GET_PARAM_PATCH.is_file(), "patch 1164 is missing")
+        patch = AFE_GET_PARAM_PATCH.read_text()
+        driver = diff_section(patch, "bsd/dev/beryllium_adsp.c")
+        header = diff_section(patch, "bsd/dev/beryllium_adsp_apr_probe.h")
+        self.assertIn("beryllium_adsp_apr_afe_api_v2_available", header)
+        self.assertIn("BERYLLIUM_ADSP_AFE_CMD_GET_PARAM_V2", header)
+        self.assertIn("BERYLLIUM_ADSP_AFE_RSP_GET_PARAM_V2", header)
+        self.assertIn("AFE_PORT_QUAT_MI2S_RX", header)
+        self.assertIn("AFE_MODULE_AUDIO_DEV_INTERFACE", header)
+        self.assertIn("AFE_PARAM_I2S_CONFIG", header)
+        self.assertIn("beryllium_adsp_apr_parse_afe_get_i2s_config", header)
+        self.assertIn("state->afe_api_v2", driver)
+        self.assertIn("state->request_intent_reusable", driver)
+        self.assertIn("adsp_apr_send_afe_i2s_get_param", driver)
+        self.assertLess(driver.index("adsp_apr_poll_response(&items, &state)"),
+                        driver.index("adsp_apr_send_afe_i2s_get_param(&items, &state)"))
+        self.assertNotRegex(patch,
+                            r"AFE_PORT_CMD_(?:SET_PARAM|DEVICE_START|DEVICE_STOP)")
+        self.assertNotRegex(patch, r"ASM_STREAM_CMD|ADM_CMD|AFE_CMD_REMOTE_LPASS")
 
 if __name__ == "__main__":
     unittest.main()

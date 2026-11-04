@@ -34,6 +34,20 @@ make_apr_header(uint8_t *p, uint16_t size, uint32_t opcode)
 	put32(p + 16, opcode);
 }
 
+static void
+make_afe_apr_header(uint8_t *p, uint16_t size, uint32_t opcode)
+{
+	memset(p, 0, size);
+	put16(p, 0x0181); /* APR v1 response header, 32 bytes */
+	put16(p + 2, size);
+	p[4] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
+	p[5] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
+	p[8] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
+	p[9] = BERYLLIUM_ADSP_APR_DOMAIN_APPS;
+	put32(p + 12, BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN);
+	put32(p + 16, opcode);
+}
+
 int
 main(void)
 {
@@ -64,12 +78,20 @@ main(void)
 	};
 	uint8_t data_frame[40] = { 0 };
 	uint8_t response[BERYLLIUM_ADSP_APR_MAX_DATA_BYTES];
+	uint8_t afe_request[BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES];
+	uint8_t afe_get_response[68];
+	uint8_t afe_status_response[36];
+	uint8_t afe_basic_response[40];
+	uint8_t malformed_afe_response[68];
 	uint8_t captured_apr_v1_response[148] = { 0 };
 	uint8_t malformed_apr_response[148];
 	struct beryllium_adsp_apr_response parsed = { 0 };
+	struct beryllium_adsp_afe_response parsed_afe = { 0 };
+	struct beryllium_adsp_apr_response afe_service_table = { 0 };
 	struct beryllium_adsp_glink_intent intents[2];
 	size_t frame_bytes = 0;
 	size_t intent_count = 0;
+	size_t afe_request_bytes = 0;
 
 	assert(beryllium_adsp_apr_encode_get_fwk_version(request));
 	assert(beryllium_adsp_glink_mode_valid(1));
@@ -489,6 +511,129 @@ main(void)
 	put32(response + 20, 0x00129205);
 	assert(beryllium_adsp_apr_parse_response(response, 28, &parsed) ==
 	    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED);
+
+	assert(!beryllium_adsp_apr_encode_afe_get_i2s_config(afe_request,
+	    sizeof(afe_request) - 1, &afe_request_bytes));
+	assert(beryllium_adsp_apr_encode_afe_get_i2s_config(afe_request,
+	    sizeof(afe_request), &afe_request_bytes));
+	assert(afe_request_bytes == sizeof(afe_request));
+	assert(afe_request[0] == 0x50 && afe_request[1] == 0x02);
+	assert(afe_request[2] == sizeof(afe_request) && afe_request[3] == 0);
+	assert(afe_request[4] == BERYLLIUM_ADSP_APR_AFE_SERVICE &&
+	    afe_request[5] == BERYLLIUM_ADSP_APR_DOMAIN_APPS);
+	assert(afe_request[8] == BERYLLIUM_ADSP_APR_AFE_SERVICE &&
+	    afe_request[9] == BERYLLIUM_ADSP_APR_DOMAIN_ADSP);
+	assert(afe_request[12] == BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN &&
+	    afe_request[13] == 0 && afe_request[14] == 0 && afe_request[15] == 0);
+	assert(afe_request[16] == 0xf0 && afe_request[17] == 0x00 &&
+	    afe_request[18] == 0x01 && afe_request[19] == 0x00);
+	assert(beryllium_adsp_apr_get16(afe_request + 20) ==
+	    BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX);
+	assert(beryllium_adsp_apr_get16(afe_request + 22) ==
+	    BERYLLIUM_ADSP_AFE_GET_PARAM_PAYLOAD_BYTES);
+	assert(beryllium_adsp_apr_get32(afe_request + 24) == 0 &&
+	    beryllium_adsp_apr_get32(afe_request + 28) == 0 &&
+	    beryllium_adsp_apr_get32(afe_request + 32) == 0);
+	assert(beryllium_adsp_apr_get32(afe_request + 36) ==
+	    BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE);
+	assert(beryllium_adsp_apr_get32(afe_request + 40) ==
+	    BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG);
+	assert(beryllium_adsp_apr_get32(afe_request + 44) ==
+	    BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE);
+	assert(beryllium_adsp_apr_get32(afe_request + 48) ==
+	    BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG);
+	assert(beryllium_adsp_apr_get16(afe_request + 52) ==
+	    BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES);
+	assert(beryllium_adsp_apr_get16(afe_request + 54) == 0);
+
+	afe_service_table.service_count = 1;
+	afe_service_table.services[0].service_id = BERYLLIUM_ADSP_APR_AFE_SERVICE;
+	afe_service_table.services[0].api_version = 2;
+	afe_service_table.services[0].api_branch_version = 0;
+	assert(beryllium_adsp_apr_afe_api_v2_available(&afe_service_table));
+	afe_service_table.service_count = 2;
+	afe_service_table.services[1] = afe_service_table.services[0];
+	assert(!beryllium_adsp_apr_afe_api_v2_available(&afe_service_table));
+	afe_service_table.service_count = 1;
+	afe_service_table.services[0].api_version = 1;
+	assert(!beryllium_adsp_apr_afe_api_v2_available(&afe_service_table));
+	afe_service_table.services[0].api_version = 2;
+	afe_service_table.services[0].api_branch_version = 1;
+	assert(!beryllium_adsp_apr_afe_api_v2_available(&afe_service_table));
+	afe_service_table.services[0].api_branch_version = 0;
+	afe_service_table.service_count = BERYLLIUM_ADSP_APR_MAX_DATA_BYTES / 12u + 1u;
+	assert(!beryllium_adsp_apr_afe_api_v2_available(&afe_service_table));
+
+	make_afe_apr_header(afe_get_response, sizeof(afe_get_response),
+	    BERYLLIUM_ADSP_AFE_RSP_GET_PARAM_V2);
+	put32(afe_get_response + 32, 0);
+	put32(afe_get_response + 36, BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE);
+	put32(afe_get_response + 40, BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG);
+	put16(afe_get_response + 44, BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES);
+	put32(afe_get_response + 48, 1); /* I2S config minor version */
+	put16(afe_get_response + 52, 16);
+	put16(afe_get_response + 54, 1); /* SD0 */
+	put16(afe_get_response + 56, 1); /* stereo */
+	put16(afe_get_response + 58, 0); /* external WS */
+	put32(afe_get_response + 60, 48000);
+	put16(afe_get_response + 64, 0); /* linear PCM */
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(afe_get_response,
+	    sizeof(afe_get_response), &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_GET_PARAM);
+	assert(parsed_afe.status == 0 && parsed_afe.i2s.minor_version == 1);
+	assert(parsed_afe.i2s.bit_width == 16 && parsed_afe.i2s.channel_mode == 1);
+	assert(parsed_afe.i2s.mono_stereo == 1 && parsed_afe.i2s.ws_source == 0);
+	assert(parsed_afe.i2s.sample_rate == 48000 && parsed_afe.i2s.data_format == 0);
+
+	memcpy(malformed_afe_response, afe_get_response, sizeof(afe_get_response));
+	malformed_afe_response[4]++;
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(malformed_afe_response,
+	    sizeof(malformed_afe_response), &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED);
+	memcpy(malformed_afe_response, afe_get_response, sizeof(afe_get_response));
+	put32(malformed_afe_response + 12, BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN + 1);
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(malformed_afe_response,
+	    sizeof(malformed_afe_response), &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED);
+	memcpy(malformed_afe_response, afe_get_response, sizeof(afe_get_response));
+	put32(malformed_afe_response + 40, BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG + 1);
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(malformed_afe_response,
+	    sizeof(malformed_afe_response), &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED);
+	memcpy(malformed_afe_response, afe_get_response, sizeof(afe_get_response));
+	put16(malformed_afe_response + 44, BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES - 4);
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(malformed_afe_response,
+	    sizeof(malformed_afe_response), &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED);
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(afe_get_response,
+	    sizeof(afe_get_response) - 1, &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED);
+	memcpy(malformed_afe_response, afe_get_response, sizeof(afe_get_response));
+	put16(malformed_afe_response + 66, 1); /* reserved I2S field */
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(malformed_afe_response,
+	    sizeof(malformed_afe_response), &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED);
+
+	make_afe_apr_header(afe_status_response, sizeof(afe_status_response),
+	    BERYLLIUM_ADSP_AFE_RSP_GET_PARAM_V2);
+	put32(afe_status_response + 32, 0x80000001);
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(afe_status_response,
+	    sizeof(afe_status_response), &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_STATUS);
+	assert(parsed_afe.status == 0x80000001);
+
+	make_afe_apr_header(afe_basic_response, sizeof(afe_basic_response),
+	    BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT);
+	put32(afe_basic_response + 32, BERYLLIUM_ADSP_AFE_CMD_GET_PARAM_V2);
+	put32(afe_basic_response + 36, 0x80000002);
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(afe_basic_response,
+	    sizeof(afe_basic_response), &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_BASIC_RESULT);
+	assert(parsed_afe.status == 0x80000002);
+	put32(afe_basic_response + 32, BERYLLIUM_ADSP_AFE_CMD_GET_PARAM_V2 + 1);
+	assert(beryllium_adsp_apr_parse_afe_get_i2s_config(afe_basic_response,
+	    sizeof(afe_basic_response), &parsed_afe) ==
+	    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED);
 
 	puts("APR mode-4 helper checks passed");
 	return 0;

@@ -1,0 +1,488 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index ea5a32a..814d734 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2278,6 +2278,9 @@ struct adsp_apr_channel_state {
+ 	struct beryllium_adsp_glink_intent remote_intents[BERYLLIUM_ADSP_APR_MAX_REMOTE_INTENTS];
+ 	size_t remote_intent_count;
+ 	uint32_t request_intent_id;
++	uint32_t request_opcode;
++	bool request_intent_reusable;
++	bool afe_api_v2;
+ };
+ 
+ static bool
+@@ -2676,6 +2679,8 @@ adsp_apr_send_fwk_version(const struct adsp_glink_survey_items *items,
+ 		return false;
+ 	}
+ 	state->request_intent_id = selected->id;
++	state->request_opcode = BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION;
++	state->request_intent_reusable = false;
+ 	beryllium_adsp_apr_put16(frame, BERYLLIUM_ADSP_GLINK_CMD_TX_DATA);
+ 	beryllium_adsp_apr_put16(frame + 2, ADSP_APR_LOCAL_CHANNEL);
+ 	beryllium_adsp_apr_put32(frame + 4, selected->id);
+@@ -2694,11 +2699,63 @@ adsp_apr_send_fwk_version(const struct adsp_glink_survey_items *items,
+ 	return true;
+ }
+ 
++static bool
++adsp_apr_send_afe_i2s_get_param(const struct adsp_glink_survey_items *items,
++	struct adsp_apr_channel_state *state)
++{
++	uint8_t apr_packet[BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES] = { 0 };
++	uint8_t frame[16 + BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES] = { 0 };
++	const struct beryllium_adsp_glink_intent *selected = NULL;
++	size_t packet_bytes = 0;
++	if (items == NULL || state == NULL || !state->request_intent_reusable) {
++		printf("SWEET ADSP: AFE GET_PARAM skipped; previous remote intent is not reusable\n");
++		return false;
++	}
++	for (size_t i = 0; i < state->remote_intent_count; i++) {
++		const struct beryllium_adsp_glink_intent *candidate =
++		    &state->remote_intents[i];
++		if (candidate->id != state->request_intent_id ||
++		    candidate->size < BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES) {
++			continue;
++		}
++		selected = candidate;
++		break;
++	}
++	if (selected == NULL || !beryllium_adsp_apr_encode_afe_get_i2s_config(
++	    apr_packet, sizeof(apr_packet), &packet_bytes) ||
++	    packet_bytes != sizeof(apr_packet)) {
++		printf("SWEET ADSP: AFE GET_PARAM stopped; no reusable remote intent fits the bounded request\n");
++		return false;
++	}
++	state->request_intent_id = selected->id;
++	state->request_opcode = BERYLLIUM_ADSP_AFE_CMD_GET_PARAM_V2;
++	state->request_intent_reusable = false;
++	beryllium_adsp_apr_put16(frame, BERYLLIUM_ADSP_GLINK_CMD_TX_DATA);
++	beryllium_adsp_apr_put16(frame + 2, ADSP_APR_LOCAL_CHANNEL);
++	beryllium_adsp_apr_put32(frame + 4, selected->id);
++	beryllium_adsp_apr_put32(frame + 8, packet_bytes);
++	beryllium_adsp_apr_put32(frame + 12, 0);
++	for (size_t i = 0; i < packet_bytes; i++) {
++		frame[16 + i] = apr_packet[i];
++	}
++	if (!adsp_glink_send_frame(items, frame, sizeof(frame))) {
++		printf("SWEET ADSP: AFE GET_PARAM GLINK TX failed\n");
++		return false;
++	}
++	printf("SWEET ADSP: sent one read-only AFE GET_PARAM_V2 service=%u port=%#x module=%#x param=%#x intent=%u\n",
++	    BERYLLIUM_ADSP_APR_AFE_SERVICE,
++	    BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX,
++	    BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE,
++	    BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG, selected->id);
++	return true;
++}
++
+ static bool
+ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 	struct adsp_apr_channel_state *state)
+ {
+ 	bool request_intent_done = false;
++	bool response_seen = false;
+ 	for (unsigned ms = 0; ms < ADSP_APR_POLL_MS; ms++) {
+ 		uint8_t frame[ADSP_APR_GLINK_FRAME_MAX] = { 0 };
+ 		uint32_t tail, used;
+@@ -2762,26 +2819,52 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 				return false;
+ 			}
+ 			request_intent_done = true;
++			state->request_intent_reusable =
++			    command == BERYLLIUM_ADSP_GLINK_CMD_RX_DONE_W_REUSE;
+ 			printf("SWEET ADSP: remote %s confirmed for request intent %u\n", ack, param2);
++			if (response_seen) {
++				return true;
++			}
+ 			continue;
+ 		}
+ 		if (command == BERYLLIUM_ADSP_GLINK_CMD_TX_DATA) {
+ 			const uint8_t *payload = NULL;
+ 			size_t payload_bytes = 0;
+-			if (param2 == 0 || param2 > BERYLLIUM_ADSP_APR_INTENT_COUNT ||
++			if (response_seen || param2 == 0 ||
++			    param2 > BERYLLIUM_ADSP_APR_INTENT_COUNT ||
+ 			    !beryllium_adsp_apr_tx_data_view(frame, frame_bytes,
+ 			    state->remote_channel_id, param2, &payload, &payload_bytes)) {
+-				printf("SWEET ADSP: APR response TX_DATA rejected channel=%u intent=%u\n",
+-				    param1, param2);
++				printf("SWEET ADSP: APR response TX_DATA rejected channel=%u intent=%u duplicate=%u\n",
++				    param1, param2, response_seen ? 1u : 0u);
+ 				return false;
+ 			}
+ 			for (size_t i = 0; i < payload_bytes; i++) {
+ 				adsp_apr_rx_buffers[param2 - 1][i] = payload[i];
+ 			}
+-			struct beryllium_adsp_apr_response response = { 0 };
+-			enum beryllium_adsp_apr_response_kind parsed =
+-			    beryllium_adsp_apr_parse_response(adsp_apr_rx_buffers[param2 - 1],
+-			    payload_bytes, &response);
++			struct beryllium_adsp_apr_response q6core_response = { 0 };
++			struct beryllium_adsp_afe_response afe_response = { 0 };
++			enum beryllium_adsp_apr_response_kind q6core_parsed =
++			    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
++			enum beryllium_adsp_afe_response_kind afe_parsed =
++			    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++			bool q6core_request = state->request_opcode ==
++			    BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION;
++			bool parsed_valid = false;
++			if (q6core_request) {
++				q6core_parsed = beryllium_adsp_apr_parse_response(
++				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
++				    &q6core_response);
++				parsed_valid = q6core_parsed ==
++				    BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION ||
++				    q6core_parsed == BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT;
++			} else if (state->request_opcode ==
++			    BERYLLIUM_ADSP_AFE_CMD_GET_PARAM_V2) {
++				afe_parsed = beryllium_adsp_apr_parse_afe_get_i2s_config(
++				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
++				    &afe_response);
++				parsed_valid = afe_parsed !=
++				    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++			}
+ 			if (!adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {
+ 				printf("SWEET ADSP: APR response could not advance AP-owned RX tail\n");
+ 				return false;
+@@ -2791,25 +2874,48 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 				printf("SWEET ADSP: APR response intent %u consumed but RX_DONE TX failed\n", param2);
+ 				return false;
+ 			}
+-			if (parsed == BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION) {
+-				printf("SWEET ADSP: Q6Core firmware version %u.%u.%u.%u services=%u; APR GET_FWK_VERSION complete (peer RX_DONE %s)\n",
+-				    response.major, response.minor, response.branch,
+-				    response.subbranch, response.service_count,
+-				    request_intent_done ? "observed" : "not yet observed");
+-				for (uint32_t i = 0; i < response.service_count; i++) {
++			if (q6core_request && q6core_parsed ==
++			    BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION) {
++				state->afe_api_v2 =
++				    beryllium_adsp_apr_afe_api_v2_available(&q6core_response);
++				printf("SWEET ADSP: Q6Core firmware version %u.%u.%u.%u services=%u; APR GET_FWK_VERSION response validated\n",
++				    q6core_response.major, q6core_response.minor,
++				    q6core_response.branch, q6core_response.subbranch,
++				    q6core_response.service_count);
++				for (uint32_t i = 0; i < q6core_response.service_count; i++) {
+ 					printf("SWEET ADSP: Q6Core service id=%u api=%u branch=%u\n",
+-					    response.services[i].service_id,
+-					    response.services[i].api_version,
+-					    response.services[i].api_branch_version);
++					    q6core_response.services[i].service_id,
++					    q6core_response.services[i].api_version,
++					    q6core_response.services[i].api_branch_version);
+ 				}
+-				return true;
+-			}
+-			if (parsed == BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT) {
+-				printf("SWEET ADSP: Q6Core APR basic result for GET_FWK_VERSION status=%#x; query complete\n",
+-				    response.status);
+-				return true;
++				printf("SWEET ADSP: AFE service id=%u API 2.0 %s\n",
++				    BERYLLIUM_ADSP_APR_AFE_SERVICE,
++				    state->afe_api_v2 ? "advertised uniquely" : "not advertised uniquely");
++			} else if (q6core_request && q6core_parsed ==
++			    BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT) {
++				printf("SWEET ADSP: Q6Core APR basic result for GET_FWK_VERSION status=%#x\n",
++				    q6core_response.status);
++			} else if (!q6core_request && afe_parsed ==
++			    BERYLLIUM_ADSP_AFE_RESPONSE_GET_PARAM) {
++				printf("SWEET ADSP: AFE I2S config port=%#x minor=%u bit_width=%u channel_mode=%u mono_stereo=%u ws_source=%u sample_rate=%u data_format=%u\n",
++				    BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX,
++				    afe_response.i2s.minor_version,
++				    afe_response.i2s.bit_width,
++				    afe_response.i2s.channel_mode,
++				    afe_response.i2s.mono_stereo,
++				    afe_response.i2s.ws_source,
++				    afe_response.i2s.sample_rate,
++				    afe_response.i2s.data_format);
++			} else if (!q6core_request && afe_parsed ==
++			    BERYLLIUM_ADSP_AFE_RESPONSE_STATUS) {
++				printf("SWEET ADSP: AFE GET_PARAM_V2 returned status=%#x without configuration data\n",
++				    afe_response.status);
++			} else if (!q6core_request && afe_parsed ==
++			    BERYLLIUM_ADSP_AFE_RESPONSE_BASIC_RESULT) {
++				printf("SWEET ADSP: AFE APR basic result for GET_PARAM_V2 status=%#x\n",
++				    afe_response.status);
+ 			}
+-			if (parsed == BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED) {
++			if (!parsed_valid) {
+ 				size_t dump_bytes =
+ 				    beryllium_adsp_apr_response_dump_bytes(payload_bytes);
+ 				printf("SWEET ADSP: rejected APR response payload_bytes=%lu raw_bytes=%lu raw=",
+@@ -2818,14 +2924,22 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 					printf("%02x", (unsigned)payload[i]);
+ 				}
+ 				printf("\n");
++				printf("SWEET ADSP: APR payload failed request opcode=%#x header/opcode/length validation; response intent released\n",
++				    state->request_opcode);
++				return false;
+ 			}
+-			printf("SWEET ADSP: APR payload failed header/opcode/length validation; response intent released\n");
+-			return false;
++			response_seen = true;
++			if (request_intent_done) {
++				return true;
++			}
++			continue;
+ 		}
+ 		printf("SWEET ADSP: APR response wait stopped on unexpected GLINK command=%u\n", command);
+ 		return false;
+ 	}
+-	printf("SWEET ADSP: Q6Core GET_FWK_VERSION response timeout after %u ms; QMP/XO remain on\n",
++	printf("SWEET ADSP: APR request opcode=%#x %s after %u ms; QMP/XO remain on\n",
++	    state->request_opcode,
++	    response_seen ? "peer intent completion timed out after response" : "response timed out",
+ 	    ADSP_APR_POLL_MS);
+ 	return false;
+ }
+@@ -2858,10 +2972,26 @@ adsp_apr_mode4_start(void)
+ 		printf("SWEET ADSP: APR mode 4 stopped before Q6Core GET_FWK_VERSION\n");
+ 		return;
+ 	}
++	if (!adsp_apr_poll_response(&items, &state)) {
++		printf("SWEET ADSP: APR mode 4 ended without a validated Q6Core response\n");
++		return;
++	}
++	if (!state.afe_api_v2) {
++		printf("SWEET ADSP: APR mode 4 stopped; no unique AFE API 2.0 record permits GET_PARAM\n");
++		return;
++	}
++	if (!state.request_intent_reusable) {
++		printf("SWEET ADSP: APR mode 4 stopped; remote intent was not reusable for a second request\n");
++		return;
++	}
++	if (!adsp_apr_send_afe_i2s_get_param(&items, &state)) {
++		printf("SWEET ADSP: APR mode 4 stopped before AFE GET_PARAM_V2\n");
++		return;
++	}
+ 	if (adsp_apr_poll_response(&items, &state)) {
+-		printf("SWEET ADSP: APR mode 4 complete; stopped before AFE/ASM/PCM/codec startup\n");
++		printf("SWEET ADSP: APR mode 4 complete; stopped before AFE port start/ASM/PCM/codec\n");
+ 	} else {
+-		printf("SWEET ADSP: APR mode 4 ended without a validated Q6Core response\n");
++		printf("SWEET ADSP: APR mode 4 ended without a validated AFE GET_PARAM response\n");
+ 	}
+ }
+ 
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index b859396..1f11eec 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -8,12 +8,26 @@
+ #define BERYLLIUM_ADSP_APR_DOMAIN_ADSP 4u
+ #define BERYLLIUM_ADSP_APR_DOMAIN_APPS 5u
+ #define BERYLLIUM_ADSP_APR_Q6CORE_SERVICE 3u
++#define BERYLLIUM_ADSP_APR_AFE_SERVICE 4u
+ #define BERYLLIUM_ADSP_APR_HEADER_BYTES 20u
+ #define BERYLLIUM_ADSP_APR_SEQ_CMD_HDR_FIELD 0x0250u
+ #define BERYLLIUM_ADSP_APR_RSP_HDR_FIELD 0x0150u
+ #define BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION 0x001292cu
+ #define BERYLLIUM_ADSP_APR_RSP_GET_FWK_VERSION 0x001292du
+ #define BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT 0x000110e8u
++#define BERYLLIUM_ADSP_AFE_CMD_GET_PARAM_V2 0x000100f0u
++#define BERYLLIUM_ADSP_AFE_RSP_GET_PARAM_V2 0x00010106u
++#define BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX 0x1006u
++#define BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN 22u
++#define BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE 0x0001020cu
++#define BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG 0x0001020du
++#define BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES 12u
++#define BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES 20u
++#define BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES \
++	(BERYLLIUM_ADSP_APR_HEADER_BYTES + 24u + \
++	 BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES + BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES)
++#define BERYLLIUM_ADSP_AFE_GET_PARAM_PAYLOAD_BYTES \
++	(BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES + BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES)
+ #define BERYLLIUM_ADSP_APR_CHANNEL_NAME "apr_audio_svc"
+ #define BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES 14u
+ #define BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME "fastrpcglink-apps-dsp"
+@@ -51,6 +65,13 @@ enum beryllium_adsp_apr_response_kind {
+ 	BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT,
+ };
+ 
++enum beryllium_adsp_afe_response_kind {
++	BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED = 0,
++	BERYLLIUM_ADSP_AFE_RESPONSE_GET_PARAM,
++	BERYLLIUM_ADSP_AFE_RESPONSE_STATUS,
++	BERYLLIUM_ADSP_AFE_RESPONSE_BASIC_RESULT,
++};
++
+ struct beryllium_adsp_glink_intent {
+ 	uint32_t id;
+ 	uint32_t size;
+@@ -72,6 +93,21 @@ struct beryllium_adsp_apr_response {
+ 	struct beryllium_adsp_apr_service_api services[BERYLLIUM_ADSP_APR_MAX_DATA_BYTES / 12u];
+ };
+ 
++struct beryllium_adsp_afe_i2s_config {
++	uint32_t minor_version;
++	uint16_t bit_width;
++	uint16_t channel_mode;
++	uint16_t mono_stereo;
++	uint16_t ws_source;
++	uint32_t sample_rate;
++	uint16_t data_format;
++};
++
++struct beryllium_adsp_afe_response {
++	uint32_t status;
++	struct beryllium_adsp_afe_i2s_config i2s;
++};
++
+ static inline size_t
+ beryllium_adsp_apr_response_dump_bytes(size_t payload_bytes)
+ {
+@@ -127,6 +163,38 @@ beryllium_adsp_apr_encode_get_fwk_version(uint8_t packet[BERYLLIUM_ADSP_APR_HEAD
+ 	return true;
+ }
+ 
++static inline bool
++beryllium_adsp_apr_encode_afe_get_i2s_config(uint8_t *packet,
++	size_t packet_capacity, size_t *packet_bytes)
++{
++	if (packet == NULL || packet_bytes == NULL ||
++	    packet_capacity < BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES) {
++		return false;
++	}
++	for (size_t i = 0; i < BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES; i++) {
++		packet[i] = 0;
++	}
++	beryllium_adsp_apr_put16(packet, BERYLLIUM_ADSP_APR_SEQ_CMD_HDR_FIELD);
++	beryllium_adsp_apr_put16(packet + 2, BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES);
++	packet[4] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
++	packet[5] = BERYLLIUM_ADSP_APR_DOMAIN_APPS;
++	packet[8] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
++	packet[9] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
++	beryllium_adsp_apr_put32(packet + 12, BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN);
++	beryllium_adsp_apr_put32(packet + 16, BERYLLIUM_ADSP_AFE_CMD_GET_PARAM_V2);
++	beryllium_adsp_apr_put16(packet + 20, BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX);
++	beryllium_adsp_apr_put16(packet + 22, BERYLLIUM_ADSP_AFE_GET_PARAM_PAYLOAD_BYTES);
++	beryllium_adsp_apr_put32(packet + 36,
++	    BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE);
++	beryllium_adsp_apr_put32(packet + 40, BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG);
++	beryllium_adsp_apr_put32(packet + 44,
++	    BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE);
++	beryllium_adsp_apr_put32(packet + 48, BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG);
++	beryllium_adsp_apr_put16(packet + 52, BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES);
++	*packet_bytes = BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES;
++	return true;
++}
++
+ /* Compute the aligned GLINK frame length without reading past available bytes. */
+ static inline enum beryllium_adsp_glink_frame_status
+ beryllium_adsp_apr_glink_frame_bytes(const uint8_t *frame, size_t available,
+@@ -431,4 +499,114 @@ beryllium_adsp_apr_parse_response(const uint8_t *packet, size_t packet_bytes,
+ 	return BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION;
+ }
+ 
++static inline bool
++beryllium_adsp_apr_afe_api_v2_available(
++	const struct beryllium_adsp_apr_response *response)
++{
++	uint32_t matches = 0;
++	bool supported = false;
++	if (response == NULL || response->service_count >
++	    BERYLLIUM_ADSP_APR_MAX_DATA_BYTES / 12u) {
++		return false;
++	}
++	for (uint32_t i = 0; i < response->service_count; i++) {
++		if (response->services[i].service_id != BERYLLIUM_ADSP_APR_AFE_SERVICE) {
++			continue;
++		}
++		matches++;
++		supported = response->services[i].api_version == 2u &&
++		    response->services[i].api_branch_version == 0u;
++	}
++	return matches == 1u && supported;
++}
++
++static inline enum beryllium_adsp_afe_response_kind
++beryllium_adsp_apr_parse_afe_get_i2s_config(const uint8_t *packet,
++	size_t packet_bytes, struct beryllium_adsp_afe_response *response)
++{
++	uint16_t header_field;
++	uint16_t packet_size;
++	uint8_t header_version;
++	uint8_t header_words;
++	uint8_t message_type;
++	size_t header_bytes;
++	size_t body_bytes;
++	uint32_t opcode;
++	const uint8_t *body;
++
++	if (packet == NULL || response == NULL ||
++	    packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    packet_bytes > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	header_field = beryllium_adsp_apr_get16(packet);
++	header_version = (uint8_t)(header_field & 0x000fu);
++	header_words = (uint8_t)((header_field & 0x00f0u) >> 4);
++	message_type = (uint8_t)((header_field & 0x0300u) >> 8);
++	header_bytes = (size_t)header_words * 4u;
++	if (header_version > 1u || message_type != 1u ||
++	    (header_field & 0xfc00u) != 0 ||
++	    header_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    header_bytes > packet_bytes) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	packet_size = beryllium_adsp_apr_get16(packet + 2);
++	opcode = beryllium_adsp_apr_get32(packet + 16);
++	if (packet_size != packet_bytes ||
++	    packet[4] != BERYLLIUM_ADSP_APR_AFE_SERVICE ||
++	    packet[5] != BERYLLIUM_ADSP_APR_DOMAIN_ADSP ||
++	    beryllium_adsp_apr_get16(packet + 6) != 0 ||
++	    packet[8] != BERYLLIUM_ADSP_APR_AFE_SERVICE ||
++	    packet[9] != BERYLLIUM_ADSP_APR_DOMAIN_APPS ||
++	    beryllium_adsp_apr_get16(packet + 10) != 0 ||
++	    beryllium_adsp_apr_get32(packet + 12) !=
++	    BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	body = packet + header_bytes;
++	body_bytes = packet_bytes - header_bytes;
++	if (opcode == BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT) {
++		if (body_bytes != 8u ||
++		    beryllium_adsp_apr_get32(body) !=
++		    BERYLLIUM_ADSP_AFE_CMD_GET_PARAM_V2) {
++			return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++		}
++		response->status = beryllium_adsp_apr_get32(body + 4);
++		return BERYLLIUM_ADSP_AFE_RESPONSE_BASIC_RESULT;
++	}
++	if (opcode != BERYLLIUM_ADSP_AFE_RSP_GET_PARAM_V2 || body_bytes < 4u) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	response->status = beryllium_adsp_apr_get32(body);
++	if (response->status != 0 && body_bytes == 4u) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_STATUS;
++	}
++	if (body_bytes != 4u + BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES +
++	    BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES ||
++	    beryllium_adsp_apr_get32(body + 4) !=
++	    BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE ||
++	    beryllium_adsp_apr_get32(body + 8) !=
++	    BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG ||
++	    beryllium_adsp_apr_get16(body + 12) !=
++	    BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES ||
++	    beryllium_adsp_apr_get16(body + 14) != 0) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	if (response->status != 0) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_STATUS;
++	}
++	const uint8_t *config = body + 16;
++	response->i2s.minor_version = beryllium_adsp_apr_get32(config);
++	response->i2s.bit_width = beryllium_adsp_apr_get16(config + 4);
++	response->i2s.channel_mode = beryllium_adsp_apr_get16(config + 6);
++	response->i2s.mono_stereo = beryllium_adsp_apr_get16(config + 8);
++	response->i2s.ws_source = beryllium_adsp_apr_get16(config + 10);
++	response->i2s.sample_rate = beryllium_adsp_apr_get32(config + 12);
++	response->i2s.data_format = beryllium_adsp_apr_get16(config + 16);
++	if (beryllium_adsp_apr_get16(config + 18) != 0) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	return BERYLLIUM_ADSP_AFE_RESPONSE_GET_PARAM;
++}
++
+ #endif /* _BERYLLIUM_ADSP_APR_PROBE_H_ */
