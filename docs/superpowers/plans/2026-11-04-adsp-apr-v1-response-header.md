@@ -59,7 +59,7 @@
 
 - [x] Complete an independent read-only code review; no Critical, Important, or Minor findings.
 - [x] Update `NOTES.md`, commit without co-author trailers, push, and dispatch XNU 26.5 CI; record run `41804062688` pinned to `c0cfbeab98972950fe07723299100845620b1833`.
-- [ ] Verify the artifact checksum, empty `errors.txt`, patch application, `XNU Build Done`, and parser strings.
-- [ ] Package a read-only image, unpack it, and byte-compare the loader and payload; verify required ADSP markers and no root-write boot args.
+- [x] Verify the artifact checksum, empty `errors.txt`, patch application, `XNU Build Done`, and parser strings.
+- [x] Package a read-only image, unpack it, and byte-compare the loader and payload; verify required ADSP markers and no root-write boot args.
 - [ ] When Fastboot enumerates as unlocked `beryllium`, run `fastboot boot` only and isolate the UDP capture. Record APR result, mount evidence, and UI evidence separately.
 - [ ] Update `NOTES.md` with exact test, CI, image, capture, and remaining blocker details.
