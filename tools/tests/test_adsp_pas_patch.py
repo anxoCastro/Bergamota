@@ -31,6 +31,7 @@ APR_V1_RESPONSE_HEADER_PATCH = ROOT / "xnu/patches-12377/1162-beryllium-adsp-apr
 APR_SERVICE_API_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1163-beryllium-adsp-q6core-service-api-diagnostics.patch"
 AFE_GET_PARAM_PATCH = ROOT / "xnu/patches-12377/1164-beryllium-adsp-afe-get-param-readonly.patch"
 LINUX_AFE_LIFECYCLE_PATCH = ROOT / "xnu/patches-12377/1165-beryllium-adsp-linux-afe-lifecycle.patch"
+LINUX_AFE_MODE5_PATCH = ROOT / "xnu/patches-12377/1166-beryllium-adsp-linux-afe-mode5.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -93,7 +94,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1164:
+                if not 1131 <= number <= 1166:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -928,6 +929,31 @@ main(void)
 
 
 class AdspAprMode4Tests(unittest.TestCase):
+    def test_linux_afe_mode5_is_opt_in_and_orders_linux_commands(self):
+        self.assertTrue(LINUX_AFE_MODE5_PATCH.is_file(),
+                        "patch 1166 must provide the opt-in Linux AFE lifecycle")
+        patch = LINUX_AFE_MODE5_PATCH.read_text()
+        driver = diff_section(patch, "bsd/dev/beryllium_adsp.c")
+        self.assertIn("adsp_linux_afe_requested = mode == 5", driver)
+        self.assertIn("adsp_apr_linux_afe_mode5_start", driver)
+        mode5 = added_function_body(driver, "adsp_apr_linux_afe_mode5_start")
+        command_opcodes = [
+            "BERYLLIUM_ADSP_AFE_CMD_SVC_SET_PARAM",
+            "BERYLLIUM_ADSP_AFE_CMD_SET_PARAM_V2",
+            "BERYLLIUM_ADSP_AFE_CMD_DEVICE_START",
+            "BERYLLIUM_ADSP_AFE_CMD_DEVICE_STOP",
+        ]
+        positions = [mode5.index(opcode) for opcode in command_opcodes]
+        self.assertEqual(positions, sorted(positions))
+        self.assertLess(mode5.index("state.afe_api_v2"), positions[0])
+        self.assertNotRegex(mode5, r"ASM_STREAM_CMD|ADM_CMD|q6asm|q6routing|GPIO|gpio")
+
+        command = added_function_body(driver, "adsp_apr_linux_afe_command")
+        self.assertLess(command.index("adsp_apr_poll_response"),
+                        command.index("state->response_status_valid"))
+        self.assertIn("state->response_status != 0", command)
+        self.assertIn("adsp_apr_send_afe_packet", command)
+
     def test_compiled_linux_afe_helper_packets(self):
         header_path = "bsd/dev/beryllium_adsp_apr_probe.h"
         helper_patches = [
@@ -993,6 +1019,10 @@ class AdspAprMode4Tests(unittest.TestCase):
             subprocess.run(["git", "apply", f"--include={glink_header_path}",
                             str(APR_MODE4_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
+            if LINUX_AFE_MODE5_PATCH.is_file():
+                subprocess.run(["git", "apply", f"--include={glink_header_path}",
+                                str(LINUX_AFE_MODE5_PATCH)], cwd=work,
+                               check=True, capture_output=True, text=True)
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(FASTRPC_OPEN_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)

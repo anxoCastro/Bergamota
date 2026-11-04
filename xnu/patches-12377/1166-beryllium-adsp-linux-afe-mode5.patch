@@ -1,0 +1,316 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -139,6 +139,7 @@
+ static bool adsp_pas_requested;
+ static bool adsp_glink_requested;
+ static bool adsp_apr_requested;
++static bool adsp_linux_afe_requested;
+ static uint8_t adsp_apr_rx_buffers[BERYLLIUM_ADSP_APR_INTENT_COUNT][BERYLLIUM_ADSP_APR_INTENT_BYTES];
+ static bool adsp_smp2p_known;
+ static bool adsp_remote_ready;
+@@ -2246,7 +2247,7 @@
+ 	uint32_t tx_off, tx_size;
+ 
+ 	printf("SWEET ADSP: explicit GLINK base startup requested (sweetadsp=%d)\n",
+-	    adsp_apr_requested ? 4 : 3);
++	    adsp_linux_afe_requested ? 5 : (adsp_apr_requested ? 4 : 3));
+ 	if (!adsp_glink_cold_preflight(&baseline)) {
+ 		return false;
+ 	}
+@@ -2279,7 +2280,9 @@
+ 	size_t remote_intent_count;
+ 	uint32_t request_intent_id;
+ 	uint32_t request_opcode;
++	uint32_t response_status;
+ 	bool request_intent_reusable;
++	bool response_status_valid;
+ 	bool afe_api_v2;
+ };
+ 
+@@ -2751,6 +2754,58 @@
+ }
+ 
+ static bool
++adsp_apr_send_afe_packet(const struct adsp_glink_survey_items *items,
++	struct adsp_apr_channel_state *state, const uint8_t *packet,
++	size_t packet_bytes, uint32_t request_opcode)
++{
++	uint8_t frame[16 + BERYLLIUM_ADSP_APR_MAX_DATA_BYTES] = { 0 };
++	const struct beryllium_adsp_glink_intent *selected = NULL;
++	if (items == NULL || state == NULL || packet == NULL ||
++	    packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    packet_bytes > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES ||
++	    beryllium_adsp_apr_get32(packet + 16) != request_opcode ||
++	    !state->request_intent_reusable) {
++		printf("SWEET ADSP: Linux AFE command stopped; request or reusable intent invalid\n");
++		return false;
++	}
++	for (size_t i = 0; i < state->remote_intent_count; i++) {
++		const struct beryllium_adsp_glink_intent *candidate =
++		    &state->remote_intents[i];
++		if (candidate->id != state->request_intent_id ||
++		    candidate->size < packet_bytes) {
++			continue;
++		}
++		selected = candidate;
++		break;
++	}
++	if (selected == NULL) {
++		printf("SWEET ADSP: Linux AFE command stopped; reusable remote intent is too small\n");
++		return false;
++	}
++	state->request_intent_id = selected->id;
++	state->request_opcode = request_opcode;
++	state->request_intent_reusable = false;
++	state->response_status_valid = false;
++	beryllium_adsp_apr_put16(frame, BERYLLIUM_ADSP_GLINK_CMD_TX_DATA);
++	beryllium_adsp_apr_put16(frame + 2, ADSP_APR_LOCAL_CHANNEL);
++	beryllium_adsp_apr_put32(frame + 4, selected->id);
++	beryllium_adsp_apr_put32(frame + 8, (uint32_t)packet_bytes);
++	beryllium_adsp_apr_put32(frame + 12, 0);
++	for (size_t i = 0; i < packet_bytes; i++) {
++		frame[16 + i] = packet[i];
++	}
++	if (!adsp_glink_send_frame(items, frame, 16 + packet_bytes)) {
++		printf("SWEET ADSP: Linux AFE command GLINK TX failed opcode=%#x\n",
++		    request_opcode);
++		return false;
++	}
++	printf("SWEET ADSP: sent Linux AFE command opcode=%#x bytes=%lu port=%#x intent=%u\n",
++	    request_opcode, (unsigned long)packet_bytes,
++	    BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX, selected->id);
++	return true;
++}
++
++static bool
+ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 	struct adsp_apr_channel_state *state)
+ {
+@@ -2843,12 +2898,20 @@
+ 			}
+ 			struct beryllium_adsp_apr_response q6core_response = { 0 };
+ 			struct beryllium_adsp_afe_response afe_response = { 0 };
++			struct beryllium_adsp_afe_basic_result afe_basic_response = { 0 };
+ 			enum beryllium_adsp_apr_response_kind q6core_parsed =
+ 			    BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
+ 			enum beryllium_adsp_afe_response_kind afe_parsed =
+ 			    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++			enum beryllium_adsp_afe_response_kind afe_basic_parsed =
++			    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
+ 			bool q6core_request = state->request_opcode ==
+ 			    BERYLLIUM_ADSP_APR_CMD_GET_FWK_VERSION;
++			bool afe_basic_request =
++			    state->request_opcode == BERYLLIUM_ADSP_AFE_CMD_SVC_SET_PARAM ||
++			    state->request_opcode == BERYLLIUM_ADSP_AFE_CMD_SET_PARAM_V2 ||
++			    state->request_opcode == BERYLLIUM_ADSP_AFE_CMD_DEVICE_START ||
++			    state->request_opcode == BERYLLIUM_ADSP_AFE_CMD_DEVICE_STOP;
+ 			bool parsed_valid = false;
+ 			if (q6core_request) {
+ 				q6core_parsed = beryllium_adsp_apr_parse_response(
+@@ -2864,6 +2927,20 @@
+ 				    &afe_response);
+ 				parsed_valid = afe_parsed !=
+ 				    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++				if (parsed_valid) {
++					state->response_status = afe_response.status;
++					state->response_status_valid = true;
++				}
++			} else if (afe_basic_request) {
++				afe_basic_parsed = beryllium_adsp_apr_parse_afe_basic_result(
++				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
++				    state->request_opcode, &afe_basic_response);
++				parsed_valid = afe_basic_parsed ==
++				    BERYLLIUM_ADSP_AFE_RESPONSE_BASIC_RESULT;
++				if (parsed_valid) {
++					state->response_status = afe_basic_response.status;
++					state->response_status_valid = true;
++				}
+ 			}
+ 			if (!adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {
+ 				printf("SWEET ADSP: APR response could not advance AP-owned RX tail\n");
+@@ -2914,6 +2991,11 @@
+ 			    BERYLLIUM_ADSP_AFE_RESPONSE_BASIC_RESULT) {
+ 				printf("SWEET ADSP: AFE APR basic result for GET_PARAM_V2 status=%#x\n",
+ 				    afe_response.status);
++			} else if (afe_basic_request && afe_basic_parsed ==
++			    BERYLLIUM_ADSP_AFE_RESPONSE_BASIC_RESULT) {
++				printf("SWEET ADSP: AFE APR basic result request=%#x status=%#x\n",
++				    afe_basic_response.request_opcode,
++				    afe_basic_response.status);
+ 			}
+ 			if (!parsed_valid) {
+ 				size_t dump_bytes =
+@@ -2944,6 +3026,34 @@
+ 	return false;
+ }
+ 
++static bool
++adsp_apr_linux_afe_command(const struct adsp_glink_survey_items *items,
++	struct adsp_apr_channel_state *state, const uint8_t *packet,
++	size_t packet_bytes, uint32_t request_opcode, const char *label)
++{
++	if (!adsp_apr_send_afe_packet(items, state, packet, packet_bytes,
++	    request_opcode)) {
++		return false;
++	}
++	if (!adsp_apr_poll_response(items, state)) {
++		printf("SWEET ADSP: Linux AFE %s response missing/invalid; stopping sequence\n",
++		    label);
++		return false;
++	}
++	if (!state->response_status_valid) {
++		printf("SWEET ADSP: Linux AFE %s response had no validated status; stopping sequence\n",
++		    label);
++		return false;
++	}
++	if (state->response_status != 0) {
++		printf("SWEET ADSP: Linux AFE %s rejected status=%#x; stopping sequence\n",
++		    label, state->response_status);
++		return false;
++	}
++	printf("SWEET ADSP: Linux AFE %s accepted status=0\n", label);
++	return true;
++}
++
+ static void
+ adsp_apr_mode4_start(void)
+ {
+@@ -2995,6 +3105,68 @@
+ 	}
+ }
+ 
++static void
++adsp_apr_linux_afe_mode5_start(void)
++{
++	struct adsp_glink_survey_items items;
++	struct adsp_apr_channel_state state;
++	struct beryllium_adsp_glink_indices indices;
++	uint8_t packet[BERYLLIUM_ADSP_AFE_I2S_SET_PARAM_PACKET_BYTES] = { 0 };
++	size_t packet_bytes = 0;
++	bzero(&state, sizeof(state));
++	if (!sweet_board_beryllium() || !adsp_glink_survey_read_items(4, &items) ||
++	    !adsp_glink_start_items_valid(&items, true) ||
++	    !adsp_glink_survey_read_indices(items.descriptor.off, &indices) ||
++	    !beryllium_adsp_glink_indices_valid(&indices, items.tx_fifo.size, items.rx_fifo.size)) {
++		printf("SWEET ADSP: Linux AFE mode 5 stopped: post-negotiation GLINK metadata/indices invalid\n");
++		return;
++	}
++	bzero(adsp_apr_rx_buffers, sizeof(adsp_apr_rx_buffers));
++	if (!adsp_apr_open_channel(&items, &state)) {
++		printf("SWEET ADSP: Linux AFE mode 5 stopped before sending a Q6Core command\n");
++		return;
++	}
++	if (!adsp_apr_advertise_local_intents(&items) ||
++	    !adsp_apr_wait_remote_intent(&items, &state)) {
++		printf("SWEET ADSP: Linux AFE mode 5 stopped before sending a Q6Core command\n");
++		return;
++	}
++	if (!adsp_apr_send_fwk_version(&items, &state) ||
++	    !adsp_apr_poll_response(&items, &state)) {
++		printf("SWEET ADSP: Linux AFE mode 5 stopped without a validated Q6Core response\n");
++		return;
++	}
++	if (!state.afe_api_v2) {
++		printf("SWEET ADSP: Linux AFE mode 5 stopped; no unique AFE API 2.0 record\n");
++		return;
++	}
++	if (!beryllium_adsp_apr_encode_afe_clock_set(packet, sizeof(packet),
++	    &packet_bytes, true) ||
++	    !adsp_apr_linux_afe_command(&items, &state, packet, packet_bytes,
++	    BERYLLIUM_ADSP_AFE_CMD_SVC_SET_PARAM, "QUAT clock set")) {
++		return;
++	}
++	if (!beryllium_adsp_apr_encode_afe_i2s_set_param(packet, sizeof(packet),
++	    &packet_bytes) ||
++	    !adsp_apr_linux_afe_command(&items, &state, packet, packet_bytes,
++	    BERYLLIUM_ADSP_AFE_CMD_SET_PARAM_V2, "QUAT I2S config")) {
++		return;
++	}
++	if (!beryllium_adsp_apr_encode_afe_device_command(packet, sizeof(packet),
++	    &packet_bytes, true) ||
++	    !adsp_apr_linux_afe_command(&items, &state, packet, packet_bytes,
++	    BERYLLIUM_ADSP_AFE_CMD_DEVICE_START, "QUAT DEVICE_START")) {
++		return;
++	}
++	if (!beryllium_adsp_apr_encode_afe_device_command(packet, sizeof(packet),
++	    &packet_bytes, false) ||
++	    !adsp_apr_linux_afe_command(&items, &state, packet, packet_bytes,
++	    BERYLLIUM_ADSP_AFE_CMD_DEVICE_STOP, "QUAT DEVICE_STOP")) {
++		return;
++	}
++	printf("SWEET ADSP: Linux QUAT AFE lifecycle completed; no PCM/ASM/ADM/codec route was opened\n");
++}
++
+ static bool
+ beryllium_adsp_pas_start(void)
+ {
+@@ -3009,7 +3181,8 @@
+ 		return false;
+ 	}
+ 	printf("SWEET ADSP: explicit PAS ID 1 startup requested (sweetadsp=%d)\n",
+-	    adsp_apr_requested ? 4 : (adsp_glink_requested ? 3 : 2));
++	    adsp_linux_afe_requested ? 5 :
++	    (adsp_apr_requested ? 4 : (adsp_glink_requested ? 3 : 2)));
+ 	/* Re-read remote-owned item 443 immediately before the explicit start attempt. */
+ 	adsp_smp2p_readonly_probe(false);
+ 	if (adsp_smp2p_ambiguous) {
+@@ -3224,7 +3397,11 @@
+ 		if (adsp_glink_requested) {
+ 			if (adsp_glink_mode3_start()) {
+ 				if (adsp_apr_requested) {
+-					adsp_apr_mode4_start();
++					if (adsp_linux_afe_requested) {
++						adsp_apr_linux_afe_mode5_start();
++					} else {
++						adsp_apr_mode4_start();
++					}
+ 				} else {
+ 					printf("SWEET ADSP: GLINK mode 3 complete; stopped before APR/channel/audio startup\n");
+ 				}
+@@ -3272,13 +3449,16 @@
+ 	adsp_probe_enabled = true;
+ 	adsp_pas_requested = beryllium_adsp_glink_mode_requests_pas(mode);
+ 	adsp_glink_requested = beryllium_adsp_glink_mode_requests_glink(mode);
+-	adsp_apr_requested = mode == 4;
++	adsp_apr_requested = mode == 4 || mode == 5;
++	adsp_linux_afe_requested = mode == 5;
+ 	adsp_state = BERYLLIUM_ADSP_PREFLIGHT;
+-	printf("SWEET ADSP: opt-in %s\n", adsp_apr_requested ?
++	printf("SWEET ADSP: opt-in %s\n", adsp_linux_afe_requested ?
++	    "PAS plus GLINK and Linux QUAT AFE lifecycle requested; no PCM path" :
++	    (adsp_apr_requested ?
+ 	    "PAS plus GLINK and one Q6Core APR version query requested; early SMP2P probe remains read-only" :
+ 	    (adsp_glink_requested ? "PAS plus GLINK-only startup requested; early SMP2P probe remains read-only" :
+ 	    (adsp_pas_requested ? "PAS startup mode requested; early SMP2P probe remains read-only" :
+-	    "read-only preflight (PAS/SMEM writes disabled)")));
++	    "read-only preflight (PAS/SMEM writes disabled)"))));
+ 	adsp_smp2p_readonly_probe(false);
+ 	printf("SWEET ADSP: early SMP2P snapshot complete; state=%u\n", (unsigned)adsp_state);
+ }
+diff --git a/bsd/dev/beryllium_adsp_glink_start.h b/bsd/dev/beryllium_adsp_glink_start.h
+--- a/bsd/dev/beryllium_adsp_glink_start.h
++++ b/bsd/dev/beryllium_adsp_glink_start.h
+@@ -29,19 +29,19 @@
+ static inline bool
+ beryllium_adsp_glink_mode_valid(int mode)
+ {
+-	return mode >= 1 && mode <= 4;
++	return mode >= 1 && mode <= 5;
+ }
+ 
+ static inline bool
+ beryllium_adsp_glink_mode_requests_pas(int mode)
+ {
+-	return mode == 2 || mode == 3 || mode == 4;
++	return mode == 2 || mode == 3 || mode == 4 || mode == 5;
+ }
+ 
+ static inline bool
+ beryllium_adsp_glink_mode_requests_glink(int mode)
+ {
+-	return mode == 3 || mode == 4;
++	return mode == 3 || mode == 4 || mode == 5;
+ }
+ 
+ static inline bool

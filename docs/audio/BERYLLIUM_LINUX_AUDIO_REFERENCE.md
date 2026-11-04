@@ -46,7 +46,8 @@ control-plane smoke test, the chosen representative test vector is 48 kHz,
 Linux's packet order is:
 
 1. Clock configuration: APR opcode `AFE_SVC_CMD_SET_PARAM` (`0x100f3`),
-   token 22, module `0x1028f`, parameter `0x10290`; payload is the 20-byte
+   per-port token 22, module `0x1028f`, parameter `0x10290`; payload is the
+   20-byte
    clock structure: minor version 1, clock ID `0x106`, 1,536,000 Hz,
    attribute 1 (no coupling), root 0, enabled 1.
 2. Port configuration: APR opcode `AFE_PORT_CMD_SET_PARAM_V2` (`0x100ef`),
@@ -59,6 +60,14 @@ Linux's packet order is:
    that observed behavior and leaves the configured clock alone until DSP
    reboot.
 
+For QUAT, token 22 follows the actual board call path:
+`sdm845_snd_startup()` calls the QUAT DAI's `set_sysclk`, which reaches
+`q6afe_port_set_sysclk()` and `q6afe_set_lpass_clock_v2()`; that wrapper uses
+the port's token. The separate exported `q6afe_set_lpass_clock()` helper uses
+the global clock token 1024, but the Beryllium QUAT startup path does not call
+that helper. This distinction is easy to miss because both helpers send the
+same service-level SET_PARAM opcode.
+
 ### ABI details that matter
 
 The I2S structure contains 20 meaningful bytes. Linux stores it inside
@@ -66,7 +75,8 @@ The I2S structure contains 20 meaningful bytes. Linux stores it inside
 The union is zero-initialized and `q6afe_port_start()` passes
 `sizeof(port->port_cfg)`, so the SET_PARAM_V2 parameter size is **36 bytes**:
 20 I2S bytes followed by 16 zero bytes. The parameter header is 12 bytes and
-the port command header is 16 bytes, making the complete APR packet 96 bytes.
+the port command header is 16 bytes, making the complete APR packet 84 bytes
+(20 + 16 + 12 + 36). The earlier 96-byte total was an arithmetic error.
 
 Linux requests use a 20-byte APR header. The clock SET_PARAM uses a 16-byte
 service command header, a 12-byte parameter header, and the 20-byte clock
@@ -94,6 +104,32 @@ sets the clock, sends SET_PARAM_V2 with the full union, and starts the port.
 The next XNU test therefore follows that sequence instead of trying another
 query-size variation.
 
+## Linux speaker playback path
+
+Linux splits playback across the ASoC front end and back end. Beryllium's DTS
+connects the `MultiMedia1` front end to Q6ASM, and defines `Primary Spkr
+Playback` with QUAT MI2S RX (`0x1006`), q6routing, and the TAS2559 codec. The
+board selects the QUAT MI2S and SD0 pin groups. The UCM `HiFi.conf` enables the
+`QUAT_MI2S_RX Audio Mixer MultiMedia1` route; its speaker profile selects TAS
+configuration 4 and playback volume 35. Those mixer and amplifier settings
+are separate from the AFE port configuration.
+
+For PCM playback, `q6asm_dai_prepare()` maps the PCM period buffer into the
+DSP shared-memory pool, opens an ASM write stream using the multi-channel PCM
+format, registers the session with q6routing, and sends the PCM media-format
+block. `q6routing_stream_open()` opens an ADM COPP for the selected output
+port and matrix-maps the ASM session to that COPP. The ASM trigger sends RUN;
+on RUN completion, Linux queues period writes and continues submitting them
+as write-done events arrive. The AFE back-end DAI prepares the stream
+parameters, sends the padded port configuration, and starts QUAT. Shutdown
+stops the AFE port and closes/unmaps the ASM stream and its buffers.
+
+The TAS2559 driver is another required layer: the DTS gives it I2C addresses
+`0x4c`/`0x4d` and reset GPIOs, while the driver loads its firmware and exposes
+the configuration and volume controls used by UCM. The DAI's pinmux and the
+I2C amplifier setup must both work for speaker output. This route is distinct
+from the WCD9340/SLIMbus route used by headphones and microphones.
+
 ## XNU port boundary and later stages
 
 The first Linux-faithful XNU experiment is an explicit boot-arg-only AFE
@@ -103,13 +139,14 @@ open Q6ASM/Q6ADM, configure WCD9340 or TAS firmware, manipulate GPIO/pinctrl,
 or expose an iOS audio device. The test vector may enable the QUAT clock and
 port, but it must never be described as audible playback.
 
-The later speaker path needs, at minimum, Q6ASM buffer setup and write/run,
-Q6ADM/COPP matrix routing to the QUAT AFE backend, the Beryllium TLMM pinmux,
-TAS2559/TAS2560 firmware and calibration/configuration, and an iOS 26
-AudioServerPlugIn/HAL integration. The headphone/microphone path additionally
-requires the WCD9340 and SLIMbus route. Each endpoint has separate hardware
-and firmware prerequisites; the Linux topology is not proof that each
-profile is working in this XNU port.
+The next actual-playback milestone must port the ASM stream lifecycle and
+Linux shared-memory mapping semantics, the ADM COPP open/matrix map, and the
+period write/run loop. It must then add the Beryllium QUAT pinmux, TAS I2C/GPIO
+and firmware/configuration path, and an iOS 26 AudioServerPlugIn/HAL bridge.
+The current XNU AFE lifecycle test supplies none of those layers. The
+headphone/microphone path additionally requires WCD9340 and SLIMbus support.
+Linux's working topology is a source reference, not evidence that any of
+these paths already work in XNU.
 
 ## Primary source references
 

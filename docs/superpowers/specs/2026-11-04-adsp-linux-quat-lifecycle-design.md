@@ -18,6 +18,10 @@ be described as working speaker audio.
   query to start its I2S port.
 - The Beryllium DTS maps QUAT MI2S RX to port `0x1006`, SD0 only, with the
   external TAS2559/2560 speaker amplifiers.
+- The QUAT clock command uses token 22. In this board path,
+  `sdm845_snd_startup()` reaches `q6afe_port_set_sysclk()`, which routes to
+  `q6afe_set_lpass_clock_v2()` and uses the AFE port token. The separate global
+  `q6afe_set_lpass_clock()` helper uses token 1024 but is not called for QUAT.
 - Linux programs clock ID `0x106` at 1,536,000 Hz, then SET_PARAM_V2 with the
   full 36-byte `union afe_port_config`, then DEVICE_START. Shutdown sends
   DEVICE_STOP. The current QUAT machine shutdown branch does not disable the
@@ -34,9 +38,9 @@ be described as working speaker audio.
    Mode 5 is separately opt-in and performs the Linux-like AFE lifecycle.
 2. Require the existing PAS/GLINK/APR startup and a unique advertised AFE
    API 2.0 record before sending any new AFE command.
-3. Send service clock SET_PARAM (`0x100f3`) with token 22 and exact 20-byte
-   clock data: minor 1, id `0x106`, 1,536,000 Hz, attribute 1, root 0,
-   enable 1.
+3. Send service clock SET_PARAM (`0x100f3`) with the QUAT port token 22 and
+   exact 20-byte clock data: minor 1, id `0x106`, 1,536,000 Hz, attribute 1,
+   root 0, enable 1.
 4. After a successful APR basic-result response, send port SET_PARAM_V2
    (`0x100ef`) for port `0x1006`, with module/parameter `0x1020c/0x1020d` and
    parameter size 36. The first 20 bytes encode the I2S vector; the remaining
@@ -72,6 +76,9 @@ be described as working speaker audio.
 - Compiled helper tests assert exact bytes/lengths for the clock request
   encoder, the padded 36-byte I2S port configuration, start/stop packets,
   and APR basic-result correlation/status handling.
+- The full SET_PARAM_V2 packet is 84 bytes (20 + 16 + 12 + 36); the clock
+  packet is 68 bytes and start/stop are 24 bytes. The QUAT clock uses port
+  token 22, not the global clock helper's token 1024.
 - A fixture matching the captured 80-byte GET_PARAM rejection parses as
   status 2 and never yields configuration data.
 - Static patch checks prove mode 4 remains query-only and mode 5 sends only

@@ -98,13 +98,16 @@ main(void)
 	assert(beryllium_adsp_glink_mode_valid(2));
 	assert(beryllium_adsp_glink_mode_valid(3));
 	assert(beryllium_adsp_glink_mode_valid(4));
+	assert(beryllium_adsp_glink_mode_valid(5));
 	assert(!beryllium_adsp_glink_mode_valid(0));
-	assert(!beryllium_adsp_glink_mode_valid(5));
+	assert(!beryllium_adsp_glink_mode_valid(6));
 	assert(beryllium_adsp_glink_mode_requests_pas(2));
 	assert(beryllium_adsp_glink_mode_requests_pas(3));
 	assert(beryllium_adsp_glink_mode_requests_pas(4));
+	assert(beryllium_adsp_glink_mode_requests_pas(5));
 	assert(beryllium_adsp_glink_mode_requests_glink(3));
 	assert(beryllium_adsp_glink_mode_requests_glink(4));
+	assert(beryllium_adsp_glink_mode_requests_glink(5));
 	assert(!beryllium_adsp_glink_mode_requests_glink(2));
 	assert(beryllium_adsp_glink_rx_frame_available(40, 0, 0x4000, 24));
 	assert(!beryllium_adsp_glink_rx_frame_available(16, 0, 0x4000, 24));

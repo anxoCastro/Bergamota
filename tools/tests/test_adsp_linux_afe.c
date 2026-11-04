@@ -127,6 +127,11 @@ main(void)
 	    BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT);
 	put32(response_packet + 32, BERYLLIUM_ADSP_AFE_CMD_SVC_SET_PARAM);
 	put32(response_packet + 36, 0);
+	put32(response_packet + 12, 1024u); /* Global clock token is not used by QUAT. */
+	assert(beryllium_adsp_apr_parse_afe_basic_result(response_packet,
+	    sizeof(response_packet), BERYLLIUM_ADSP_AFE_CMD_SVC_SET_PARAM,
+	    &basic_result) == BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED);
+	put32(response_packet + 12, BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN);
 	assert(beryllium_adsp_apr_parse_afe_basic_result(response_packet,
 	    sizeof(response_packet), BERYLLIUM_ADSP_AFE_CMD_SVC_SET_PARAM,
 	    &basic_result) == BERYLLIUM_ADSP_AFE_RESPONSE_BASIC_RESULT);
