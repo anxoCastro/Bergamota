@@ -101,8 +101,12 @@ Linux SET_PARAM/start path is unsupported.
 The important correction is that GET_PARAM is not part of Linux's port-start
 path. Linux builds the configuration from the PCM stream and Beryllium DTS,
 sets the clock, sends SET_PARAM_V2 with the full union, and starts the port.
-The next XNU test therefore follows that sequence instead of trying another
-query-size variation.
+The subsequent `sweetadsp=5` smoke test followed that sequence: the 68-byte
+clock SET_PARAM, 84-byte QUAT SET_PARAM_V2, 24-byte DEVICE_START, and 24-byte
+DEVICE_STOP each received APR basic-result `status=0` on the Poco F1
+([CI build 41920592353](https://github.com/anxoCastro/Bergamota/actions/runs/41920592353)).
+This confirms the AFE control lifecycle is accepted by the DSP. The test did
+not send PCM, open ASM/ADM, configure the codec, or establish audible output.
 
 ## Linux speaker playback path
 
