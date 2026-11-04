@@ -12,7 +12,7 @@
 
 - [x] Review the generated 1164 patch for APR header fields, packet lengths, bounded reads, intent ownership, and accidental active-route commands.
 - [x] Commit `2c097b7` and push the implementation/documentation without a co-author trailer.
-- [x] Dispatch the KDK-enabled XNU 26.5 build with `gh` (run [41893839513](https://github.com/anxoCastro/Bergamota/actions/runs/41893839513), pinned to `2c097b7626c7f328f8c84606ec69b0220f4ca5ed`).
+- [x] Dispatch the KDK-enabled XNU 26.5 build with `gh` (run [41893839513](https://github.com/anxoCastro/Bergamota/actions/runs/41893839513) was canceled while queued on `macos-26`; Intel retry [41894363579](https://github.com/anxoCastro/Bergamota/actions/runs/41894363579) is pinned to `0c88023dc4a0f74da56733f1a1d76105bc6dfeb7`).
 - [ ] Verify patch application, successful build, artifact checksums, and empty `errors.txt`.
 
 ## Task 3: Query the AFE on Beryllium
