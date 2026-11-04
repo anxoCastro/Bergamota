@@ -28,6 +28,7 @@ APR_INTENT_ID_ZERO_PATCH = ROOT / "xnu/patches-12377/1158-beryllium-adsp-apr-int
 APR_RX_DONE_REUSE_PATCH = ROOT / "xnu/patches-12377/1160-beryllium-adsp-apr-rx-done-reuse.patch"
 APR_REJECTED_PAYLOAD_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1161-beryllium-adsp-apr-rejected-payload-diagnostics.patch"
 APR_V1_RESPONSE_HEADER_PATCH = ROOT / "xnu/patches-12377/1162-beryllium-adsp-apr-v1-response-header.patch"
+APR_SERVICE_API_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1163-beryllium-adsp-q6core-service-api-diagnostics.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -90,7 +91,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1162:
+                if not 1131 <= number <= 1163:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -982,6 +983,11 @@ class AdspAprMode4Tests(unittest.TestCase):
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(APR_V1_RESPONSE_HEADER_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
+            self.assertTrue(APR_SERVICE_API_DIAGNOSTICS_PATCH.is_file(),
+                            "patch 1163 must decode Q6Core service API records")
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(APR_SERVICE_API_DIAGNOSTICS_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
@@ -1034,6 +1040,19 @@ class AdspAprMode4Tests(unittest.TestCase):
         self.assertNotIn("expected_head", rx_consume)
         self.assertIn("ADSP_APR_POLL_MS",
                       added_function_body(driver, "adsp_apr_poll_response"))
+
+    def test_q6core_service_api_diagnostic_adds_no_audio_command(self):
+        self.assertTrue(APR_SERVICE_API_DIAGNOSTICS_PATCH.is_file(),
+                        "patch 1163 must provide the service API diagnostic")
+        patch = APR_SERVICE_API_DIAGNOSTICS_PATCH.read_text()
+        driver = diff_section(patch, "bsd/dev/beryllium_adsp.c")
+        header = diff_section(patch, "bsd/dev/beryllium_adsp_apr_probe.h")
+        self.assertIn("response.services[i].service_id", driver)
+        self.assertIn("Q6Core service id=%u api=%u branch=%u", driver)
+        self.assertIn("struct beryllium_adsp_apr_service_api", header)
+        self.assertIn("api_branch_version", header)
+        self.assertNotRegex(patch, r"AFE_PORT_CMD|ASM_STREAM_CMD|q6afe|q6asm")
+        self.assertNotIn("apr_send_pkt", patch)
 
 if __name__ == "__main__":
     unittest.main()

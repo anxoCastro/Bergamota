@@ -1,0 +1,63 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 9954904f0ab7ebf3c0b027955505dce245342e40..ea5a32a288ca5efdab993d8ff23830609c1ad351 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2796,6 +2796,12 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 				    response.major, response.minor, response.branch,
+ 				    response.subbranch, response.service_count,
+ 				    request_intent_done ? "observed" : "not yet observed");
++				for (uint32_t i = 0; i < response.service_count; i++) {
++					printf("SWEET ADSP: Q6Core service id=%u api=%u branch=%u\n",
++					    response.services[i].service_id,
++					    response.services[i].api_version,
++					    response.services[i].api_branch_version);
++				}
+ 				return true;
+ 			}
+ 			if (parsed == BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT) {
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index a2b5b8bf9206469dce4f6166cda55bae6ed4d474..b859396b3c23097de6841863a3e1670537ae850d 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -56,6 +56,12 @@ struct beryllium_adsp_glink_intent {
+ 	uint32_t size;
+ };
+ 
++struct beryllium_adsp_apr_service_api {
++	uint32_t service_id;
++	uint32_t api_version;
++	uint32_t api_branch_version;
++};
++
+ struct beryllium_adsp_apr_response {
+ 	uint32_t major;
+ 	uint32_t minor;
+@@ -63,6 +69,7 @@ struct beryllium_adsp_apr_response {
+ 	uint32_t subbranch;
+ 	uint32_t service_count;
+ 	uint32_t status;
++	struct beryllium_adsp_apr_service_api services[BERYLLIUM_ADSP_APR_MAX_DATA_BYTES / 12u];
+ };
+ 
+ static inline size_t
+@@ -364,6 +371,7 @@ beryllium_adsp_apr_parse_response(const uint8_t *packet, size_t packet_bytes,
+ 	uint8_t message_type;
+ 	size_t header_bytes;
+ 	uint32_t opcode;
++	uint32_t i;
+ 	const uint8_t *body;
+ 
+ 	if (packet == NULL || response == NULL || packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES) {
+@@ -414,6 +422,12 @@ beryllium_adsp_apr_parse_response(const uint8_t *packet, size_t packet_bytes,
+ 	    packet_bytes != header_bytes + 20u + (size_t)response->service_count * 12u) {
+ 		return BERYLLIUM_ADSP_APR_RESPONSE_MALFORMED;
+ 	}
++	for (i = 0; i < response->service_count; i++) {
++		const uint8_t *service = body + 20u + (size_t)i * 12u;
++		response->services[i].service_id = beryllium_adsp_apr_get32(service);
++		response->services[i].api_version = beryllium_adsp_apr_get32(service + 4);
++		response->services[i].api_branch_version = beryllium_adsp_apr_get32(service + 8);
++	}
+ 	return BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION;
+ }
+ 

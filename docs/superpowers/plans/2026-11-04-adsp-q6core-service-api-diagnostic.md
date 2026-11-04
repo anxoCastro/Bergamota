@@ -2,11 +2,11 @@
 
 ## Task 1: Extend the bounded Q6Core response parser
 
-- [ ] Add a fixed-size service record type and bounded array to the APR response structure.
-- [ ] Decode `(service_id, api_version, api_branch_version)` records only after the existing header/count/exact-length checks pass.
-- [ ] Extend the compiled helper fixture to assert known records, zero records, and malformed/truncated lengths.
-- [ ] Add patch contract coverage proving no second command or AFE/ASM/ADM opcode is introduced.
-- [ ] Replay the patch series through 1163 and run focused and full local suites.
+- [x] Add a fixed-size service record type and bounded array to the APR response structure.
+- [x] Decode `(service_id, api_version, api_branch_version)` records only after the existing header/count/exact-length checks pass.
+- [x] Extend the compiled helper fixture to assert known records, zero records, and malformed/truncated lengths.
+- [x] Add patch contract coverage proving no second command or AFE/ASM/ADM opcode is introduced.
+- [x] Replay the patch series through 1163 and run focused (47/47) and full (50/50) local suites.
 
 ## Task 2: Review, CI, and package the diagnostic image
 

@@ -365,6 +365,12 @@ main(void)
 	    BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION);
 	assert(parsed.major == 1 && parsed.minor == 2 && parsed.branch == 3);
 	assert(parsed.subbranch == 4 && parsed.service_count == 2);
+	assert(parsed.services[0].service_id == 3);
+	assert(parsed.services[0].api_version == 0x10001);
+	assert(parsed.services[0].api_branch_version == 0x22);
+	assert(parsed.services[1].service_id == 7);
+	assert(parsed.services[1].api_version == 0x20002);
+	assert(parsed.services[1].api_branch_version == 0x33);
 	memcpy(captured_apr_v1_response, captured_apr_v1_response_prefix,
 	    sizeof(captured_apr_v1_response_prefix));
 	assert(beryllium_adsp_apr_parse_response(captured_apr_v1_response,
@@ -372,6 +378,20 @@ main(void)
 	    BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION);
 	assert(parsed.major == 2 && parsed.minor == 8 && parsed.branch == 0);
 	assert(parsed.subbranch == 0 && parsed.service_count == 8);
+	assert(parsed.services[0].service_id == 3);
+	assert(parsed.services[0].api_version == 1);
+	assert(parsed.services[0].api_branch_version == 0);
+
+	make_apr_header(response, 40, BERYLLIUM_ADSP_APR_RSP_GET_FWK_VERSION);
+	put32(response + 20, 1);
+	put32(response + 24, 2);
+	put32(response + 28, 3);
+	put32(response + 32, 4);
+	put32(response + 36, 0);
+	assert(beryllium_adsp_apr_parse_response(response, 40, &parsed) ==
+	    BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION);
+	assert(parsed.service_count == 0);
+
 	memcpy(malformed_apr_response, captured_apr_v1_response,
 	    sizeof(captured_apr_v1_response));
 	put16(malformed_apr_response, 0x0182); /* unsupported APR version */
