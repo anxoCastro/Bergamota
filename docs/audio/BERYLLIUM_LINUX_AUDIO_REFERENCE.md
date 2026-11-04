@@ -114,6 +114,19 @@ board selects the QUAT MI2S and SD0 pin groups. The UCM `HiFi.conf` enables the
 configuration 4 and playback volume 35. Those mixer and amplifier settings
 are separate from the AFE port configuration.
 
+```mermaid
+flowchart LR
+    alsa[ALSA PCM: MultiMedia1] --> asm[Q6ASM front end]
+    asm -->|mapped PCM periods| dsp[ADSP audio graph]
+    asm -->|session ID| adm[Q6ADM COPP + matrix]
+    ucm[UCM mixer route] --> adm
+    adm --> afe[Q6AFE QUAT RX: 0x1006]
+    afe --> mi2s[QUAT MI2S: SD0]
+    mi2s --> tas[TAS2559/2560]
+    tas --> spk[Speaker]
+    ucm -.->|configuration and volume| tas
+```
+
 For PCM playback, `q6asm_dai_prepare()` maps the PCM period buffer into the
 DSP shared-memory pool, opens an ASM write stream using the multi-channel PCM
 format, registers the session with q6routing, and sends the PCM media-format
