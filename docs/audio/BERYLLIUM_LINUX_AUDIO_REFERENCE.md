@@ -152,20 +152,71 @@ the latter kind of hardware stream ID and installs an Apps SMMU mapping.
 Passing `1` to that helper just because Linux calls its low-nibble value
 `sid` would conflate two different fields.
 
-The XNU port needs to reproduce Linux's DMA address, Q6ASM memory-map handle,
-and period-write lifecycle, but the exact relationship between the Q6ASM
-address's high word and the Apps SMMU's hardware match must be established
-before sending ASM commands. The current source audit has not established
-that mapping on XNU or validated a DSP-visible PCM buffer. Before any Q6ASM
-map/write experiment, inspect the existing Apps SMMU SMR/S2CR entry for the
-full `0x1821` stream matcher and trace how Linux's DMA address is consumed by
-the DSP. This is a source-level requirement, not a tested XNU implementation.
+Linux's Q6ASM DAI allocates its PCM buffer as a device DMA buffer, and its
+device is attached to Apps SMMU stream `0x1821`. Thus `dma_buffer.addr` is the
+DMA/IOMMU address supplied for that device; the DAI adds the stream's low
+nibble in bits 32–35 before APR sends the address to ASM. A comparable XNU
+implementation on Redwood confirms the split: the low address is an IOVA,
+bits 32–35 carry the low nibble, and the full stream ID selects the Apps SMMU
+translation. Its SMMU code maps each 4 KiB IOVA page to the kernel buffer's
+physical page. This resolves the address format; the active Beryllium
+SMR/S2CR state and a safe IOVA range still need a read-only hardware check.
+
+XNU already has `sweet_smmu_map_sid()`, but it creates a shared identity map
+for DRAM. That is not the per-buffer IOVA-to-physical mapping required by the
+Linux Q6ASM address contract. Do not pass `1` to that helper or reuse the
+Redwood port's fixed IOVA without checking Beryllium's DMA range.
+
+The existing `sweet_smmu_probe_sid(sid, level)` helper is read-only: at level
+0 it reports matching SMR/S2CR entries without changing the stream or a
+context bank. The framebuffer diagnostics currently use it for display SIDs
+`0x880` and `0xc80`; no `0x1821` observation has been captured yet. Reuse this
+probe for the first Beryllium audio SMMU check instead of adding another raw
+MMIO reader. Only after recording the current match should a later experiment
+consider a dedicated translation for full stream `0x1821`; any existing
+translated or fault mapping must remain untouched unless its ownership is
+established.
 
 The TAS2559 driver is another required layer: the DTS gives it I2C addresses
 `0x4c`/`0x4d` and reset GPIOs, while the driver loads its firmware and exposes
 the configuration and volume controls used by UCM. The DAI's pinmux and the
 I2C amplifier setup must both work for speaker output. This route is distinct
 from the WCD9340/SLIMbus route used by headphones and microphones.
+
+## Cross-port XNU reference: HakiOS Redwood audio
+
+The public HakiOS Redwood implementation separates the audio path into four
+bring-up levels: AFE pins/clock; ASM + ADM plus a finite test tone with the
+amplifiers off; the same tone with the amplifiers enabled; then iOS output
+through a userland audio plug-in. Its `redwood_sound.c` uses the same Q6ASM
+shared-memory map, `OPEN_WRITE_V3`, ADM COPP open/matrix map, PCM format,
+RUN, WRITE_V2 periods and write-done event cycle described above. This is a
+useful sequencing reference for the next Beryllium stage: prove SMMU + ASM +
+ADM with the TAS amplifiers kept off before testing the speaker path.
+
+That code also makes the memory relationship concrete. Redwood's DSP stream
+is `0x1801`; its Android device tree supplies a fixed IOVA pool at
+`0x10000000`. The XNU driver builds a dedicated Apps SMMU context and maps
+that IOVA window page by page to its kernel buffer, then sends
+`IOVA | (1ULL << 32)` to Q6ASM. The low nibble `1` is the DSP-side address
+field; `0x1801` is the SMMU stream matcher. Redwood first checks existing
+ownership: if the stream is already in bypass, it keeps that mapping and uses
+the buffer's physical address only after confirming every page is contiguous;
+if the stream has a translated or fault mapping, or a candidate context is
+already active, it stops without taking it over. When it installs its own
+translation, it restores the previous SMR/S2CR routing and prior context-bank
+enable state on shutdown; the now-disabled candidate bank's programmed table
+registers remain in place. Beryllium uses stream `0x1821`, and the audited
+Linux DTS does not declare Redwood's fixed IOVA pool, so both the stream and
+allocation range need to come from Beryllium's own state.
+
+For the iOS boundary, HakiOS's `AudioServerPlugIn` presents a speaker device
+to the audio server and writes its mixed 48 kHz, stereo PCM to a kernel
+character device. A kernel ring buffer decouples the real-time userland writer
+from the DSP's period/write-done cadence. That is a practical architecture
+reference, while plugin loading, routing UIDs and buffer format still need to
+be checked against this iOS 26 image. The Redwood amplifier and TDM constants
+are device-specific and do not apply to Beryllium's TAS2559 + QUAT MI2S path.
 
 ## XNU port boundary and later stages
 
@@ -198,3 +249,7 @@ these paths already work in XNU.
 - [Q6ADM driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6adm.c)
 - [Q6 routing driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6routing.c)
 - [Beryllium ALSA UCM profile](https://gitlab.com/sdm845-mainline/alsa-ucm-conf/-/blob/sdm845-phones/ucm2/Xiaomi/beryllium/HiFi.conf)
+- [HakiOS Redwood Q6AFE/Q6ASM/Q6ADM + SMMU path](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/base/xnu/files/bsd/dev/redwood_sound.c)
+- [HakiOS Redwood iOS AudioServerPlugIn](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/userland/userland/src/audio_plugin.c)
+- [HakiOS Redwood kernel audio sink and character device](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/base/xnu/files/bsd/dev/redwood_audio.c)
+- [Bergamota XNU shared identity-mapping SMMU helper](../../xnu/patches-12377/0094-beryllium-usb-guctl1-smmu.patch)
