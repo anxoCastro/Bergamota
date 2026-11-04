@@ -57,7 +57,7 @@
 
 ### Task 3: Review, CI, image, and RAM-boot validation
 
-- [ ] Complete an independent read-only code review and fix Critical or Important findings.
+- [x] Complete an independent read-only code review; no Critical, Important, or Minor findings.
 - [ ] Update `NOTES.md`, commit without co-author trailers, push, and dispatch XNU 26.5 CI; record the exact run and pinned SHA.
 - [ ] Verify the artifact checksum, empty `errors.txt`, patch application, `XNU Build Done`, and parser strings.
 - [ ] Package a read-only image, unpack it, and byte-compare the loader and payload; verify required ADSP markers and no root-write boot args.
