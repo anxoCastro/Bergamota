@@ -61,5 +61,14 @@
 - [x] Update `NOTES.md`, commit without co-author trailers, push, and dispatch XNU 26.5 CI; record run `41804062688` pinned to `c0cfbeab98972950fe07723299100845620b1833`.
 - [x] Verify the artifact checksum, empty `errors.txt`, patch application, `XNU Build Done`, and parser strings.
 - [x] Package a read-only image, unpack it, and byte-compare the loader and payload; verify required ADSP markers and no root-write boot args.
-- [ ] When Fastboot enumerates as unlocked `beryllium`, run `fastboot boot` only and isolate the UDP capture. Record APR result, mount evidence, and UI evidence separately.
-- [ ] Update `NOTES.md` with exact test, CI, image, capture, and remaining blocker details.
+- [x] When Fastboot enumerates as unlocked `beryllium`, run `fastboot boot` only and isolate the UDP capture. Record APR result, mount evidence, and UI evidence separately.
+- [x] Update `NOTES.md` with exact test, CI, image, capture, and remaining blocker details.
+
+### Task 4: Test the read-only userdata hypothesis
+
+**Ruling and result:** The user attributed the missing SpringBoard to read-only `userdata`. A temporary RAM boot with `ufsrw=1 rootrw=1` reported userdata read-write, launched SpringBoard and backboardd, and logged framebuffer swaps; it had no EROFS, `mount[3] exited`, or panic. This supports the mount hypothesis. No direct screen confirmation was captured after this boot. No partition or GPT image was written.
+
+- [x] Record the 1162 read-only boot result and distinguish the user's screen observation from kernel-log evidence.
+- [x] Build and unpack a rootrw image using the same 1162 kernel, ADT, and Enxerto loader; verify payload/loader byte matches and boot arguments.
+- [x] Recheck one unlocked `beryllium` Fastboot target; start UDP/5140 capture and use `fastboot boot` only.
+- [x] Inspect userdata mount status and SpringBoard/process evidence; record the user's screen observation separately.
