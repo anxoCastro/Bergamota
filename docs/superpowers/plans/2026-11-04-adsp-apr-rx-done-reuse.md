@@ -45,6 +45,6 @@
 - [x] Add `BERYLLIUM_ADSP_GLINK_CMD_RX_DONE_W_REUSE = 14`, recognize it in frame-length parsing, and route it through the strict completion path with a distinct diagnostic.
 - [x] Replay patches 1131–1160 and compare the staged source (exact apply and source comparison passed); run tests (45/45 focused, 48/48 full). After review, add a compiled harness for the exact handler guard, covering success, mismatched channel/intent, duplicate completion and consume failure.
 - [x] Commit and push the patch, tests, spec, plan, and handoff; dispatch the XNU 26.5 GitHub Actions build (`0147b720203facee4164f6ecfec5a5bca723c8bb`, run 41738200069).
-- [ ] Verify the pinned CI commit and kernel artifact, then package a read-only image with `sweetarm64e=1` and the existing ADSP 4 arguments.
-- [ ] RAM-boot the image and capture whether the matching reuse acknowledgement advances to a validated Q6Core response; also record mount/UI state without inferring from missing log lines.
-- [ ] Update `NOTES.md` with exact patch/commit, CI and artifact IDs, image/capture hashes, results, and remaining blocker. (Current code/test and prior retry-boot handoff recorded; add CI and patch-1160 boot evidence after those milestones.)
+- [x] Verify pinned commit `0147b720203facee4164f6ecfec5a5bca723c8bb` and kernel artifact `13283416375` from successful run 41738200069; package and round-trip-check the read-only arm64e image with the existing ADSP 4 arguments.
+- [x] RAM-boot and capture: matching `RX_DONE_W_REUSE` advances past command 14, but the APR payload parser rejects the Q6Core response. Record mount/UI state as unknown because no exit, panic, or SpringBoard evidence appears.
+- [x] Update `NOTES.md` with commit, CI/artifact, image/capture hashes, exact results, and the next response-payload diagnostic.
