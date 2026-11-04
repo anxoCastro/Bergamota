@@ -1,0 +1,226 @@
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -17,12 +17,30 @@
+ #define BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT 0x000110e8u
+ #define BERYLLIUM_ADSP_AFE_CMD_GET_PARAM_V2 0x000100f0u
+ #define BERYLLIUM_ADSP_AFE_RSP_GET_PARAM_V2 0x00010106u
++#define BERYLLIUM_ADSP_AFE_CMD_DEVICE_START 0x000100e5u
++#define BERYLLIUM_ADSP_AFE_CMD_DEVICE_STOP 0x000100e6u
++#define BERYLLIUM_ADSP_AFE_CMD_SET_PARAM_V2 0x000100efu
++#define BERYLLIUM_ADSP_AFE_CMD_SVC_SET_PARAM 0x000100f3u
+ #define BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX 0x1006u
+ #define BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN 22u
+ #define BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE 0x0001020cu
+ #define BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG 0x0001020du
++#define BERYLLIUM_ADSP_AFE_MODULE_CLOCK_SET 0x0001028fu
++#define BERYLLIUM_ADSP_AFE_PARAM_CLOCK_SET 0x00010290u
+ #define BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES 12u
+ #define BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES 20u
++#define BERYLLIUM_ADSP_AFE_I2S_PORT_CONFIG_BYTES 36u
++#define BERYLLIUM_ADSP_AFE_CLOCK_SET_CONFIG_BYTES 20u
++#define BERYLLIUM_ADSP_AFE_CLOCK_SET_PACKET_BYTES \
++	(BERYLLIUM_ADSP_APR_HEADER_BYTES + 16u + \
++	 BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES + \
++	 BERYLLIUM_ADSP_AFE_CLOCK_SET_CONFIG_BYTES)
++#define BERYLLIUM_ADSP_AFE_I2S_SET_PARAM_PACKET_BYTES \
++	(BERYLLIUM_ADSP_APR_HEADER_BYTES + 16u + \
++	 BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES + \
++	 BERYLLIUM_ADSP_AFE_I2S_PORT_CONFIG_BYTES)
++#define BERYLLIUM_ADSP_AFE_DEVICE_PACKET_BYTES \
++	(BERYLLIUM_ADSP_APR_HEADER_BYTES + 4u)
+ #define BERYLLIUM_ADSP_AFE_GET_PARAM_BYTES \
+ 	(BERYLLIUM_ADSP_APR_HEADER_BYTES + 24u + \
+ 	 BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES + BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES)
+@@ -108,6 +126,11 @@
+ 	struct beryllium_adsp_afe_i2s_config i2s;
+ };
+ 
++struct beryllium_adsp_afe_basic_result {
++	uint32_t request_opcode;
++	uint32_t status;
++};
++
+ static inline size_t
+ beryllium_adsp_apr_response_dump_bytes(size_t payload_bytes)
+ {
+@@ -195,6 +218,170 @@
+ 	return true;
+ }
+ 
++static inline bool
++beryllium_adsp_apr_encode_afe_clock_set(uint8_t *packet,
++	size_t packet_capacity, size_t *packet_bytes, bool enable)
++{
++	if (packet == NULL || packet_bytes == NULL ||
++	    packet_capacity < BERYLLIUM_ADSP_AFE_CLOCK_SET_PACKET_BYTES) {
++		return false;
++	}
++	for (size_t i = 0; i < BERYLLIUM_ADSP_AFE_CLOCK_SET_PACKET_BYTES; i++) {
++		packet[i] = 0;
++	}
++	beryllium_adsp_apr_put16(packet, BERYLLIUM_ADSP_APR_SEQ_CMD_HDR_FIELD);
++	beryllium_adsp_apr_put16(packet + 2,
++	    BERYLLIUM_ADSP_AFE_CLOCK_SET_PACKET_BYTES);
++	packet[4] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
++	packet[5] = BERYLLIUM_ADSP_APR_DOMAIN_APPS;
++	packet[8] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
++	packet[9] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
++	beryllium_adsp_apr_put32(packet + 12,
++	    BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN);
++	beryllium_adsp_apr_put32(packet + 16,
++	    BERYLLIUM_ADSP_AFE_CMD_SVC_SET_PARAM);
++	beryllium_adsp_apr_put32(packet + BERYLLIUM_ADSP_APR_HEADER_BYTES, 32u);
++	beryllium_adsp_apr_put32(packet + 36,
++	    BERYLLIUM_ADSP_AFE_MODULE_CLOCK_SET);
++	beryllium_adsp_apr_put32(packet + 40,
++	    BERYLLIUM_ADSP_AFE_PARAM_CLOCK_SET);
++	beryllium_adsp_apr_put16(packet + 44,
++	    BERYLLIUM_ADSP_AFE_CLOCK_SET_CONFIG_BYTES);
++	beryllium_adsp_apr_put32(packet + 48, 1u);
++	beryllium_adsp_apr_put32(packet + 52, 0x106u);
++	beryllium_adsp_apr_put32(packet + 56, enable ? 1536000u : 0u);
++	beryllium_adsp_apr_put16(packet + 60, 1u);
++	beryllium_adsp_apr_put16(packet + 62, 0u);
++	beryllium_adsp_apr_put32(packet + 64, enable ? 1u : 0u);
++	*packet_bytes = BERYLLIUM_ADSP_AFE_CLOCK_SET_PACKET_BYTES;
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_afe_i2s_set_param(uint8_t *packet,
++	size_t packet_capacity, size_t *packet_bytes)
++{
++	if (packet == NULL || packet_bytes == NULL ||
++	    packet_capacity < BERYLLIUM_ADSP_AFE_I2S_SET_PARAM_PACKET_BYTES) {
++		return false;
++	}
++	for (size_t i = 0; i < BERYLLIUM_ADSP_AFE_I2S_SET_PARAM_PACKET_BYTES; i++) {
++		packet[i] = 0;
++	}
++	beryllium_adsp_apr_put16(packet, BERYLLIUM_ADSP_APR_SEQ_CMD_HDR_FIELD);
++	beryllium_adsp_apr_put16(packet + 2,
++	    BERYLLIUM_ADSP_AFE_I2S_SET_PARAM_PACKET_BYTES);
++	packet[4] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
++	packet[5] = BERYLLIUM_ADSP_APR_DOMAIN_APPS;
++	packet[8] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
++	packet[9] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
++	beryllium_adsp_apr_put32(packet + 12,
++	    BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN);
++	beryllium_adsp_apr_put32(packet + 16,
++	    BERYLLIUM_ADSP_AFE_CMD_SET_PARAM_V2);
++	beryllium_adsp_apr_put16(packet + 20,
++	    BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX);
++	beryllium_adsp_apr_put16(packet + 22,
++	    BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES +
++	    BERYLLIUM_ADSP_AFE_I2S_PORT_CONFIG_BYTES);
++	beryllium_adsp_apr_put32(packet + 36,
++	    BERYLLIUM_ADSP_AFE_MODULE_AUDIO_DEV_INTERFACE);
++	beryllium_adsp_apr_put32(packet + 40,
++	    BERYLLIUM_ADSP_AFE_PARAM_I2S_CONFIG);
++	beryllium_adsp_apr_put16(packet + 44,
++	    BERYLLIUM_ADSP_AFE_I2S_PORT_CONFIG_BYTES);
++	beryllium_adsp_apr_put32(packet + 48, 1u);
++	beryllium_adsp_apr_put16(packet + 52, 16u);
++	beryllium_adsp_apr_put16(packet + 54, 1u);
++	beryllium_adsp_apr_put16(packet + 56, 1u);
++	beryllium_adsp_apr_put16(packet + 58, 1u);
++	beryllium_adsp_apr_put32(packet + 60, 48000u);
++	*packet_bytes = BERYLLIUM_ADSP_AFE_I2S_SET_PARAM_PACKET_BYTES;
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_afe_device_command(uint8_t *packet,
++	size_t packet_capacity, size_t *packet_bytes, bool start)
++{
++	if (packet == NULL || packet_bytes == NULL ||
++	    packet_capacity < BERYLLIUM_ADSP_AFE_DEVICE_PACKET_BYTES) {
++		return false;
++	}
++	for (size_t i = 0; i < BERYLLIUM_ADSP_AFE_DEVICE_PACKET_BYTES; i++) {
++		packet[i] = 0;
++	}
++	beryllium_adsp_apr_put16(packet, BERYLLIUM_ADSP_APR_SEQ_CMD_HDR_FIELD);
++	beryllium_adsp_apr_put16(packet + 2,
++	    BERYLLIUM_ADSP_AFE_DEVICE_PACKET_BYTES);
++	packet[4] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
++	packet[5] = BERYLLIUM_ADSP_APR_DOMAIN_APPS;
++	packet[8] = BERYLLIUM_ADSP_APR_AFE_SERVICE;
++	packet[9] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
++	beryllium_adsp_apr_put32(packet + 12,
++	    BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN);
++	beryllium_adsp_apr_put32(packet + 16, start ?
++	    BERYLLIUM_ADSP_AFE_CMD_DEVICE_START :
++	    BERYLLIUM_ADSP_AFE_CMD_DEVICE_STOP);
++	beryllium_adsp_apr_put16(packet + 20,
++	    BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX);
++	*packet_bytes = BERYLLIUM_ADSP_AFE_DEVICE_PACKET_BYTES;
++	return true;
++}
++
++static inline enum beryllium_adsp_afe_response_kind
++beryllium_adsp_apr_parse_afe_basic_result(const uint8_t *packet,
++	size_t packet_bytes, uint32_t expected_request_opcode,
++	struct beryllium_adsp_afe_basic_result *result)
++{
++	uint16_t header_field;
++	uint16_t declared_bytes;
++	uint8_t header_version;
++	uint8_t header_words;
++	uint8_t message_type;
++	size_t header_bytes;
++	const uint8_t *body;
++
++	if (packet == NULL || result == NULL || expected_request_opcode == 0 ||
++	    packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    packet_bytes > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	header_field = beryllium_adsp_apr_get16(packet);
++	header_version = (uint8_t)(header_field & 0x000fu);
++	header_words = (uint8_t)((header_field & 0x00f0u) >> 4);
++	message_type = (uint8_t)((header_field & 0x0300u) >> 8);
++	header_bytes = (size_t)header_words * 4u;
++	if (header_version > 1u || message_type != 1u ||
++	    (header_field & 0xfc00u) != 0 ||
++	    header_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    header_bytes > packet_bytes) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	declared_bytes = beryllium_adsp_apr_get16(packet + 2);
++	if (declared_bytes != packet_bytes ||
++	    packet[4] != BERYLLIUM_ADSP_APR_AFE_SERVICE ||
++	    packet[5] != BERYLLIUM_ADSP_APR_DOMAIN_ADSP ||
++	    beryllium_adsp_apr_get16(packet + 6) != 0 ||
++	    packet[8] != BERYLLIUM_ADSP_APR_AFE_SERVICE ||
++	    packet[9] != BERYLLIUM_ADSP_APR_DOMAIN_APPS ||
++	    beryllium_adsp_apr_get16(packet + 10) != 0 ||
++	    beryllium_adsp_apr_get32(packet + 12) !=
++	    BERYLLIUM_ADSP_AFE_QUAT_MI2S_TOKEN ||
++	    beryllium_adsp_apr_get32(packet + 16) !=
++	    BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT ||
++	    packet_bytes != header_bytes + 8u) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	body = packet + header_bytes;
++	result->request_opcode = beryllium_adsp_apr_get32(body);
++	if (result->request_opcode != expected_request_opcode) {
++		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
++	}
++	result->status = beryllium_adsp_apr_get32(body + 4);
++	return BERYLLIUM_ADSP_AFE_RESPONSE_BASIC_RESULT;
++}
++
+ /* Compute the aligned GLINK frame length without reading past available bytes. */
+ static inline enum beryllium_adsp_glink_frame_status
+ beryllium_adsp_apr_glink_frame_bytes(const uint8_t *frame, size_t available,
+@@ -578,7 +765,7 @@
+ 		return BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED;
+ 	}
+ 	response->status = beryllium_adsp_apr_get32(body);
+-	if (response->status != 0 && body_bytes == 4u) {
++	if (response->status != 0) {
+ 		return BERYLLIUM_ADSP_AFE_RESPONSE_STATUS;
+ 	}
+ 	if (body_bytes != 4u + BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES +

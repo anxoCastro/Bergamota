@@ -30,6 +30,7 @@ APR_REJECTED_PAYLOAD_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1161-berylliu
 APR_V1_RESPONSE_HEADER_PATCH = ROOT / "xnu/patches-12377/1162-beryllium-adsp-apr-v1-response-header.patch"
 APR_SERVICE_API_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1163-beryllium-adsp-q6core-service-api-diagnostics.patch"
 AFE_GET_PARAM_PATCH = ROOT / "xnu/patches-12377/1164-beryllium-adsp-afe-get-param-readonly.patch"
+LINUX_AFE_LIFECYCLE_PATCH = ROOT / "xnu/patches-12377/1165-beryllium-adsp-linux-afe-lifecycle.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -927,6 +928,49 @@ main(void)
 
 
 class AdspAprMode4Tests(unittest.TestCase):
+    def test_compiled_linux_afe_helper_packets(self):
+        header_path = "bsd/dev/beryllium_adsp_apr_probe.h"
+        helper_patches = [
+            APR_MODE4_PATCH,
+            FASTRPC_OPEN_PATCH,
+            IPCRTR_OPEN_PATCH,
+            GLINK_SSR_OPEN_PATCH,
+            LOOPBACK_CTL_LPASS_OPEN_PATCH,
+            APR_APPS2_OPEN_PATCH,
+            APR_INTENT_ID_ZERO_PATCH,
+            APR_RX_DONE_REUSE_PATCH,
+            APR_REJECTED_PAYLOAD_DIAGNOSTICS_PATCH,
+            APR_V1_RESPONSE_HEADER_PATCH,
+            APR_SERVICE_API_DIAGNOSTICS_PATCH,
+            AFE_GET_PARAM_PATCH,
+        ]
+        harness = ROOT / "tools/tests/test_adsp_linux_afe.c"
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            for patch in helper_patches:
+                subprocess.run(["git", "apply", f"--include={header_path}",
+                                str(patch)], cwd=work, check=True,
+                               capture_output=True, text=True)
+            if LINUX_AFE_LIFECYCLE_PATCH.is_file():
+                subprocess.run(["git", "apply", f"--include={header_path}",
+                                str(LINUX_AFE_LIFECYCLE_PATCH)], cwd=work,
+                               check=True, capture_output=True, text=True)
+            executable = work / "test-linux-afe"
+            compile_result = subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                "-I", str((work / header_path).parent), str(harness),
+                "-o", str(executable),
+            ], check=False, capture_output=True, text=True)
+            self.assertEqual(compile_result.returncode, 0,
+                             compile_result.stderr)
+            result = subprocess.run([str(executable)], check=False,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(),
+                             "Linux AFE packet helper checks passed")
+
     def test_compiled_apr_mode4_helpers(self):
         self.assertTrue(APR_MODE4_PATCH.is_file(),
                         "patch 1150 must provide the production APR helper header")
