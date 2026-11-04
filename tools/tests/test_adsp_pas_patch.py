@@ -32,6 +32,7 @@ APR_SERVICE_API_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1163-beryllium-ads
 AFE_GET_PARAM_PATCH = ROOT / "xnu/patches-12377/1164-beryllium-adsp-afe-get-param-readonly.patch"
 LINUX_AFE_LIFECYCLE_PATCH = ROOT / "xnu/patches-12377/1165-beryllium-adsp-linux-afe-lifecycle.patch"
 LINUX_AFE_MODE5_PATCH = ROOT / "xnu/patches-12377/1166-beryllium-adsp-linux-afe-mode5.patch"
+LINUX_SMMU_AUDIO_PROBE_PATCH = ROOT / "xnu/patches-12377/1167-beryllium-adsp-smmu-audio-sid-readonly.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -70,6 +71,21 @@ def added_function_body(section: str, name: str) -> str:
     raise AssertionError(f"body for {name} is not closed in patch")
 
 
+def c_function_definition(source: str, name: str) -> str:
+    match = re.search(rf"(?m)^void\s+{re.escape(name)}\s*\(\s*void\s*\)\s*\{{", source)
+    if not match:
+        raise AssertionError(f"function {name} not found in replayed source")
+    depth = 0
+    for index in range(match.start(), len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[match.start() : index + 1]
+    raise AssertionError(f"function {name} is not closed in replayed source")
+
+
 class AdspPasPatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -94,7 +110,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1166:
+                if not 1131 <= number <= 1167:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -114,6 +130,121 @@ class AdspPasPatchTests(unittest.TestCase):
         self.assertLess(start.index("adsp_remote_ready"), start.index('adsp_pas_call("INIT_IMAGE"'))
         self.assertLess(start.index("adsp_remote_fatal"), start.index('adsp_pas_call("INIT_IMAGE"'))
         self.assertIn("physical state unknown", start)
+
+    def test_audio_smmu_mode_six_reads_only_stream_0x1821(self):
+        probe = c_function_definition(self.latest_driver, "beryllium_adsp_probe")
+        harness = r"""
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+#define BERYLLIUM_ADSP_PREFLIGHT 7
+static bool adsp_probe_enabled;
+static bool adsp_pas_requested;
+static bool adsp_glink_requested;
+static bool adsp_apr_requested;
+static bool adsp_linux_afe_requested;
+static int adsp_state;
+static int boot_mode, helper_result, parse_calls, smp2p_calls;
+static int smmu_calls, last_sid, last_level;
+static bool board_is_beryllium, boot_arg_present;
+
+static bool sweet_board_beryllium(void);
+static int PE_parse_boot_argn(const char *, void *, size_t);
+static bool beryllium_adsp_glink_mode_valid(int);
+static bool beryllium_adsp_glink_mode_requests_pas(int);
+static bool beryllium_adsp_glink_mode_requests_glink(int);
+static void adsp_smp2p_readonly_probe(bool);
+static int sweet_smmu_probe_sid(unsigned, unsigned);
+
+__PROBE__
+
+static bool sweet_board_beryllium(void) { return board_is_beryllium; }
+static int PE_parse_boot_argn(const char *name, void *out, size_t bytes) {
+	parse_calls++;
+	if (strcmp(name, "sweetadsp") != 0 || !boot_arg_present || bytes != sizeof(int)) return 0;
+	memcpy(out, &boot_mode, sizeof(boot_mode));
+	return 1;
+}
+static bool beryllium_adsp_glink_mode_valid(int mode) { return mode >= 1 && mode <= 5; }
+static bool beryllium_adsp_glink_mode_requests_pas(int mode) { return mode >= 2 && mode <= 5; }
+static bool beryllium_adsp_glink_mode_requests_glink(int mode) { return mode >= 3 && mode <= 5; }
+static void adsp_smp2p_readonly_probe(bool unused) { (void)unused; smp2p_calls++; }
+int sweet_smmu_probe_sid(unsigned sid, unsigned level) {
+	smmu_calls++;
+	last_sid = (int)sid;
+	last_level = (int)level;
+	return helper_result;
+}
+
+static void reset_state(int mode, bool board, int result) {
+	adsp_probe_enabled = adsp_pas_requested = adsp_glink_requested = false;
+	adsp_apr_requested = adsp_linux_afe_requested = false;
+	adsp_state = 0;
+	boot_mode = mode;
+	helper_result = result;
+	parse_calls = smp2p_calls = smmu_calls = 0;
+	last_sid = last_level = -1;
+	board_is_beryllium = board;
+	boot_arg_present = true;
+}
+
+int main(void) {
+	const bool want_pas[] = { false, false, true, true, true, true };
+	const bool want_glink[] = { false, false, false, true, true, true };
+	const bool want_apr[] = { false, false, false, false, true, true };
+	const bool want_afe[] = { false, false, false, false, false, true };
+	(void)sweet_smmu_probe_sid(0x1821, 0);
+	for (int mode = 1; mode <= 5; mode++) {
+		reset_state(mode, true, 3);
+		beryllium_adsp_probe();
+		if (!adsp_probe_enabled || adsp_pas_requested != want_pas[mode] ||
+		    adsp_glink_requested != want_glink[mode] || adsp_apr_requested != want_apr[mode] ||
+		    adsp_linux_afe_requested != want_afe[mode] || smp2p_calls != 1 || smmu_calls != 0) {
+			fprintf(stderr, "existing ADSP mode %d changed: enabled=%d pas=%d glink=%d apr=%d afe=%d smp2p=%d smmu=%d\n",
+			    mode, adsp_probe_enabled, adsp_pas_requested, adsp_glink_requested,
+			    adsp_apr_requested, adsp_linux_afe_requested, smp2p_calls, smmu_calls);
+			return 1;
+		}
+	}
+	const int results[] = { 2, 4, -1 };
+	for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
+		reset_state(6, true, results[i]);
+		beryllium_adsp_probe();
+		if (smmu_calls != 1 || last_sid != 0x1821 || last_level != 0 ||
+		    adsp_probe_enabled || adsp_pas_requested || adsp_glink_requested ||
+		    adsp_apr_requested || adsp_linux_afe_requested || smp2p_calls != 0) {
+			fprintf(stderr, "mode 6 did not remain a standalone level-0 SMMU read\n");
+			return 2;
+		}
+	}
+	reset_state(6, false, 2);
+	beryllium_adsp_probe();
+	if (parse_calls != 0 || smmu_calls != 0 || adsp_probe_enabled || smp2p_calls != 0) {
+		fprintf(stderr, "non-Beryllium board entered the audio SMMU probe\n");
+		return 3;
+	}
+	puts("ADSP audio SMMU mode checks passed");
+	return 0;
+}
+""".replace("__PROBE__", probe)
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "test-smmu-mode.c"
+            executable = work / "test-smmu-mode"
+            source.write_text(harness)
+            compile_result = subprocess.run(
+                ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(executable)],
+                check=False, capture_output=True, text=True)
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run([str(executable)], check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.stdout.splitlines()[-1], "ADSP audio SMMU mode checks passed")
+            for status in ("-> 2", "-> 4", "-> -1"):
+                self.assertIn(status, result.stdout)
+        patch_text = LINUX_SMMU_AUDIO_PROBE_PATCH.read_text()
+        self.assertEqual(patch_text.count("diff --git "), 1)
 
     def test_all_firmware_and_carveout_gates_precede_pas_mutation(self):
         start = added_function_body(self.driver, "beryllium_adsp_pas_start")

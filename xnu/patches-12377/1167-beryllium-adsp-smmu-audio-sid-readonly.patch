@@ -1,0 +1,25 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 20f215c..1c57aaf 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -47,6 +47,7 @@ extern int sweet_gic_spi_config_snapshot(unsigned int, uint32_t *, uint32_t *,
+     uint32_t *, uint64_t *, uint64_t *, uint64_t *);
+ extern int sweet_gic_spi_enable_edge(unsigned int);
+ extern uint32_t sweet_q6v5_wdog_irq_count_get(void);
++extern int sweet_smmu_probe_sid(unsigned sid, unsigned level);
+ extern vnode_t rootvnode;
+ 
+ #define ADSP_FW_PATH             "/usr/standalone/firmware/sweet/adsp.mdt"
+@@ -3443,6 +3444,12 @@ beryllium_adsp_probe(void)
+ 		return;
+ 	}
+ 	(void)PE_parse_boot_argn("sweetadsp", &mode, sizeof(mode));
++	if (mode == 6) {
++		int result = sweet_smmu_probe_sid(0x1821, 0);
++		printf("SWEET ADSP: read-only audio SMMU probe sid 0x1821 level 0 -> %d (0 none, 1 bypass, 2 translate, 3 fault, 4 mixed, -1 unavailable/busy)\n",
++		    result);
++		return;
++	}
+ 	if (!beryllium_adsp_glink_mode_valid(mode)) {
+ 		return;
+ 	}
