@@ -11,8 +11,9 @@
 ## Task 2: Review, commit, and build
 
 - [x] Review the generated 1164 patch for APR header fields, packet lengths, bounded reads, intent ownership, and accidental active-route commands.
-- [ ] Commit the implementation and documentation without a co-author trailer; push the branch.
-- [ ] Dispatch the KDK-enabled XNU 26.5 build with `gh`; verify the pinned SHA, patch application, successful build, artifact checksums, and empty `errors.txt`.
+- [x] Commit `2c097b7` and push the implementation/documentation without a co-author trailer.
+- [x] Dispatch the KDK-enabled XNU 26.5 build with `gh` (run [41893839513](https://github.com/anxoCastro/Bergamota/actions/runs/41893839513), pinned to `2c097b7626c7f328f8c84606ec69b0220f4ca5ed`).
+- [ ] Verify patch application, successful build, artifact checksums, and empty `errors.txt`.
 
 ## Task 3: Query the AFE on Beryllium
 
