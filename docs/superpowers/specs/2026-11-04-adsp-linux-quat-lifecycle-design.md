@@ -69,8 +69,8 @@ be described as working speaker audio.
 
 ## Acceptance
 
-- Compiled helper tests assert exact bytes/lengths for clock enable/disable
-  encoders, the padded 36-byte I2S port configuration, start/stop packets,
+- Compiled helper tests assert exact bytes/lengths for the clock request
+  encoder, the padded 36-byte I2S port configuration, start/stop packets,
   and APR basic-result correlation/status handling.
 - A fixture matching the captured 80-byte GET_PARAM rejection parses as
   status 2 and never yields configuration data.

@@ -61,7 +61,8 @@ Steps:
 
 1. Add a focused helper-test registration that requires the next numbered
    patch and compiles the new C fixture against the generated helper header.
-2. Add fixture assertions for clock SET_PARAM, 36-byte I2S SET_PARAM_V2,
+2. Add fixture assertions for the 68-byte clock SET_PARAM, 84-byte
+   SET_PARAM_V2 containing a 36-byte I2S union,
    DEVICE_START/STOP, correlated APR basic-result status, mismatched opcode,
    token, endpoint, header and packet lengths, and the 80-byte status-2 GET
    fixture.
@@ -86,8 +87,9 @@ Steps:
    trailing output bytes while refusing to decode it as I2S configuration.
 4. Run the focused Python suite and compiled C fixture.
 
-Expected: Task 2's focused test passes; request packet lengths and fields
-match the documented Linux ABI exactly.
+Expected: Task 2's focused test passes; the request packets are 68, 84 and
+24 bytes as dictated by Linux's 20-byte APR request header and exact body
+layouts.
 
 Commit: `feat(audio): add Linux-compatible AFE packet helpers`.
 

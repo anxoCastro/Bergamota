@@ -68,10 +68,14 @@ The union is zero-initialized and `q6afe_port_start()` passes
 20 I2S bytes followed by 16 zero bytes. The parameter header is 12 bytes and
 the port command header is 16 bytes, making the complete APR packet 96 bytes.
 
-The clock SET_PARAM uses a 16-byte service command header, a 12-byte parameter
-header, and the 20-byte clock structure: 80 bytes total. Device start and stop
-packets are 36 bytes total (32-byte APR header plus a 4-byte port command).
-Linux waits for and correlates an APR basic-result response for each command.
+Linux requests use a 20-byte APR header. The clock SET_PARAM uses a 16-byte
+service command header, a 12-byte parameter header, and the 20-byte clock
+structure: **68 bytes total**. The port SET_PARAM_V2 is 84 bytes total
+(20-byte APR header + 16-byte port command header + 12-byte parameter header
++ 36-byte parameter). Device start and stop packets are **24 bytes total**
+(20-byte APR header + 4-byte port command). Linux waits for and correlates an
+APR basic-result response for each command. A DSP response can use a longer
+APR v1 header; that does not change the request header length.
 
 ## What the XNU probe observed
 
