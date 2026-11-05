@@ -44,6 +44,7 @@ MODE7_APR_ROUTE_PATCH = ROOT / "xnu/patches-12377/1176-beryllium-apr-linux-trans
 MODE7_APR_REPLY_ROUTE_PATCH = ROOT / "xnu/patches-12377/1177-beryllium-apr-linux-reply-route.patch"
 MODE7_APR_MAP_REPLY_PATCH = ROOT / "xnu/patches-12377/1178-beryllium-apr-dsp-map-reply.patch"
 MODE7_APR_MAP_REPLY_TOKEN_PATCH = ROOT / "xnu/patches-12377/1179-beryllium-apr-variable-map-reply-token.patch"
+MODE7_ADM_ZERO_COPP_PATCH = ROOT / "xnu/patches-12377/1180-beryllium-adm-zero-copp-id.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -1466,6 +1467,11 @@ class AdspAprMode4Tests(unittest.TestCase):
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(MODE7_APR_MAP_REPLY_TOKEN_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
+            self.assertTrue(MODE7_ADM_ZERO_COPP_PATCH.is_file(),
+                            "patch 1180 must accept Linux-valid ADM COPP ID zero")
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(MODE7_ADM_ZERO_COPP_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             compile_result = subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
@@ -1478,6 +1484,17 @@ class AdspAprMode4Tests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "APR mode-4 helper checks passed")
+
+    def test_mode7_accepts_linux_valid_zero_copp_id(self):
+        self.assertTrue(MODE7_ADM_ZERO_COPP_PATCH.is_file(),
+                        "patch 1180 must align ADM COPP ID validation with Linux")
+        patch = MODE7_ADM_ZERO_COPP_PATCH.read_text()
+        header = diff_section(patch, "bsd/dev/beryllium_adsp_apr_probe.h")
+        driver = diff_section(patch, "bsd/dev/beryllium_adsp.c")
+        self.assertIn("+\treturn *copp_id != 0x00ffu;", header)
+        self.assertIn("+\tif (copp_id == 0x00ffu ||", header)
+        self.assertIn("-\tif (copp_id == 0 ||", driver)
+        self.assertNotRegex(patch, r"(?m)^\+.*copp_id == 0 \|\|")
 
     def test_mode4_keeps_q6core_first_and_only_reads_afe_config(self):
         self.assertTrue(APR_MODE4_PATCH.is_file(), "patch 1150 is missing")

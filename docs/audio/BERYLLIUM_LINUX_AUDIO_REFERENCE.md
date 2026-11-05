@@ -192,6 +192,18 @@ ASM service 7/API 1.0 and ADM service 8/API 2.0 once each. A later ASM/ADM
 mode should reject missing, duplicate, or different-version service records
 before sending data.
 
+A read-only Beryllium RAM boot on 2026-11-05 captured the 40-byte ADM open
+response. Its 32-byte APR header has the expected reversed ADM route, token
+`0x00160000`, and response opcode `0x10329`; the 8-byte result is all zeroes,
+so status is 0 and the returned COPP ID is 0. The pinned Linux `q6adm.c`
+defines only `0xff` as `INVALID_COPP_ID` and stores any other returned ID,
+including 0. The prior XNU parser, matrix-map encoder, ADM-close encoder and
+mode-7 caller rejected 0, so the captured success response stopped the route
+before its matrix-map command. Patch 1180 aligns those checks with Linux,
+continues to reject `0xff`, and keeps the response status/reserved-word checks.
+The capture establishes a valid ADM open response; the matrix route, PCM
+format, AFE start and audible output remain untested.
+
 The Linux APR receive path dispatches a response using its `dest_svc` field to
 the registered service callback. On the return path, an ASM response therefore
 needs service 7 and domains ADSP (4) to APPS (5); ADM uses service 8 with the

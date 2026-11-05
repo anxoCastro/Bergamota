@@ -96,6 +96,13 @@ test_linux_asm_adm_packets(void)
 	    0x32, 0xe7, 0xd6, 0xe4, 0x00, 0x00, 0x00, 0x00,
 	    0xb8, 0x3f, 0xa9, 0xb0,
 	};
+	const uint8_t captured_adm_open_zero_copp_response[40] = {
+	    0x81, 0x01, 0x28, 0x00, 0x08, 0x04, 0x06, 0x10,
+	    0x08, 0x05, 0x06, 0x10, 0x00, 0x00, 0x16, 0x00,
+	    0x29, 0x03, 0x01, 0x00, 0x02, 0x04, 0x00, 0x04,
+	    0x89, 0xc6, 0x1c, 0x03, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	};
 
 	assert(beryllium_adsp_apr_encode_asm_map_regions(packet, sizeof(packet),
 	    &packet_bytes, dma_base, 20480));
@@ -165,6 +172,11 @@ test_linux_asm_adm_packets(void)
 	    beryllium_adsp_apr_get16(packet + 30) == 1 &&
 	    beryllium_adsp_apr_get16(packet + 32) == 7 &&
 	    beryllium_adsp_apr_get16(packet + 34) == 0);
+	assert(beryllium_adsp_apr_encode_adm_matrix_map(packet, sizeof(packet),
+	    &packet_bytes, 0));
+	assert(packet_bytes == 36 && beryllium_adsp_apr_get16(packet + 32) == 0);
+	assert(!beryllium_adsp_apr_encode_adm_matrix_map(packet, sizeof(packet),
+	    &packet_bytes, 0x00ffu));
 
 	assert(beryllium_adsp_apr_encode_asm_run(packet, sizeof(packet),
 	    &packet_bytes));
@@ -207,6 +219,11 @@ test_linux_asm_adm_packets(void)
 	    beryllium_adsp_apr_get16(packet + 10) == 7 &&
 	    beryllium_adsp_apr_get32(packet + 12) == (22u << 16) &&
 	    beryllium_adsp_apr_get32(packet + 16) == 0x10327);
+	assert(beryllium_adsp_apr_encode_adm_close(packet, sizeof(packet),
+	    &packet_bytes, 0, 0));
+	assert(packet_bytes == 20 && beryllium_adsp_apr_get16(packet + 10) == 0);
+	assert(!beryllium_adsp_apr_encode_adm_close(packet, sizeof(packet),
+	    &packet_bytes, 0x00ffu, 0));
 
 	make_linux_apr_header(response, 40, 0, 0, 0x100, 0x10d93);
 	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);
@@ -260,6 +277,15 @@ test_linux_asm_adm_packets(void)
 	put32(response + 32, 1);
 	assert(!beryllium_adsp_apr_parse_adm_open_result(response, 40, 22u << 16,
 	    &copp_id));
+	assert(beryllium_adsp_apr_parse_adm_open_result(
+	    captured_adm_open_zero_copp_response,
+	    sizeof(captured_adm_open_zero_copp_response), 0x00160000u,
+	    &copp_id) && copp_id == 0);
+	memcpy(response, captured_adm_open_zero_copp_response,
+	    sizeof(captured_adm_open_zero_copp_response));
+	response[36] = 0xff;
+	assert(!beryllium_adsp_apr_parse_adm_open_result(response, 40,
+	    0x00160000u, &copp_id));
 
 	make_linux_apr_header(response, 40, 0, 0x101, 1, 0x110e8);
 	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);

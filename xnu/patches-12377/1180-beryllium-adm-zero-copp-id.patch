@@ -1,0 +1,45 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 0e72afe..5feac4e 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -3503,8 +3503,7 @@ adsp_linux_asm_mode7_start(void)
+ 		goto retain;
+ 	}
+ 	copp_id = state.response_copp_id;
+-	if (copp_id == 0 ||
+-	    !beryllium_adsp_apr_encode_adm_matrix_map(packet, sizeof(packet),
++	if (!beryllium_adsp_apr_encode_adm_matrix_map(packet, sizeof(packet),
+ 	    &packet_bytes, copp_id) ||
+ 	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
+ 	    BERYLLIUM_ADSP_AUDIO_ADM_MATRIX, packet, packet_bytes,
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index 99e92c8..d92f12e 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -1011,7 +1011,7 @@ static inline bool
+ beryllium_adsp_apr_encode_adm_matrix_map(uint8_t *packet, size_t capacity,
+ 	size_t *packet_bytes, uint16_t copp_id)
+ {
+-	if (copp_id == 0 || copp_id == 0x00ffu ||
++	if (copp_id == 0x00ffu ||
+ 	    !beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
+ 	    BERYLLIUM_ADSP_ADM_MATRIX_MAP_BYTES, 0, 0, 0,
+ 	    BERYLLIUM_ADSP_ADM_MATRIX_MAP_ROUTINGS_V5)) {
+@@ -1090,7 +1090,7 @@ beryllium_adsp_apr_encode_adm_close(uint8_t *packet, size_t capacity,
+ {
+ 	uint32_t token = (BERYLLIUM_ADSP_ADM_QUAT_LOGICAL_PORT << 16) |
+ 	    copp_index;
+-	if (copp_id == 0 || copp_id == 0x00ffu ||
++	if (copp_id == 0x00ffu ||
+ 	    copp_index >= BERYLLIUM_ADSP_ADM_MAX_COPPS ||
+ 	    !beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
+ 	    BERYLLIUM_ADSP_ADM_CLOSE_BYTES,
+@@ -1204,7 +1204,7 @@ beryllium_adsp_apr_parse_adm_open_result(const uint8_t *packet,
+ 		return false;
+ 	}
+ 	*copp_id = beryllium_adsp_apr_get16(payload + 4);
+-	return *copp_id != 0 && *copp_id != 0x00ffu;
++	return *copp_id != 0x00ffu;
+ }
+ 
+ static inline bool
