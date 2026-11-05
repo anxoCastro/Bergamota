@@ -79,8 +79,16 @@ test_linux_asm_adm_packets(void)
 	uint32_t value = 0;
 	uint16_t copp_id = 0;
 	struct beryllium_adsp_apr_response service_table = { 0 };
+	uint8_t malformed_map_response[36];
 	const uint64_t dma_base = 0x0000000110000000ULL;
 	const uint64_t dma_period2 = 0x0000000110002580ULL;
+	const uint8_t captured_asm_map_response[36] = {
+	    0x81, 0x01, 0x24, 0x00, 0x07, 0x04, 0x00, 0x00,
+	    0x07, 0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+	    0x93, 0x0d, 0x01, 0x00, 0x02, 0x02, 0x00, 0x04,
+	    0x95, 0x0f, 0xbb, 0x03, 0x00, 0x00, 0x00, 0x00,
+	    0xb8, 0x3f, 0xa9, 0xb0,
+	};
 
 	assert(beryllium_adsp_apr_encode_asm_map_regions(packet, sizeof(packet),
 	    &packet_bytes, dma_base, 20480));
@@ -198,6 +206,21 @@ test_linux_asm_adm_packets(void)
 	put32(response + 32, 0x55);
 	assert(beryllium_adsp_apr_parse_asm_map_result(response, 40, 0x100,
 	    &value) && value == 0x55);
+	assert(beryllium_adsp_apr_parse_asm_map_result(captured_asm_map_response,
+	    sizeof(captured_asm_map_response), 0x100, &value) &&
+	    value == 0xb0a93fb8);
+	memcpy(malformed_map_response, captured_asm_map_response,
+	    sizeof(malformed_map_response));
+	put32(malformed_map_response + 12, 2);
+	assert(!beryllium_adsp_apr_parse_asm_map_result(malformed_map_response,
+	    sizeof(malformed_map_response), 0x100, &value));
+	memcpy(malformed_map_response, captured_asm_map_response,
+	    sizeof(malformed_map_response));
+	put32(malformed_map_response + 32, 0);
+	assert(!beryllium_adsp_apr_parse_asm_map_result(malformed_map_response,
+	    sizeof(malformed_map_response), 0x100, &value));
+	assert(!beryllium_adsp_apr_parse_asm_map_result(captured_asm_map_response,
+	    sizeof(captured_asm_map_response) - 1, 0x100, &value));
 	memset(response + 4, 0, 2);
 	memset(response + 8, 0, 2);
 	assert(!beryllium_adsp_apr_parse_asm_map_result(response, 40, 0x100,

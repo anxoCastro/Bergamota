@@ -42,6 +42,7 @@ MODE7_SMMU_LINUX_TCR2_PATCH = ROOT / "xnu/patches-12377/1173-beryllium-smmu-linu
 MODE7_SMMU_ACTLR_PATCH = ROOT / "xnu/patches-12377/1174-beryllium-smmu-preserve-linux-actlr.patch"
 MODE7_APR_ROUTE_PATCH = ROOT / "xnu/patches-12377/1176-beryllium-apr-linux-transport-route.patch"
 MODE7_APR_REPLY_ROUTE_PATCH = ROOT / "xnu/patches-12377/1177-beryllium-apr-linux-reply-route.patch"
+MODE7_APR_MAP_REPLY_PATCH = ROOT / "xnu/patches-12377/1178-beryllium-apr-dsp-map-reply.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -1453,6 +1454,11 @@ class AdspAprMode4Tests(unittest.TestCase):
                            check=True, capture_output=True, text=True)
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(MODE7_APR_REPLY_ROUTE_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            self.assertTrue(MODE7_APR_MAP_REPLY_PATCH.is_file(),
+                            "patch 1178 must parse the captured DSP ASM map reply")
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(MODE7_APR_MAP_REPLY_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             compile_result = subprocess.run([

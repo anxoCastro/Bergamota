@@ -166,6 +166,16 @@ each `WRITE_V2`. Each write has its own period address, map handle, size and
 sequence ID; the corresponding `WRITE_DONE_V2` event reports the completed
 address in its first two payload words.
 
+The read-only XNU mode-7 boot on 2026-11-05 captured the Beryllium ASM map
+reply as a 36-byte APR packet. Its `hdr_field` is `0x0181`, which declares an
+8-word (32-byte) header; the remaining four bytes are the nonzero map handle
+`0xb0a93fb8`. The reply route is ASM service 7, ADSP domain 4 to ASM service 7,
+APPS domain 5, with opcode `0x10d93`. The response token is `1`, although the
+map request token is `0x100`. The previous XNU parser expected an echoed token
+and an 8-byte result, so it rejected this packet. Linux's APR router advances
+the payload by the declared header size and Q6ASM consumes the first 32-bit
+payload word as the map handle; see the pinned [`apr.c`](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/soc/qcom/apr.c), [`apr.h`](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/include/linux/soc/qcom/apr.h), and [`q6asm.c`](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6asm.c). XNU now accepts this exact ASM-map response shape only for the single outstanding map request and logs the token difference. Treat token `1` as an observed Beryllium response detail, not a general APR rule.
+
 q6routing opens the QUAT device in ADM with playback path 1, endpoint
 `0x1006`, logical AFE port 22, NULL COPP topology `0x10312`, 2 channels,
 16-bit samples and 48 kHz. The open request is 48 bytes; its response provides

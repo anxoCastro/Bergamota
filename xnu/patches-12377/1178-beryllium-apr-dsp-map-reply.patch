@@ -1,0 +1,72 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 92c886d..0e72afe 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -3009,6 +3009,12 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
+ 				    state->request_token, &state->response_map_handle);
+ 				if (parsed_valid) {
++					uint32_t response_token = beryllium_adsp_apr_get32(
++					    adsp_apr_rx_buffers[param2 - 1] + 12);
++					if (response_token != state->request_token) {
++						printf("SWEET ADSP: accepted observed ASM map reply token=%#x for request token=%#x\n",
++						    response_token, state->request_token);
++					}
+ 					state->response_status = 0;
+ 					state->response_status_valid = true;
+ 				}
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index c6cd6e2..8a63ddf 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -56,6 +56,7 @@
+ 	((BERYLLIUM_ADSP_ASM_SESSION_ID << 8) | BERYLLIUM_ADSP_ASM_STREAM_ID)
+ #define BERYLLIUM_ADSP_ASM_MAP_TOKEN \
+ 	(BERYLLIUM_ADSP_ASM_SESSION_ID << 8)
++#define BERYLLIUM_ADSP_ASM_MAP_RESPONSE_TOKEN 1u
+ #define BERYLLIUM_ADSP_ASM_POOL_ID 3u
+ #define BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS 0x00010d92u
+ #define BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS_RSP 0x00010d93u
+@@ -1149,15 +1150,37 @@ beryllium_adsp_apr_parse_asm_map_result(const uint8_t *packet,
+ 	size_t packet_bytes, uint32_t expected_token, uint32_t *map_handle)
+ {
+ 	const uint8_t *payload = NULL;
+-	if (map_handle == NULL ||
+-	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
++	uint32_t handle;
++	if (map_handle == NULL) {
++		return false;
++	}
++	if (beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
+ 	    BERYLLIUM_ADSP_APR_ASM_SERVICE,
+ 	    BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS_RSP, expected_token, 0, 8,
+-	    &payload) || beryllium_adsp_apr_get32(payload) == 0 ||
+-	    beryllium_adsp_apr_get32(payload + 4) != 0) {
++	    &payload)) {
++		handle = beryllium_adsp_apr_get32(payload);
++		if (handle == 0 || beryllium_adsp_apr_get32(payload + 4) != 0) {
++			return false;
++		}
++		*map_handle = handle;
++		return true;
++	}
++	/* This device replies to pool-3 mapping with a 32-byte APR header and one
++	 * map-handle word, and sets the response token to 1 instead of echoing 0x100.
++	 */
++	if (expected_token != BERYLLIUM_ADSP_ASM_MAP_TOKEN || packet == NULL ||
++	    packet_bytes != 36u || beryllium_adsp_apr_get16(packet) != 0x0181u ||
++	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ASM_SERVICE,
++	    BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS_RSP,
++	    BERYLLIUM_ADSP_ASM_MAP_RESPONSE_TOKEN, 0, 4, &payload)) {
++		return false;
++	}
++	handle = beryllium_adsp_apr_get32(payload);
++	if (handle == 0) {
+ 		return false;
+ 	}
+-	*map_handle = beryllium_adsp_apr_get32(payload);
++	*map_handle = handle;
+ 	return true;
+ }
+ 
