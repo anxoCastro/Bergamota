@@ -145,6 +145,37 @@ queuing periods as write-done events arrive. The AFE back-end DAI prepares the
 stream parameters, sends the padded port configuration, and starts QUAT.
 Shutdown stops the AFE port and closes/unmaps the ASM stream and its buffers.
 
+### MultiMedia1 ASM and ADM packet contract
+
+The Linux ASM DAI first allocates the audio client with frontend DAI ID 0;
+`q6asm_audio_client_alloc()` stores session ID 1. The DAI then explicitly
+sets the DSP stream ID to 1. Consequently, OPEN/format/RUN/WRITE stream
+headers use ports `0x101` and synchronous command token 1. The playback
+shared-memory map uses token `(1 << 8) | 0 = 0x100` and zero source/destination
+ports.
+
+For a 48 kHz, signed 16-bit stereo test, Linux uses four 4,800-byte periods.
+It maps their 19,200-byte allocation rounded up to 20,480 bytes in one
+pool-3 region. The 40-byte map request carries the DSP DMA address
+`0x0000000110000000`: IOVA `0x10000000` plus the low SID nibble `1` in bits
+32–35. Its `0x10d93` response carries the memory-map handle in its first
+payload word. The subsequent Linux packet sizes are 36 bytes for
+`OPEN_WRITE_V3`, 44 for `MEDIA_FMT_UPDATE_V2`, 32 for `RUN_V2`, and 52 for
+each `WRITE_V2`. Each write has its own period address, map handle, size and
+sequence ID; the corresponding `WRITE_DONE_V2` event reports the completed
+address in its first two payload words.
+
+q6routing opens the QUAT device in ADM with playback path 1, endpoint
+`0x1006`, logical AFE port 22, NULL COPP topology `0x10312`, 2 channels,
+16-bit samples and 48 kHz. The open request is 48 bytes; its response provides
+the COPP ID. The RX matrix route is a 36-byte `MATRIX_MAP_ROUTINGS_V5`
+request containing ASM session 1 and that COPP ID. Linux zero-allocates
+ASM/ADM APR packets, so service and domain bytes 4–11 stay zero. This differs
+from the validated AFE packets, which explicitly fill their service/domain
+fields. The mode-5 Q6Core response advertised ASM service 7/API 1.0 and ADM
+service 8/API 2.0 once each. A later ASM/ADM mode should reject missing,
+duplicate or different-version service records before sending data.
+
 The inherited SDM845 Q6ASM DAI node spells its Apps SMMU specifier as
 `<&apps_smmu 0x1821 0x0>`. The Linux Q6ASM DAI reads the first cell, masks it
 with `SID_MASK_DEFAULT` (`0xF`), and gets the value `1`; when IOMMU data is
@@ -156,6 +187,13 @@ the latter kind of hardware stream ID and installs an Apps SMMU mapping.
 Passing `1` to that helper just because Linux calls its low-nibble value
 `sid` would conflate two different fields.
 
+MultiMedia1's CPU DAI ID is 0, and Linux passes that as the audio-client
+session selector; `q6asm_audio_client_alloc()` stores session ID 1. The DAI
+then explicitly sets the DSP stream ID to 1. Thus OPEN/RUN/format stream
+headers use source and destination port `0x101` and command token 1. For the
+playback direction (`dir=0`), the separate shared-memory map token is
+`(session << 8) | dir = 0x100`.
+
 Linux's Q6ASM DAI allocates its PCM buffer as a device DMA buffer, and its
 device is attached to Apps SMMU stream `0x1821`. Thus `dma_buffer.addr` is the
 DMA/IOMMU address supplied for that device; the DAI adds the stream's low
@@ -163,8 +201,17 @@ nibble in bits 32–35 before APR sends the address to ASM. A comparable XNU
 implementation on Redwood confirms the split: the low address is an IOVA,
 bits 32–35 carry the low nibble, and the full stream ID selects the Apps SMMU
 translation. Its SMMU code maps each 4 KiB IOVA page to the kernel buffer's
-physical page. This resolves the address format; the active Beryllium
-SMR/S2CR state and a safe IOVA range still need a read-only hardware check.
+physical page.
+
+The read-only Beryllium mode-6 probe has now observed `sCR0=0x210406`
+(`USFCFG=1`, `GFIE=1`, `CLIENTPD=0`), `ID0=0x4c017e4c`, `ID1=0x5000002d`, 76
+SMRs and 45 context banks, with no valid SMR matching full SID `0x1821`.
+This is direct hardware evidence from the Poco F1; it does not show that the
+unmatched route can safely bypass. Linux's ARM SMMU source interprets
+`USFCFG=1` as faulting unmatched stream IDs, so the XNU test must install a
+private translation before Q6ASM sees the DMA address. The same boot showed
+context bank 3 used by a different stream and its shared identity map; do not
+reuse CB3 for Q6ASM.
 
 XNU already has `sweet_smmu_map_sid()`, but it creates a shared identity map
 for DRAM. That is not the per-buffer IOVA-to-physical mapping required by the
@@ -173,13 +220,12 @@ Redwood port's fixed IOVA without checking Beryllium's DMA range.
 
 The existing `sweet_smmu_probe_sid(sid, level)` helper is read-only: at level
 0 it reports matching SMR/S2CR entries without changing the stream or a
-context bank. The framebuffer diagnostics currently use it for display SIDs
-`0x880` and `0xc80`; no `0x1821` observation has been captured yet. Reuse this
-probe for the first Beryllium audio SMMU check instead of adding another raw
-MMIO reader. Only after recording the current match should a later experiment
-consider a dedicated translation for full stream `0x1821`; any existing
-translated or fault mapping must remain untouched unless its ownership is
-established.
+context bank. The framebuffer diagnostics also use it for display SIDs
+`0x880` and `0xc80`. Mode 6 called it for `0x1821` and returned before PAS,
+GLINK, APR, AFE, ASM, ADM or PCM startup. The capture reached `exec mount_hfs`;
+it did not record `mount[3] exited`, a kernel panic or SpringBoard, so the
+final screen state is unknown. The boot used a temporary read-only Fastboot
+image and did not write a partition.
 
 Two implementation details make that probe important. First, the current
 XNU `sweet_smmu_map_sid()` helper is not safe to call blindly for audio: when
@@ -244,22 +290,52 @@ are device-specific and do not apply to Beryllium's TAS2559 + QUAT MI2S path.
 
 ## XNU port boundary and later stages
 
-The first Linux-faithful XNU experiment is an explicit boot-arg-only AFE
-control-plane smoke test. It checks correlated success responses for clock
-setup, QUAT configuration, start, and stop. It sends no PCM data and does not
-open Q6ASM/Q6ADM, configure WCD9340 or TAS firmware, manipulate GPIO/pinctrl,
-or expose an iOS audio device. The test vector may enable the QUAT clock and
-port, but it must never be described as audible playback.
+The completed `sweetadsp=5` XNU smoke test is an explicit boot-arg-only AFE
+control-plane test. It checks correlated success responses for clock setup,
+QUAT configuration, start, and stop. It sends no PCM data and does not open
+Q6ASM/Q6ADM, configure WCD9340 or TAS firmware, manipulate GPIO/pinctrl, or
+expose an iOS audio device. The test vector may enable the QUAT clock and
+port, but it is not audible playback.
 
-The next actual-playback milestone is to resolve and record the Linux/Q6ASM
-DMA-address and Apps SMMU mapping contract, then port the ASM map/open/format
-lifecycle, the ADM COPP open/matrix map, and the period write/run loop. It
-must then add the Beryllium QUAT pinmux, TAS I2C/GPIO and firmware/configuration
-path, and an iOS 26 AudioServerPlugIn/HAL bridge. The current XNU AFE lifecycle
-test supplies none of those layers. The headphone/microphone path additionally
+The next milestone is a bounded Linux-style PCM route: map a 19,200-byte
+four-period buffer rounded to 20,480 bytes in ASM pool 3, open MultiMedia1
+(session 1/stream 1), open and matrix-map the ADM QUAT COPP, set
+48 kHz/S16/stereo, then complete four 25 ms WRITE_V2 periods. Patches 1168 and
+1169 now contain the packet helpers and private per-buffer SMMU mapping; the
+mode-7 orchestration, CI build and device run are still pending. ASM/ADM use
+zeroed APR service/domain fields; the AFE requests retain the verified AFE
+service/domain fields. The mode keeps both TAS reset GPIOs low and does not
+claim audible playback. After this transport test, bring up pinmux and TAS
+configuration as a separate stage, then investigate an iOS 26
+AudioServerPlugIn/HAL bridge. The headphone and microphone route additionally
 requires WCD9340 and SLIMbus support.
 Linux's working topology is a source reference, not evidence that any of
 these paths already work in XNU.
+
+### XNU patches 1168–1169: local implementation status
+
+Commit `3fe9c344` adds the Linux ASM/ADM request encoders and bounded response
+parsers. The helper contract fixes MultiMedia1 to session 1 / DSP stream 1,
+stream ports `0x101`, map token `0x100`, pool 3, and a 20,480-byte region for
+four 4,800-byte periods.
+
+Commit `a814e6f` adds `sweet_smmu_audio_map_buffer()` and
+`sweet_smmu_audio_restore_mapping()` in the XNU SMMU driver. The helper rejects
+any existing exact or masked `0x1821` match, counts all translating S2CR
+references (including entries whose SMR is invalid), requires a free SMR and
+an unreferenced context bank with `SCTLR.M=0`, then re-reads that state before
+its first write. It saves the selected SMR/S2CR and context-bank configuration;
+it never invokes the shared identity mapper or touches CB3. Its private
+39-bit, 4 KiB stage-1 tables map five pages from IOVA `0x10000000` to the
+contiguous 20 KiB PCM buffer. Allocation uses XNU `PAGE_SIZE` rounding so the
+three hardware tables remain valid when XNU pages are larger than 4 KiB.
+
+The host fake-MMIO fixture passes collision, ownership-change, install,
+restore, and five-page descriptor checks. The full host suite passed 57/57.
+These commits have not yet completed a GitHub kernel build or a phone boot;
+the Linux host lacks `clang` and `xcrun`. Fastboot currently reports one
+unlocked `beryllium` device. Treat the hardware mapping as unverified until
+mode 7 is built and tested.
 
 ## Primary source references
 
