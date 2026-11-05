@@ -1,0 +1,12 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 3dc8881..8dedc6c 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -3456,6 +3456,6 @@ adsp_linux_asm_mode7_start(void)
+ 		return;
+ 	}
+-	if (!sweet_smmu_audio_encode_q6asm_address(iova, &dma_addr)) {
++	if (sweet_smmu_audio_encode_q6asm_address(iova, &dma_addr) != SWEET_SMMU_AUDIO_OK) {
+ 		printf("SWEET ADSP AUDIO: private SMMU map succeeded but Q6ASM address encoding failed; route retained until reboot\n");
+ 		return;
+ 	}

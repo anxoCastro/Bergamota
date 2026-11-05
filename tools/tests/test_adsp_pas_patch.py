@@ -132,7 +132,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1174:
+                if not 1131 <= number <= 1175:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -296,6 +296,14 @@ int main(void) {
         self.assertLess(resets.index("adsp_audio_gpio_write(gpio76, ADSP_TLMM_GPIO_IO(76)"),
                         resets.index("adsp_audio_gpio_write(gpio76, ADSP_TLMM_GPIO_CFG(76)"))
         self.assertIn("gpio76 = ml_io_map(ADSP_TLMM_EAST_PA", resets)
+
+    def test_mode_seven_accepts_zero_success_from_q6asm_address_encoder(self):
+        start = c_named_function_definition(self.latest_driver,
+                                            "adsp_linux_asm_mode7_start")
+        self.assertRegex(
+            start,
+            r"if\s*\(\s*sweet_smmu_audio_encode_q6asm_address\([^;]+?\)\s*!=\s*SWEET_SMMU_AUDIO_OK\s*\)",
+        )
 
     def test_mode_seven_uses_fail_closed_four_write_sequence(self):
         start = c_named_function_definition(self.latest_driver,
