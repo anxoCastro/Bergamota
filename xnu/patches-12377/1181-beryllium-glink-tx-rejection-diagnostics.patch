@@ -1,0 +1,82 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 5feac4e..0b5ebfc 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2303,19 +2303,70 @@ struct adsp_apr_channel_state {
+ 	uint32_t expected_write_sequence;
+ };
+ 
++static bool
++adsp_glink_tx_indices_snapshot(uint32_t descriptor_off,
++	struct beryllium_adsp_glink_indices *first,
++	struct beryllium_adsp_glink_indices *second)
++{
++	if (first == NULL || second == NULL) {
++		return false;
++	}
++	__asm__ volatile ("dmb sy" ::: "memory");
++	first->tx_tail = adsp_smem_rd32(descriptor_off);
++	first->tx_head = adsp_smem_rd32(descriptor_off + 4);
++	first->rx_tail = adsp_smem_rd32(descriptor_off + 8);
++	first->rx_head = adsp_smem_rd32(descriptor_off + 12);
++	__asm__ volatile ("dmb sy" ::: "memory");
++	second->tx_tail = adsp_smem_rd32(descriptor_off);
++	second->tx_head = adsp_smem_rd32(descriptor_off + 4);
++	second->rx_tail = adsp_smem_rd32(descriptor_off + 8);
++	second->rx_head = adsp_smem_rd32(descriptor_off + 12);
++	__asm__ volatile ("dmb sy" ::: "memory");
++	return true;
++}
++
+ static bool
+ adsp_glink_send_frame(const struct adsp_glink_survey_items *items,
+ 	const uint8_t *frame, size_t frame_bytes)
+ {
+-	struct beryllium_adsp_glink_indices indices;
++	struct beryllium_adsp_glink_indices indices = { 0 };
++	struct beryllium_adsp_glink_indices first = { 0 }, second = { 0 };
+ 	uint32_t padded_bytes, available, next;
+-	if (items == NULL || frame == NULL || frame_bytes == 0 ||
+-	    frame_bytes > ADSP_APR_GLINK_FRAME_MAX ||
+-	    !adsp_glink_start_items_valid(items, true) ||
+-	    !adsp_glink_survey_read_indices(items->descriptor.off, &indices) ||
+-	    !beryllium_adsp_glink_indices_valid(&indices,
++	if (items == NULL) {
++		printf("SWEET ADSP: APR GLINK TX stopped: null survey items\n");
++		return false;
++	}
++	if (frame == NULL || frame_bytes == 0 ||
++	    frame_bytes > ADSP_APR_GLINK_FRAME_MAX) {
++		printf("SWEET ADSP: APR GLINK TX stopped: invalid frame length/pointer bytes=%lu limit=%u\n",
++		    (unsigned long)frame_bytes, ADSP_APR_GLINK_FRAME_MAX);
++		return false;
++	}
++	if (!adsp_glink_start_items_valid(items, true)) {
++		printf("SWEET ADSP: APR GLINK TX stopped: item validation failed descriptor=%d/%#x+%#x tx=%d/%#x+%#x rx=%d/%#x+%#x\n",
++		    items->descriptor.result, items->descriptor.off,
++		    items->descriptor.size, items->tx_fifo.result,
++		    items->tx_fifo.off, items->tx_fifo.size, items->rx_fifo.result,
++		    items->rx_fifo.off, items->rx_fifo.size);
++		return false;
++	}
++	if (!adsp_glink_tx_indices_snapshot(items->descriptor.off,
++	    &first, &second)) {
++		printf("SWEET ADSP: APR GLINK TX stopped: descriptor index sample read failed\n");
++		return false;
++	}
++	if (!beryllium_adsp_glink_indices_equal(&first, &second)) {
++		printf("SWEET ADSP: APR GLINK TX stopped: descriptor index samples differ first tx_tail=%#x tx_head=%#x rx_tail=%#x rx_head=%#x second tx_tail=%#x tx_head=%#x rx_tail=%#x rx_head=%#x\n",
++		    first.tx_tail, first.tx_head, first.rx_tail, first.rx_head,
++		    second.tx_tail, second.tx_head, second.rx_tail, second.rx_head);
++		return false;
++	}
++	indices = second;
++	if (!beryllium_adsp_glink_indices_valid(&indices,
+ 	    items->tx_fifo.size, items->rx_fifo.size)) {
+-		printf("SWEET ADSP: APR GLINK TX stopped: invalid frame, item, or indices\n");
++		printf("SWEET ADSP: APR GLINK TX stopped: invalid descriptor index values tx_tail=%#x tx_head=%#x rx_tail=%#x rx_head=%#x tx_size=%#x rx_size=%#x\n",
++		    indices.tx_tail, indices.tx_head, indices.rx_tail, indices.rx_head,
++		    items->tx_fifo.size, items->rx_fifo.size);
+ 		return false;
+ 	}
+ 	padded_bytes = (uint32_t)((frame_bytes + 7u) & ~(size_t)7u);

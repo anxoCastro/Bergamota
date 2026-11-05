@@ -45,6 +45,7 @@ MODE7_APR_REPLY_ROUTE_PATCH = ROOT / "xnu/patches-12377/1177-beryllium-apr-linux
 MODE7_APR_MAP_REPLY_PATCH = ROOT / "xnu/patches-12377/1178-beryllium-apr-dsp-map-reply.patch"
 MODE7_APR_MAP_REPLY_TOKEN_PATCH = ROOT / "xnu/patches-12377/1179-beryllium-apr-variable-map-reply-token.patch"
 MODE7_ADM_ZERO_COPP_PATCH = ROOT / "xnu/patches-12377/1180-beryllium-adm-zero-copp-id.patch"
+GLINK_TX_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1181-beryllium-glink-tx-rejection-diagnostics.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -1370,6 +1371,23 @@ class AdspAprMode4Tests(unittest.TestCase):
                               "bsd/dev/beryllium_adsp.c")
         self.assertIn("memcpy(frame + 16, packet, packet_bytes)", driver)
         self.assertIn("beryllium_adsp_apr_linux_transport_route(frame + 16",
+                      driver)
+
+    def test_apr_glink_tx_refusal_reports_each_validation_stage(self):
+        self.assertTrue(GLINK_TX_DIAGNOSTICS_PATCH.is_file(),
+                        "patch 1181 must report why APR GLINK TX was refused")
+        driver = diff_section(GLINK_TX_DIAGNOSTICS_PATCH.read_text(),
+                              "bsd/dev/beryllium_adsp.c")
+        for diagnostic in (
+                "APR GLINK TX stopped: null survey items",
+                "APR GLINK TX stopped: invalid frame length",
+                "APR GLINK TX stopped: item validation failed",
+                "APR GLINK TX stopped: descriptor index samples differ",
+                "APR GLINK TX stopped: invalid descriptor index values"):
+            self.assertIn(diagnostic, driver)
+        self.assertIn("first tx_tail=%#x tx_head=%#x rx_tail=%#x rx_head=%#x",
+                      driver)
+        self.assertIn("second tx_tail=%#x tx_head=%#x rx_tail=%#x rx_head=%#x",
                       driver)
 
     def test_compiled_apr_mode4_helpers(self):

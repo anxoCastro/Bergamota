@@ -201,8 +201,14 @@ including 0. The prior XNU parser, matrix-map encoder, ADM-close encoder and
 mode-7 caller rejected 0, so the captured success response stopped the route
 before its matrix-map command. Patch 1180 aligns those checks with Linux,
 continues to reject `0xff`, and keeps the response status/reserved-word checks.
-The capture establishes a valid ADM open response; the matrix route, PCM
-format, AFE start and audible output remain untested.
+
+The next read-only RAM boot with patch 1180 confirmed that the zero COPP ID
+works through the RX matrix route and ASM PCM-format command. The DSP also
+acknowledged the QUAT clock, I2S configuration and AFE `DEVICE_START`, all
+with status 0. The following `ASM RUN_V2` was stopped by XNU's local GLINK TX
+validation before it reached the DSP; the current trace does not establish a
+RUN response or audible output. Both TAS reset GPIOs remained low during this
+probe, keeping the amplifiers disabled.
 
 The Linux APR receive path dispatches a response using its `dest_svc` field to
 the registered service callback. On the return path, an ASM response therefore
