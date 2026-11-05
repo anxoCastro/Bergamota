@@ -62,6 +62,15 @@ make_linux_apr_header(uint8_t *p, uint16_t size, uint16_t src_port,
 }
 
 static void
+set_linux_apr_reply_route(uint8_t *p, uint8_t service)
+{
+	p[4] = service;
+	p[5] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
+	p[8] = service;
+	p[9] = BERYLLIUM_ADSP_APR_DOMAIN_APPS;
+}
+
+static void
 test_linux_asm_adm_packets(void)
 {
 	uint8_t packet[64] = { 0 };
@@ -185,38 +194,62 @@ test_linux_asm_adm_packets(void)
 	    beryllium_adsp_apr_get32(packet + 16) == 0x10327);
 
 	make_linux_apr_header(response, 40, 0, 0, 0x100, 0x10d93);
+	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);
 	put32(response + 32, 0x55);
 	assert(beryllium_adsp_apr_parse_asm_map_result(response, 40, 0x100,
 	    &value) && value == 0x55);
+	memset(response + 4, 0, 2);
+	memset(response + 8, 0, 2);
+	assert(!beryllium_adsp_apr_parse_asm_map_result(response, 40, 0x100,
+	    &value));
+	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);
 	put32(response + 12, 0x101);
 	assert(!beryllium_adsp_apr_parse_asm_map_result(response, 40, 0x100,
 	    &value));
 
 	make_linux_apr_header(response, 40, 0, 0, 22u << 16, 0x10329);
+	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ADM_SERVICE);
 	put32(response + 32, 0);
 	beryllium_adsp_apr_put16(response + 36, 7);
 	beryllium_adsp_apr_put16(response + 38, 0);
 	assert(beryllium_adsp_apr_parse_adm_open_result(response, 40, 22u << 16,
 	    &copp_id) && copp_id == 7);
+	response[4] = BERYLLIUM_ADSP_APR_ASM_SERVICE;
+	assert(!beryllium_adsp_apr_parse_adm_open_result(response, 40,
+	    22u << 16, &copp_id));
+	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ADM_SERVICE);
 	put32(response + 32, 1);
 	assert(!beryllium_adsp_apr_parse_adm_open_result(response, 40, 22u << 16,
 	    &copp_id));
 
 	make_linux_apr_header(response, 40, 0, 0x101, 1, 0x110e8);
+	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);
 	put32(response + 32, 0x10db3);
 	put32(response + 36, 0);
 	assert(beryllium_adsp_apr_parse_linux_basic_result(response, 40,
-	    0x101, 1, 0x10db3, &value) && value == 0);
+	    BERYLLIUM_ADSP_APR_ASM_SERVICE, 0x101, 1, 0x10db3, &value) &&
+	    value == 0);
+	response[4] = BERYLLIUM_ADSP_APR_ADM_SERVICE;
+	assert(!beryllium_adsp_apr_parse_linux_basic_result(response, 40,
+	    BERYLLIUM_ADSP_APR_ASM_SERVICE, 0x101, 1, 0x10db3, &value));
+	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);
+	assert(!beryllium_adsp_apr_parse_linux_basic_result(response, 40,
+	    9, 0x101, 1, 0x10db3, &value));
 	put32(response + 32, 0x10db4);
 	assert(!beryllium_adsp_apr_parse_linux_basic_result(response, 40,
-	    0x101, 1, 0x10db3, &value));
+	    BERYLLIUM_ADSP_APR_ASM_SERVICE, 0x101, 1, 0x10db3, &value));
 
 	const uint32_t write_token = 0x12c00002;
 	make_linux_apr_header(response, 40, 0, 0x101, write_token, 0x10d99);
+	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);
 	put32(response + 32, 0x10002580);
 	put32(response + 36, 1);
 	assert(beryllium_adsp_apr_parse_asm_write_done(response, 40,
 	    write_token, 0x0000000110002580ULL, 2, 4800));
+	response[9] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
+	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 40,
+	    write_token, 0x0000000110002580ULL, 2, 4800));
+	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);
 	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 40,
 	    write_token, 0x0000000110002581ULL, 2, 4800));
 	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 40,

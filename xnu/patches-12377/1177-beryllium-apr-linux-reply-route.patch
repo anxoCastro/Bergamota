@@ -1,0 +1,94 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index a3af685..92c886d 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -3033,7 +3033,8 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 			} else if (linux_audio_basic_request) {
+ 				parsed_valid = beryllium_adsp_apr_parse_linux_basic_result(
+ 				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
+-				    state->request_dest_port, state->request_token,
++				    state->request_service, state->request_dest_port,
++				    state->request_token,
+ 				    state->request_opcode, &linux_audio_status);
+ 				if (parsed_valid) {
+ 					state->response_status = linux_audio_status;
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index 3655f91..c6cd6e2 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -1102,14 +1102,19 @@ beryllium_adsp_apr_encode_adm_close(uint8_t *packet, size_t capacity,
+ 
+ static inline bool
+ beryllium_adsp_apr_linux_reply_view(const uint8_t *packet,
+-	size_t packet_bytes, uint32_t expected_opcode, uint32_t expected_token,
++	size_t packet_bytes, uint8_t expected_service, uint32_t expected_opcode,
++	uint32_t expected_token,
+ 	uint16_t expected_dest_port, size_t expected_payload_bytes,
+ 	const uint8_t **payload)
+ {
+ 	uint16_t header_field, declared_bytes;
+ 	uint8_t header_version, header_words, message_type;
+ 	size_t header_bytes;
+-	if (packet == NULL || payload == NULL || expected_opcode == 0 ||
++	if (packet == NULL || payload == NULL ||
++	    (expected_service != BERYLLIUM_ADSP_APR_AFE_SERVICE &&
++	    expected_service != BERYLLIUM_ADSP_APR_ASM_SERVICE &&
++	    expected_service != BERYLLIUM_ADSP_APR_ADM_SERVICE) ||
++	    expected_opcode == 0 ||
+ 	    packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
+ 	    packet_bytes > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES) {
+ 		return false;
+@@ -1124,7 +1129,10 @@ beryllium_adsp_apr_linux_reply_view(const uint8_t *packet,
+ 	    (header_field & 0xfc00u) != 0 ||
+ 	    header_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
+ 	    header_bytes > packet_bytes || declared_bytes != packet_bytes ||
+-	    packet[4] != 0 || packet[5] != 0 || packet[8] != 0 || packet[9] != 0 ||
++	    packet[4] != expected_service ||
++	    packet[5] != BERYLLIUM_ADSP_APR_DOMAIN_ADSP ||
++	    packet[8] != expected_service ||
++	    packet[9] != BERYLLIUM_ADSP_APR_DOMAIN_APPS ||
+ 	    beryllium_adsp_apr_get32(packet + 12) != expected_token ||
+ 	    beryllium_adsp_apr_get32(packet + 16) != expected_opcode ||
+ 	    (expected_dest_port != 0xffffu &&
+@@ -1143,6 +1151,7 @@ beryllium_adsp_apr_parse_asm_map_result(const uint8_t *packet,
+ 	const uint8_t *payload = NULL;
+ 	if (map_handle == NULL ||
+ 	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ASM_SERVICE,
+ 	    BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS_RSP, expected_token, 0, 8,
+ 	    &payload) || beryllium_adsp_apr_get32(payload) == 0 ||
+ 	    beryllium_adsp_apr_get32(payload + 4) != 0) {
+@@ -1159,6 +1168,7 @@ beryllium_adsp_apr_parse_adm_open_result(const uint8_t *packet,
+ 	const uint8_t *payload = NULL;
+ 	if (copp_id == NULL ||
+ 	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ADM_SERVICE,
+ 	    BERYLLIUM_ADSP_ADM_DEVICE_OPEN_V5_RSP, expected_token, 0xffffu, 8,
+ 	    &payload) || beryllium_adsp_apr_get32(payload) != 0 ||
+ 	    beryllium_adsp_apr_get16(payload + 6) != 0) {
+@@ -1170,13 +1180,14 @@ beryllium_adsp_apr_parse_adm_open_result(const uint8_t *packet,
+ 
+ static inline bool
+ beryllium_adsp_apr_parse_linux_basic_result(const uint8_t *packet,
+-	size_t packet_bytes, uint16_t expected_dest_port, uint32_t expected_token,
++	size_t packet_bytes, uint8_t expected_service,
++	uint16_t expected_dest_port, uint32_t expected_token,
+ 	uint32_t expected_request_opcode, uint32_t *status)
+ {
+ 	const uint8_t *payload = NULL;
+ 	if (status == NULL || expected_request_opcode == 0 ||
+ 	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
+-	    BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT, expected_token,
++	    expected_service, BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT, expected_token,
+ 	    expected_dest_port, 8, &payload) ||
+ 	    beryllium_adsp_apr_get32(payload) != expected_request_opcode) {
+ 		return false;
+@@ -1196,7 +1207,7 @@ beryllium_adsp_apr_parse_asm_write_done(const uint8_t *packet,
+ 	    expected_write_bytes != BERYLLIUM_ADSP_ASM_PERIOD_BYTES ||
+ 	    expected_token != token ||
+ 	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
+-	    BERYLLIUM_ADSP_ASM_WRITE_DONE_V2, token,
++	    BERYLLIUM_ADSP_APR_ASM_SERVICE, BERYLLIUM_ADSP_ASM_WRITE_DONE_V2, token,
+ 	    BERYLLIUM_ADSP_ASM_PLAYBACK_PORT, 8, &payload)) {
+ 		return false;
+ 	}

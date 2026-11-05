@@ -181,6 +181,18 @@ ASM service 7/API 1.0 and ADM service 8/API 2.0 once each. A later ASM/ADM
 mode should reject missing, duplicate, or different-version service records
 before sending data.
 
+The Linux APR receive path dispatches a response using its `dest_svc` field to
+the registered service callback. On the return path, an ASM response therefore
+needs service 7 and domains ADSP (4) to APPS (5); ADM uses service 8 with the
+same domain direction. The already validated Q6Core response uses that reversed
+route. XNU's first ASM/ADM reply parser incorrectly required bytes 4–5 and 8–9
+to remain zero, which would reject a correctly routed reply. Patch 1177 checks
+the expected service and return domains for map, open, WRITE_DONE and basic
+result responses. This diagnosis follows Linux's APR send/receive dispatch and
+the validated Q6Core header; the next Poco boot must still confirm the actual
+ASM reply bytes. See the pinned [APR transport send path](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/soc/qcom/apr.c#L55-79)
+and [APR receive dispatch](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/soc/qcom/apr.c#L190-265).
+
 The inherited SDM845 Q6ASM DAI node spells its Apps SMMU specifier as
 `<&apps_smmu 0x1821 0x0>`. The Linux Q6ASM DAI reads the first cell, masks it
 with `SID_MASK_DEFAULT` (`0xF`), and gets the value `1`; when IOMMU data is

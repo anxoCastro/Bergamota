@@ -41,6 +41,7 @@ MODE7_SMMU_READBACK_PATCH = ROOT / "xnu/patches-12377/1172-beryllium-smmu-readba
 MODE7_SMMU_LINUX_TCR2_PATCH = ROOT / "xnu/patches-12377/1173-beryllium-smmu-linux-tcr2-readback.patch"
 MODE7_SMMU_ACTLR_PATCH = ROOT / "xnu/patches-12377/1174-beryllium-smmu-preserve-linux-actlr.patch"
 MODE7_APR_ROUTE_PATCH = ROOT / "xnu/patches-12377/1176-beryllium-apr-linux-transport-route.patch"
+MODE7_APR_REPLY_ROUTE_PATCH = ROOT / "xnu/patches-12377/1177-beryllium-apr-linux-reply-route.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -133,7 +134,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1176:
+                if not 1131 <= number <= 1177:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -145,6 +146,12 @@ class AdspPasPatchTests(unittest.TestCase):
     def test_linux_apr_wait_matches_q6asm_five_second_timeout(self):
         self.assertRegex(self.latest_driver,
                          r"#define ADSP_APR_POLL_MS\s+5000u")
+
+    def test_linux_basic_reply_parser_checks_the_request_service(self):
+        self.assertTrue(MODE7_APR_REPLY_ROUTE_PATCH.is_file(),
+                        "patch 1177 must validate Linux APR reply routing")
+        self.assertIn("state->request_service, state->request_dest_port",
+                      self.latest_driver)
 
     def test_pas_start_has_an_explicit_mode_two_gate(self):
         probe = added_function_body(self.driver, "beryllium_adsp_probe")
@@ -1334,7 +1341,8 @@ class AdspAprMode4Tests(unittest.TestCase):
                                capture_output=True, text=True)
             for helper_patch in (LINUX_AFE_LIFECYCLE_PATCH,
                                  LINUX_ASM_ADM_PATCH,
-                                 MODE7_APR_ROUTE_PATCH):
+                                 MODE7_APR_ROUTE_PATCH,
+                                 MODE7_APR_REPLY_ROUTE_PATCH):
                 subprocess.run(["git", "apply", f"--include={header_path}",
                                 str(helper_patch)], cwd=work, check=True,
                                capture_output=True, text=True)
@@ -1440,6 +1448,12 @@ class AdspAprMode4Tests(unittest.TestCase):
                 subprocess.run(["git", "apply", f"--include={header_path}",
                                 str(LINUX_ASM_ADM_PATCH)], cwd=work,
                                check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(MODE7_APR_ROUTE_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(MODE7_APR_REPLY_ROUTE_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             compile_result = subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
