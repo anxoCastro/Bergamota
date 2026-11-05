@@ -1,0 +1,37 @@
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index 8a63ddf..99e92c8 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -1151,6 +1151,7 @@ beryllium_adsp_apr_parse_asm_map_result(const uint8_t *packet,
+ {
+ 	const uint8_t *payload = NULL;
+ 	uint32_t handle;
++	uint32_t response_token;
+ 	if (map_handle == NULL) {
+ 		return false;
+ 	}
+@@ -1165,15 +1166,20 @@ beryllium_adsp_apr_parse_asm_map_result(const uint8_t *packet,
+ 		*map_handle = handle;
+ 		return true;
+ 	}
+-	/* This device replies to pool-3 mapping with a 32-byte APR header and one
+-	 * map-handle word, and sets the response token to 1 instead of echoing 0x100.
++	/* Beryllium has returned this short map result with token 1 on one boot and
++	 * the echoed request token 0x100 on another. Accept only those two captures.
+ 	 */
+ 	if (expected_token != BERYLLIUM_ADSP_ASM_MAP_TOKEN || packet == NULL ||
+-	    packet_bytes != 36u || beryllium_adsp_apr_get16(packet) != 0x0181u ||
++	    packet_bytes != 36u || beryllium_adsp_apr_get16(packet) != 0x0181u) {
++		return false;
++	}
++	response_token = beryllium_adsp_apr_get32(packet + 12);
++	if ((response_token != BERYLLIUM_ADSP_ASM_MAP_RESPONSE_TOKEN &&
++	    response_token != expected_token) ||
+ 	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
+ 	    BERYLLIUM_ADSP_APR_ASM_SERVICE,
+ 	    BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS_RSP,
+-	    BERYLLIUM_ADSP_ASM_MAP_RESPONSE_TOKEN, 0, 4, &payload)) {
++	    response_token, 0, 4, &payload)) {
+ 		return false;
+ 	}
+ 	handle = beryllium_adsp_apr_get32(payload);

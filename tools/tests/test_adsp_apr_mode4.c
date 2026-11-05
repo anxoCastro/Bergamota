@@ -89,6 +89,13 @@ test_linux_asm_adm_packets(void)
 	    0x95, 0x0f, 0xbb, 0x03, 0x00, 0x00, 0x00, 0x00,
 	    0xb8, 0x3f, 0xa9, 0xb0,
 	};
+	const uint8_t captured_asm_map_echo_token_response[36] = {
+	    0x81, 0x01, 0x24, 0x00, 0x07, 0x04, 0x00, 0x00,
+	    0x07, 0x05, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+	    0x93, 0x0d, 0x01, 0x00, 0x02, 0x02, 0x00, 0x04,
+	    0x32, 0xe7, 0xd6, 0xe4, 0x00, 0x00, 0x00, 0x00,
+	    0xb8, 0x3f, 0xa9, 0xb0,
+	};
 
 	assert(beryllium_adsp_apr_encode_asm_map_regions(packet, sizeof(packet),
 	    &packet_bytes, dma_base, 20480));
@@ -209,7 +216,16 @@ test_linux_asm_adm_packets(void)
 	assert(beryllium_adsp_apr_parse_asm_map_result(captured_asm_map_response,
 	    sizeof(captured_asm_map_response), 0x100, &value) &&
 	    value == 0xb0a93fb8);
+	assert(beryllium_adsp_apr_parse_asm_map_result(
+	    captured_asm_map_echo_token_response,
+	    sizeof(captured_asm_map_echo_token_response), 0x100, &value) &&
+	    value == 0xb0a93fb8);
 	memcpy(malformed_map_response, captured_asm_map_response,
+	    sizeof(malformed_map_response));
+	put32(malformed_map_response + 12, 2);
+	assert(!beryllium_adsp_apr_parse_asm_map_result(malformed_map_response,
+	    sizeof(malformed_map_response), 0x100, &value));
+	memcpy(malformed_map_response, captured_asm_map_echo_token_response,
 	    sizeof(malformed_map_response));
 	put32(malformed_map_response + 12, 2);
 	assert(!beryllium_adsp_apr_parse_asm_map_result(malformed_map_response,
