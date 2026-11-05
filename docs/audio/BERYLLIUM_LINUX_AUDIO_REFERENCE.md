@@ -227,9 +227,26 @@ Comparing the initial value against the pinned Linux SMMU driver also found
 that mode 7 omitted `TCR2.AS`. Linux sets this bit for an AArch64 context bank
 after generating `SEP=7` and `PASize=2`; the corrected write is therefore
 `0x38012`. Linux does not compare the TCR2 readback. In XNU, the saved TCR2 is
-still restored and checked exactly. After this correction is built, the next
-hardware trace must confirm whether the remaining context-bank fields accept
-the Linux configuration before the SMR/S2CR route is installed.
+still restored and checked exactly. The 1173 RAM boot advanced through the
+TCR2 comparison and later context-bank fields before stopping at ACTLR; the
+remaining SCTLR readback and SMR/S2CR route still need hardware confirmation.
+
+### Mode-7 context-bank ACTLR
+
+The following RAM boot passed the TCR2 comparison and stopped at CB4 ACTLR
+(`0x44004`): XNU expected `0`, while the register read back as `3`. In the
+pinned Linux driver, `sdm845_smmu_500_data` has no `client_match` table, and the
+ACTLR programming helper returns without writing when a table is absent. Linux
+therefore leaves the SDM845 Apps SMMU ACTLR at its platform value. The observed
+value `3` also matches the MMU-500 TRM reset settings for CPRE and CMTLB; it does
+not establish that writes are locked.
+
+The MMU-500 TRM says to modify ACTLR only during initialization and only while
+`ACR.CACHE_LOCK` is clear. The private audio map now leaves ACTLR untouched,
+keeps its saved value in the candidate-bank ownership snapshot, and checks that
+it remains unchanged during restoration. It no longer writes ACTLR while
+installing or restoring the context bank. The next boot must verify that setup
+advances past the remaining context-bank readbacks before installing SMR/S2CR.
 
 XNU already has `sweet_smmu_map_sid()`, but it creates a shared identity map
 for DRAM. That is not the per-buffer IOVA-to-physical mapping required by the
@@ -389,6 +406,8 @@ mode 7 is built and tested.
 - [Q6 routing driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6routing.c)
 - [ARM SMMU v1/v2 driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/iommu/arm/arm-smmu/arm-smmu.c)
 - [ARM SMMUv2 architecture specification, TCR2 fields](https://documentation-service.arm.com/static/5f900d34f86e16515cdc08fb)
+- [ARM CoreLink MMU-500 TRM, ACTLR usage and reset values](https://documentation-service.arm.com/static/5e908c8cc8052b1608761a37)
+- [Pinned SDM845 Qualcomm SMMU driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c)
 - [Beryllium ALSA UCM profile](https://gitlab.com/sdm845-mainline/alsa-ucm-conf/-/blob/sdm845-phones/ucm2/Xiaomi/beryllium/HiFi.conf)
 - [HakiOS Redwood Q6AFE/Q6ASM/Q6ADM + SMMU path](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/base/xnu/files/bsd/dev/redwood_sound.c)
 - [HakiOS Redwood iOS AudioServerPlugIn](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/userland/userland/src/audio_plugin.c)

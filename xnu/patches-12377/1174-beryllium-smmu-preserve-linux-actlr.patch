@@ -1,0 +1,36 @@
+diff --git a/bsd/dev/sweet_smmu_audio_private.h b/bsd/dev/sweet_smmu_audio_private.h
+index a61a5c7..5f2df1e 100644
+--- a/bsd/dev/sweet_smmu_audio_private.h
++++ b/bsd/dev/sweet_smmu_audio_private.h
+@@ -26,6 +26,7 @@
+ 
+ #define SWEET_SMMU_AUDIO_CB_SCTLR            0x000u
+ #define SWEET_SMMU_AUDIO_CB_ACTLR            0x004u
++/* Linux leaves ACTLR unchanged for non-GPU clients on the SDM845 SMMU-500. */
+ #define SWEET_SMMU_AUDIO_CB_TCR2             0x010u
+ /* The Q6ASM IOVA is below 2^36, so TBI0/TBI1 do not alter this mapping. */
+ #define SWEET_SMMU_AUDIO_TCR2_TBI_MASK       (3u << 5)
+@@ -385,7 +386,6 @@ sweet_smmu_audio_write_cb(const struct sweet_smmu_audio_io *io,
+ 	io->write64(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR1, 0);
+ 	io->write32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR0, 0x44u);
+ 	io->write32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR1, 0);
+-	io->write32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_ACTLR, 0);
+ 	io->write32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_TLBIALL, 0);
+ 	io->write32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_TLBSYNC, 0);
+ 	if (stage != NULL) {
+@@ -410,7 +410,6 @@ sweet_smmu_audio_write_cb(const struct sweet_smmu_audio_io *io,
+ 	    sweet_smmu_audio_check_readback64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR1, 0, readback) &&
+ 	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR0, 0x44u, readback) &&
+ 	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR1, 0, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_ACTLR, 0, readback) &&
+ 	    sweet_smmu_audio_check_readback32(io,
+ 	    cb_offset + SWEET_SMMU_AUDIO_CB_SCTLR, sctlr, readback);
+ }
+@@ -426,7 +425,6 @@ sweet_smmu_audio_write_saved_cb(const struct sweet_smmu_audio_io *io,
+ 	io->write32(io->context, SWEET_SMMU_AUDIO_CB(cb, SWEET_SMMU_AUDIO_CB_SCTLR), 0);
+ 	io->write32(io->context, SWEET_SMMU_AUDIO_CBA2R(cb), saved->cba2r);
+ 	io->write32(io->context, SWEET_SMMU_AUDIO_CBAR(cb), saved->cbar);
+-	io->write32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_ACTLR, saved->actlr);
+ 	io->write32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_TCR2, saved->tcr2);
+ 	io->write64(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR0, saved->ttbr0);
+ 	io->write64(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR1, saved->ttbr1);

@@ -19,6 +19,7 @@ struct fake_mmio {
 	size_t write_count;
 	uint32_t ignored_write_offset;
 	bool ignore_write;
+	bool actlr_sticky;
 	bool tcr2_tbi_sticky;
 };
 
@@ -42,7 +43,10 @@ fake_write(void *context, uint32_t offset, uint32_t value)
 		    offset == SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_TCR2)) {
 			value |= 3u << 5;
 		}
-		mmio->regs[offset / sizeof(uint32_t)] = value;
+		if (!mmio->actlr_sticky ||
+		    offset != SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_ACTLR)) {
+			mmio->regs[offset / sizeof(uint32_t)] = value;
+		}
 	}
 }
 
@@ -247,6 +251,32 @@ test_install_matches_linux_tcr2_and_tolerates_tbi_readback_bits(void)
 }
 
 static void
+test_install_preserves_linux_default_actlr(void)
+{
+	struct fake_mmio mmio;
+	struct sweet_smmu_audio_mapping mapping;
+	struct sweet_smmu_audio_io io;
+	const uint32_t actlr_offset =
+	    SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_ACTLR);
+
+	fake_init(&mmio);
+	io = fake_io(&mmio);
+	mmio.regs[actlr_offset / 4] = 3u;
+	mmio.actlr_sticky = true;
+	assert(sweet_smmu_audio_prepare(&io, 0x1821, &mapping) == SWEET_SMMU_AUDIO_OK);
+	assert(sweet_smmu_audio_install(&io, 0x1821, &mapping, 0x500000) ==
+	    SWEET_SMMU_AUDIO_OK);
+	assert(mapping.installed && !mapping.uncertain);
+	assert(mmio.regs[actlr_offset / 4] == 3u);
+	assert(sweet_smmu_audio_restore(&io, &mapping,
+	    SWEET_SMMU_AUDIO_ACK_RESTORE_REQUIRED) == SWEET_SMMU_AUDIO_OK);
+	assert(mmio.regs[actlr_offset / 4] == 3u);
+	for (size_t i = 0; i < mmio.write_count; i++) {
+		assert(mmio.writes[i].offset != actlr_offset);
+	}
+}
+
+static void
 test_map_restore_preserves_disabled_bank_and_route_registers(void)
 {
 	struct fake_mmio mmio;
@@ -351,6 +381,7 @@ main(void)
 	test_install_reports_context_bank_tlb_timeout_without_mapping_sid();
 	test_install_reports_first_context_bank_readback_mismatch();
 	test_install_matches_linux_tcr2_and_tolerates_tbi_readback_bits();
+	test_install_preserves_linux_default_actlr();
 	test_map_restore_preserves_disabled_bank_and_route_registers();
 	test_five_page_stage1_descriptors_and_q6asm_address();
 	puts("private audio SMMU fake-MMIO checks passed");
