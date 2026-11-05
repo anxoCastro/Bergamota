@@ -156,6 +156,28 @@ test_install_reprobes_sid_immediately_before_mutation(void)
 }
 
 static void
+test_install_reports_context_bank_tlb_timeout_without_mapping_sid(void)
+{
+	struct fake_mmio mmio;
+	struct sweet_smmu_audio_mapping mapping;
+	struct sweet_smmu_audio_io io;
+	enum sweet_smmu_audio_map_stage stage = SWEET_SMMU_AUDIO_MAP_STAGE_COMPLETE;
+
+	fake_init(&mmio);
+	io = fake_io(&mmio);
+	const uint32_t saved_s2cr = mmio.regs[SWEET_SMMU_AUDIO_S2CR(0) / 4];
+	assert(sweet_smmu_audio_prepare(&io, 0x1821, &mapping) == SWEET_SMMU_AUDIO_OK);
+	mmio.regs[SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_TLBSTATUS) / 4] = 1;
+	assert(sweet_smmu_audio_install_diagnostic(&io, 0x1821, &mapping,
+	    0x500000, &stage) == SWEET_SMMU_AUDIO_EIO);
+	assert(stage == SWEET_SMMU_AUDIO_MAP_STAGE_CONTEXT_BANK_TLB_SYNC);
+	assert(strcmp(sweet_smmu_audio_map_stage_name(stage), "context-bank-tlb-sync") == 0);
+	assert(mapping.uncertain && !mapping.installed);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_S2CR(0) / 4] == saved_s2cr);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_SMR(0) / 4] == 0x123);
+}
+
+static void
 test_map_restore_preserves_disabled_bank_and_route_registers(void)
 {
 	struct fake_mmio mmio;
@@ -257,6 +279,7 @@ main(void)
 	test_exact_masked_and_duplicate_sid_matches_are_rejected();
 	test_no_invalid_smr_and_no_unowned_context_bank_are_rejected();
 	test_install_reprobes_sid_immediately_before_mutation();
+	test_install_reports_context_bank_tlb_timeout_without_mapping_sid();
 	test_map_restore_preserves_disabled_bank_and_route_registers();
 	test_five_page_stage1_descriptors_and_q6asm_address();
 	puts("private audio SMMU fake-MMIO checks passed");

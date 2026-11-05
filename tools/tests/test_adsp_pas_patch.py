@@ -36,6 +36,7 @@ LINUX_SMMU_AUDIO_PROBE_PATCH = ROOT / "xnu/patches-12377/1167-beryllium-adsp-smm
 LINUX_ASM_ADM_PATCH = ROOT / "xnu/patches-12377/1168-beryllium-adsp-linux-asm-adm-packets.patch"
 PRIVATE_AUDIO_SMMU_PATCH = ROOT / "xnu/patches-12377/1169-beryllium-smmu-private-audio-buffer.patch"
 MODE7_PATCH = ROOT / "xnu/patches-12377/1170-beryllium-adsp-linux-q6asm-finite-tone.patch"
+MODE7_SMMU_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1171-beryllium-smmu-audio-map-diagnostics.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -128,7 +129,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1170:
+                if not 1131 <= number <= 1171:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -307,6 +308,7 @@ int main(void) {
         self.assertIn("sequence.failed", start)
         self.assertIn("sequence.safe_to_restore", start)
         self.assertIn("sweet_smmu_audio_restore_mapping", start)
+        self.assertIn("private SMMU map returned errno=%d", start)
         self.assertNotRegex(start, r"(?i)(?:gpio|reset)[^;\n]*(?:high|release|1u\s*<<\s*1)")
 
     def test_compiled_mode_seven_sequence_and_existing_mode_flags(self):
@@ -357,16 +359,46 @@ int main(void) {
         self.assertTrue(header_lines, "private SMMU helper header has no added contents")
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            (work / "sweet_smmu_audio_private.h").write_text("\n".join(header_lines) + "\n")
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+            header_path = work / "bsd/dev/sweet_smmu_audio_private.h"
+            header_path.parent.mkdir(parents=True)
+            header_path.write_text("\n".join(header_lines) + "\n")
+            subprocess.run(["git", "add", "bsd/dev/sweet_smmu_audio_private.h"], cwd=work, check=True)
+            subprocess.run(["git", "apply", "--check", "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_DIAGNOSTICS_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_DIAGNOSTICS_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
             binary = work / "smmu-audio-test"
             compile_result = subprocess.run([
-                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(work),
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(header_path.parent),
                 str(ROOT / "tools/tests/test_sweet_smmu_audio_private.c"), "-o", str(binary),
             ], check=False, capture_output=True, text=True)
             self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
             result = subprocess.run([str(binary)], check=False, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("private audio SMMU fake-MMIO checks passed", result.stdout)
+
+    def test_private_audio_smmu_diagnostic_patch_replays_after_mode_seven(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+            for patch in sorted(PATCH.parent.glob("*.patch")):
+                prefix = re.match(r"\d+", patch.name)
+                if prefix is None or int(prefix.group(0)) > 1171:
+                    continue
+                if "bsd/dev/sweet_smmu.c" not in patch.read_text(errors="replace"):
+                    continue
+                if int(prefix.group(0)) == 1171:
+                    subprocess.run(["git", "apply", "--check", "--whitespace=error",
+                                    "--include=bsd/dev/sweet_smmu.c", str(patch)],
+                                   cwd=work, check=True, capture_output=True, text=True)
+                subprocess.run(["git", "apply", f"--include=bsd/dev/sweet_smmu.c", str(patch)],
+                               cwd=work, check=True, capture_output=True, text=True)
+            source = (work / "bsd/dev/sweet_smmu.c").read_text()
+            self.assertIn("SWEET SMMU AUDIO: map failed stage=%s errno=%d", source)
+            self.assertIn("sweet_smmu_audio_install_diagnostic", source)
 
     def test_private_audio_smmu_patch_replays_after_existing_smmu_users(self):
         with tempfile.TemporaryDirectory() as tmp:
