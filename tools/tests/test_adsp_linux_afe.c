@@ -54,11 +54,28 @@ main(void)
 	uint8_t port_packet[BERYLLIUM_ADSP_AFE_I2S_SET_PARAM_PACKET_BYTES];
 	uint8_t start_packet[BERYLLIUM_ADSP_AFE_DEVICE_PACKET_BYTES];
 	uint8_t stop_packet[BERYLLIUM_ADSP_AFE_DEVICE_PACKET_BYTES];
+	uint8_t asm_map_packet[BERYLLIUM_ADSP_ASM_MAP_REQUEST_BYTES];
 	uint8_t response_packet[40];
 	uint8_t get_status_packet[80];
 	struct beryllium_adsp_afe_basic_result basic_result = { 0 };
 	struct beryllium_adsp_afe_response get_response = { 0 };
 	size_t packet_bytes = 0;
+
+	assert(beryllium_adsp_apr_encode_asm_map_regions(asm_map_packet,
+	    sizeof(asm_map_packet), &packet_bytes,
+	    BERYLLIUM_ADSP_ASM_DMA_ADDR, BERYLLIUM_ADSP_ASM_MAP_BYTES));
+	assert(packet_bytes == BERYLLIUM_ADSP_ASM_MAP_REQUEST_BYTES);
+	assert(asm_map_packet[4] == 0 && asm_map_packet[5] == 0 &&
+	    asm_map_packet[8] == 0 && asm_map_packet[9] == 0);
+	assert(beryllium_adsp_apr_linux_transport_route(asm_map_packet,
+	    sizeof(asm_map_packet), packet_bytes,
+	    BERYLLIUM_ADSP_APR_ASM_SERVICE));
+	assert(asm_map_packet[4] == BERYLLIUM_ADSP_APR_ASM_SERVICE &&
+	    asm_map_packet[5] == BERYLLIUM_ADSP_APR_DOMAIN_APPS);
+	assert(asm_map_packet[8] == BERYLLIUM_ADSP_APR_ASM_SERVICE &&
+	    asm_map_packet[9] == BERYLLIUM_ADSP_APR_DOMAIN_ADSP);
+	assert(!beryllium_adsp_apr_linux_transport_route(asm_map_packet,
+	    sizeof(asm_map_packet), packet_bytes, 0));
 
 	assert(beryllium_adsp_apr_encode_afe_clock_set(clock_packet,
 	    sizeof(clock_packet), &packet_bytes, true));
@@ -172,6 +189,6 @@ main(void)
 	    BERYLLIUM_ADSP_AFE_RESPONSE_STATUS);
 	assert(get_response.status == 2 && get_response.i2s.sample_rate == 0);
 
-	puts("Linux AFE packet helper checks passed");
+	puts("Linux AFE/ASM APR packet helper checks passed");
 	return 0;
 }

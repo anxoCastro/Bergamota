@@ -40,6 +40,7 @@ MODE7_SMMU_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1171-beryllium-smmu-aud
 MODE7_SMMU_READBACK_PATCH = ROOT / "xnu/patches-12377/1172-beryllium-smmu-readback-values.patch"
 MODE7_SMMU_LINUX_TCR2_PATCH = ROOT / "xnu/patches-12377/1173-beryllium-smmu-linux-tcr2-readback.patch"
 MODE7_SMMU_ACTLR_PATCH = ROOT / "xnu/patches-12377/1174-beryllium-smmu-preserve-linux-actlr.patch"
+MODE7_APR_ROUTE_PATCH = ROOT / "xnu/patches-12377/1176-beryllium-apr-linux-transport-route.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -132,7 +133,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1175:
+                if not 1131 <= number <= 1176:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -140,6 +141,10 @@ class AdspPasPatchTests(unittest.TestCase):
                                 str(later)], cwd=work,
                                check=True, capture_output=True, text=True)
             cls.latest_driver = (work / "bsd/dev/beryllium_adsp.c").read_text()
+
+    def test_linux_apr_wait_matches_q6asm_five_second_timeout(self):
+        self.assertRegex(self.latest_driver,
+                         r"#define ADSP_APR_POLL_MS\s+5000u")
 
     def test_pas_start_has_an_explicit_mode_two_gate(self):
         probe = added_function_body(self.driver, "beryllium_adsp_probe")
@@ -1327,10 +1332,12 @@ class AdspAprMode4Tests(unittest.TestCase):
                 subprocess.run(["git", "apply", f"--include={header_path}",
                                 str(patch)], cwd=work, check=True,
                                capture_output=True, text=True)
-            if LINUX_AFE_LIFECYCLE_PATCH.is_file():
+            for helper_patch in (LINUX_AFE_LIFECYCLE_PATCH,
+                                 LINUX_ASM_ADM_PATCH,
+                                 MODE7_APR_ROUTE_PATCH):
                 subprocess.run(["git", "apply", f"--include={header_path}",
-                                str(LINUX_AFE_LIFECYCLE_PATCH)], cwd=work,
-                               check=True, capture_output=True, text=True)
+                                str(helper_patch)], cwd=work, check=True,
+                               capture_output=True, text=True)
             executable = work / "test-linux-afe"
             compile_result = subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
@@ -1343,7 +1350,16 @@ class AdspAprMode4Tests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(),
-                             "Linux AFE packet helper checks passed")
+                             "Linux AFE/ASM APR packet helper checks passed")
+
+    def test_linux_raw_glink_sender_applies_apr_transport_routing(self):
+        self.assertTrue(MODE7_APR_ROUTE_PATCH.is_file(),
+                        "patch 1176 must reproduce APR service/domain routing")
+        driver = diff_section(MODE7_APR_ROUTE_PATCH.read_text(),
+                              "bsd/dev/beryllium_adsp.c")
+        self.assertIn("memcpy(frame + 16, packet, packet_bytes)", driver)
+        self.assertIn("beryllium_adsp_apr_linux_transport_route(frame + 16",
+                      driver)
 
     def test_compiled_apr_mode4_helpers(self):
         self.assertTrue(APR_MODE4_PATCH.is_file(),

@@ -135,7 +135,8 @@ For PCM playback, `q6asm_dai_prepare()` first maps the PCM buffer into the DSP
 shared-memory pool. Linux maps one contiguous region, rounds its size up to
 4 KiB, and sends `ASM_CMD_SHARED_MEM_MAP_REGIONS` with
 `ADSP_MEMORY_MAP_SHMEM8_4K_POOL` (pool ID `3`). The request contains one
-address/size region and returns a memory-map handle. The DAI then sends
+address/size region and returns a memory-map handle; the Linux synchronous
+command path waits up to five seconds for that response. The DAI then sends
 `OPEN_WRITE_V3`, registers the session with q6routing, and sends the
 multi-channel PCM media-format block. `q6routing_stream_open()` opens an ADM
 COPP for the selected output port and matrix-maps the ASM session to that
@@ -170,11 +171,15 @@ q6routing opens the QUAT device in ADM with playback path 1, endpoint
 16-bit samples and 48 kHz. The open request is 48 bytes; its response provides
 the COPP ID. The RX matrix route is a 36-byte `MATRIX_MAP_ROUTINGS_V5`
 request containing ASM session 1 and that COPP ID. Linux zero-allocates
-ASM/ADM APR packets, so service and domain bytes 4–11 stay zero. This differs
-from the validated AFE packets, which explicitly fill their service/domain
-fields. The mode-5 Q6Core response advertised ASM service 7/API 1.0 and ADM
-service 8/API 2.0 once each. A later ASM/ADM mode should reject missing,
-duplicate or different-version service records before sending data.
+ASM/ADM APR packets, so service and domain bytes 4–11 are initially zero.
+Before sending, `apr_send_pkt()` fills the wire header with source service 7 or
+8, source domain APPS (5), destination service 7 or 8, and destination domain
+ADSP (4). A raw GLINK sender must reproduce this APR transport step; forwarding
+the zeroed packet directly leaves the command unrouted. The AFE encoders in
+this port already include those fields. The mode-5 Q6Core response advertised
+ASM service 7/API 1.0 and ADM service 8/API 2.0 once each. A later ASM/ADM
+mode should reject missing, duplicate, or different-version service records
+before sending data.
 
 The inherited SDM845 Q6ASM DAI node spells its Apps SMMU specifier as
 `<&apps_smmu 0x1821 0x0>`. The Linux Q6ASM DAI reads the first cell, masks it
@@ -402,6 +407,7 @@ mode 7 is built and tested.
 - [SDM845 machine driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/sdm845.c)
 - [Q6ASM DAI driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6asm-dai.c)
 - [Q6ASM APR core driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6asm.c)
+- [APR transport driver, which fills service/domain routing fields](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/soc/qcom/apr.c)
 - [Q6ADM driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6adm.c)
 - [Q6 routing driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6routing.c)
 - [ARM SMMU v1/v2 driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/iommu/arm/arm-smmu/arm-smmu.c)

@@ -1,0 +1,66 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 8dedc6c..a3af685 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -76,7 +76,7 @@ extern vnode_t rootvnode;
+ #define ADSP_GLINK_POLL_MS       2000u
+ #define ADSP_APR_OPEN_POLL_MS    3000u
+ #define ADSP_APR_INTENT_POLL_MS  3000u
+-#define ADSP_APR_POLL_MS         3000u
++#define ADSP_APR_POLL_MS         5000u
+ #define ADSP_APR_LOCAL_CHANNEL   1u
+ #define ADSP_APR_GLINK_FRAME_MAX 528u
+ #define ADSP_SMP2P_OUT_ITEM      429u
+@@ -2787,6 +2787,13 @@ adsp_apr_send_linux_packet(const struct adsp_glink_survey_items *items,
+ 		    service_name);
+ 		return false;
+ 	}
++	memcpy(frame + 16, packet, packet_bytes);
++	if (!beryllium_adsp_apr_linux_transport_route(frame + 16,
++	    sizeof(frame) - 16, packet_bytes, service)) {
++		printf("SWEET ADSP: Linux %s command stopped; APR service/domain route invalid\n",
++		    service_name);
++		return false;
++	}
+ 	for (size_t i = 0; i < state->remote_intent_count; i++) {
+ 		const struct beryllium_adsp_glink_intent *candidate =
+ 		    &state->remote_intents[i];
+@@ -2827,9 +2834,6 @@ adsp_apr_send_linux_packet(const struct adsp_glink_survey_items *items,
+ 	beryllium_adsp_apr_put32(frame + 4, selected->id);
+ 	beryllium_adsp_apr_put32(frame + 8, (uint32_t)packet_bytes);
+ 	beryllium_adsp_apr_put32(frame + 12, 0);
+-	for (size_t i = 0; i < packet_bytes; i++) {
+-		frame[16 + i] = packet[i];
+-	}
+ 	if (!adsp_glink_send_frame(items, frame, 16 + packet_bytes)) {
+ 		printf("SWEET ADSP: Linux %s command GLINK TX failed opcode=%#x\n",
+ 		    service_name, request_opcode);
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index cd5594b..3655f91 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -217,6 +217,24 @@ beryllium_adsp_apr_put32(uint8_t *p, uint32_t value)
+ 	p[3] = (uint8_t)(value >> 24);
+ }
+ 
++static inline bool
++beryllium_adsp_apr_linux_transport_route(uint8_t *packet, size_t capacity,
++	size_t packet_bytes, uint8_t service)
++{
++	if (packet == NULL || packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    packet_bytes > capacity ||
++	    (service != BERYLLIUM_ADSP_APR_AFE_SERVICE &&
++	    service != BERYLLIUM_ADSP_APR_ASM_SERVICE &&
++	    service != BERYLLIUM_ADSP_APR_ADM_SERVICE)) {
++		return false;
++	}
++	packet[4] = service;
++	packet[5] = BERYLLIUM_ADSP_APR_DOMAIN_APPS;
++	packet[8] = service;
++	packet[9] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
++	return true;
++}
++
+ static inline bool
+ beryllium_adsp_apr_encode_get_fwk_version(uint8_t packet[BERYLLIUM_ADSP_APR_HEADER_BYTES])
+ {
