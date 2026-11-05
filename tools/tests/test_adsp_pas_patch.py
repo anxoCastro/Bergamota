@@ -37,6 +37,7 @@ LINUX_ASM_ADM_PATCH = ROOT / "xnu/patches-12377/1168-beryllium-adsp-linux-asm-ad
 PRIVATE_AUDIO_SMMU_PATCH = ROOT / "xnu/patches-12377/1169-beryllium-smmu-private-audio-buffer.patch"
 MODE7_PATCH = ROOT / "xnu/patches-12377/1170-beryllium-adsp-linux-q6asm-finite-tone.patch"
 MODE7_SMMU_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1171-beryllium-smmu-audio-map-diagnostics.patch"
+MODE7_SMMU_READBACK_PATCH = ROOT / "xnu/patches-12377/1172-beryllium-smmu-readback-values.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -129,7 +130,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1171:
+                if not 1131 <= number <= 1172:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -370,6 +371,13 @@ int main(void) {
             subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu_audio_private.h",
                             str(MODE7_SMMU_DIAGNOSTICS_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--check", "--whitespace=error",
+                            "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_READBACK_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_READBACK_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
             binary = work / "smmu-audio-test"
             compile_result = subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(header_path.parent),
@@ -386,11 +394,11 @@ int main(void) {
             subprocess.run(["git", "init", "-q"], cwd=work, check=True)
             for patch in sorted(PATCH.parent.glob("*.patch")):
                 prefix = re.match(r"\d+", patch.name)
-                if prefix is None or int(prefix.group(0)) > 1171:
+                if prefix is None or int(prefix.group(0)) > 1172:
                     continue
                 if "bsd/dev/sweet_smmu.c" not in patch.read_text(errors="replace"):
                     continue
-                if int(prefix.group(0)) == 1171:
+                if int(prefix.group(0)) in (1171, 1172):
                     subprocess.run(["git", "apply", "--check", "--whitespace=error",
                                     "--include=bsd/dev/sweet_smmu.c", str(patch)],
                                    cwd=work, check=True, capture_output=True, text=True)
@@ -399,6 +407,7 @@ int main(void) {
             source = (work / "bsd/dev/sweet_smmu.c").read_text()
             self.assertIn("SWEET SMMU AUDIO: map failed stage=%s errno=%d", source)
             self.assertIn("sweet_smmu_audio_install_diagnostic", source)
+            self.assertIn("context-bank readback CB=%u register=%#x expected=%#llx actual=%#llx", source)
 
     def test_private_audio_smmu_patch_replays_after_existing_smmu_users(self):
         with tempfile.TemporaryDirectory() as tmp:

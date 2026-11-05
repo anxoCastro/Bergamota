@@ -1,0 +1,168 @@
+diff --git a/bsd/dev/sweet_smmu.c b/bsd/dev/sweet_smmu.c
+index 6579bbb..2804225 100644
+--- a/bsd/dev/sweet_smmu.c
++++ b/bsd/dev/sweet_smmu.c
+@@ -354,6 +354,7 @@ sweet_smmu_audio_map_buffer(uintptr_t buffer_va, size_t bytes, uint64_t *iova)
+ 	int error = EINVAL;
+ 	enum sweet_smmu_audio_map_stage stage = SWEET_SMMU_AUDIO_MAP_STAGE_ARGUMENTS;
+ 	struct sweet_smmu_audio_mapping mapping = { 0 };
++	struct sweet_smmu_audio_readback readback = { 0 };
+ 	struct sweet_smmu_audio_io io = {
+ 		.context = NULL,
+ 		.read32 = smmu_audio_read32,
+@@ -468,7 +469,7 @@ sweet_smmu_audio_map_buffer(uintptr_t buffer_va, size_t bytes, uint64_t *iova)
+ 		goto audio_out;
+ 	}
+ 	error = sweet_smmu_audio_install_diagnostic(&io, SWEET_SMMU_AUDIO_SID,
+-	    &mapping, l1_pa, &stage);
++	    &mapping, l1_pa, &stage, &readback);
+ 	if (mapping.uncertain || mapping.installed) {
+ 		smmu_audio_mapping = mapping;
+ 	}
+@@ -482,6 +483,12 @@ sweet_smmu_audio_map_buffer(uintptr_t buffer_va, size_t bytes, uint64_t *iova)
+ audio_out:
+ 	__atomic_store_n(&smmu_lock, 0, __ATOMIC_RELEASE);
+ 	if (error != SWEET_SMMU_AUDIO_OK) {
++		if (readback.valid) {
++			printf("SWEET SMMU AUDIO: context-bank readback CB=%u register=%#x expected=%#llx actual=%#llx\n",
++			    mapping.cb_index, readback.offset,
++			    (unsigned long long)readback.expected,
++			    (unsigned long long)readback.actual);
++		}
+ 		return smmu_audio_map_failed(stage, error);
+ 	}
+ 	return error == SWEET_SMMU_AUDIO_OK ? 0 : error;
+diff --git a/bsd/dev/sweet_smmu_audio_private.h b/bsd/dev/sweet_smmu_audio_private.h
+index 6d6e122..d8a1a79 100644
+--- a/bsd/dev/sweet_smmu_audio_private.h
++++ b/bsd/dev/sweet_smmu_audio_private.h
+@@ -126,6 +126,13 @@ struct sweet_smmu_audio_io {
+ 	void (*write64)(void *, uint32_t, uint64_t);
+ };
+ 
++struct sweet_smmu_audio_readback {
++	bool valid;
++	uint32_t offset;
++	uint64_t expected;
++	uint64_t actual;
++};
++
+ struct sweet_smmu_audio_saved_cb {
+ 	uint32_t sctlr;
+ 	uint32_t actlr;
+@@ -167,6 +174,40 @@ sweet_smmu_audio_read64(const struct sweet_smmu_audio_io *io, uint32_t offset)
+ 	    ((uint64_t)io->read32(io->context, offset + 4u) << 32);
+ }
+ 
++static inline bool
++sweet_smmu_audio_check_readback32(const struct sweet_smmu_audio_io *io,
++	uint32_t offset, uint32_t expected, struct sweet_smmu_audio_readback *readback)
++{
++	uint32_t actual = io->read32(io->context, offset);
++	if (actual == expected) {
++		return true;
++	}
++	if (readback != NULL) {
++		readback->valid = true;
++		readback->offset = offset;
++		readback->expected = expected;
++		readback->actual = actual;
++	}
++	return false;
++}
++
++static inline bool
++sweet_smmu_audio_check_readback64(const struct sweet_smmu_audio_io *io,
++	uint32_t offset, uint64_t expected, struct sweet_smmu_audio_readback *readback)
++{
++	uint64_t actual = sweet_smmu_audio_read64(io, offset);
++	if (actual == expected) {
++		return true;
++	}
++	if (readback != NULL) {
++		readback->valid = true;
++		readback->offset = offset;
++		readback->expected = expected;
++		readback->actual = actual;
++	}
++	return false;
++}
++
+ static inline bool
+ sweet_smmu_audio_io_valid(const struct sweet_smmu_audio_io *io)
+ {
+@@ -299,7 +340,8 @@ sweet_smmu_audio_wait_tlb(const struct sweet_smmu_audio_io *io, unsigned cb_inde
+ static inline bool
+ sweet_smmu_audio_write_cb(const struct sweet_smmu_audio_io *io,
+ 	const struct sweet_smmu_audio_mapping *mapping, uint64_t ttbr0,
+-	enum sweet_smmu_audio_map_stage *stage)
++	enum sweet_smmu_audio_map_stage *stage,
++	struct sweet_smmu_audio_readback *readback)
+ {
+ 	unsigned cb = mapping->cb_index;
+ 	uint32_t cb_offset = SWEET_SMMU_AUDIO_CB(cb, 0);
+@@ -335,18 +377,19 @@ sweet_smmu_audio_write_cb(const struct sweet_smmu_audio_io *io,
+ 	if (stage != NULL) {
+ 		*stage = SWEET_SMMU_AUDIO_MAP_STAGE_CONTEXT_BANK_READBACK;
+ 	}
+-	return io->read32(io->context, SWEET_SMMU_AUDIO_CBA2R(cb)) == 1u &&
+-	    io->read32(io->context, SWEET_SMMU_AUDIO_CBAR(cb)) == cbar &&
+-	    io->read32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_TCR2) == tcr2 &&
+-	    io->read32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_TCR) == tcr &&
+-	    io->read32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_CONTEXTIDR) == cb &&
+-	    sweet_smmu_audio_read64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR0) ==
+-	    (ttbr0 | ((uint64_t)cb << 48)) &&
+-	    sweet_smmu_audio_read64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR1) == 0 &&
+-	    io->read32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR0) == 0x44u &&
+-	    io->read32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR1) == 0 &&
+-	    io->read32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_ACTLR) == 0 &&
+-	    io->read32(io->context, cb_offset + SWEET_SMMU_AUDIO_CB_SCTLR) == sctlr;
++	return sweet_smmu_audio_check_readback32(io, SWEET_SMMU_AUDIO_CBA2R(cb), 1u, readback) &&
++	    sweet_smmu_audio_check_readback32(io, SWEET_SMMU_AUDIO_CBAR(cb), cbar, readback) &&
++	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_TCR2, tcr2, readback) &&
++	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_TCR, tcr, readback) &&
++	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_CONTEXTIDR, cb, readback) &&
++	    sweet_smmu_audio_check_readback64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR0,
++	    ttbr0 | ((uint64_t)cb << 48), readback) &&
++	    sweet_smmu_audio_check_readback64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR1, 0, readback) &&
++	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR0, 0x44u, readback) &&
++	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR1, 0, readback) &&
++	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_ACTLR, 0, readback) &&
++	    sweet_smmu_audio_check_readback32(io,
++	    cb_offset + SWEET_SMMU_AUDIO_CB_SCTLR, sctlr, readback);
+ }
+ 
+ static inline bool
+@@ -385,9 +428,13 @@ sweet_smmu_audio_write_saved_cb(const struct sweet_smmu_audio_io *io,
+ static inline int
+ sweet_smmu_audio_install_diagnostic(const struct sweet_smmu_audio_io *io,
+ 	uint32_t sid, struct sweet_smmu_audio_mapping *mapping, uint64_t l1_pa,
+-	enum sweet_smmu_audio_map_stage *stage)
++	enum sweet_smmu_audio_map_stage *stage,
++	struct sweet_smmu_audio_readback *readback)
+ {
+ 	struct sweet_smmu_audio_mapping current = { 0 };
++	if (readback != NULL) {
++		*readback = (struct sweet_smmu_audio_readback){ 0 };
++	}
+ 	if (stage != NULL) {
+ 		*stage = SWEET_SMMU_AUDIO_MAP_STAGE_INSTALL_ARGUMENTS;
+ 	}
+@@ -415,7 +462,7 @@ sweet_smmu_audio_install_diagnostic(const struct sweet_smmu_audio_io *io,
+ 		return SWEET_SMMU_AUDIO_EBUSY;
+ 	}
+ 	mapping->uncertain = true;
+-	if (!sweet_smmu_audio_write_cb(io, mapping, l1_pa, stage)) {
++	if (!sweet_smmu_audio_write_cb(io, mapping, l1_pa, stage, readback)) {
+ 		return SWEET_SMMU_AUDIO_EIO;
+ 	}
+ 	mapping->installed_s2cr = SWEET_SMMU_AUDIO_S2CR_TRANSLATE | mapping->cb_index;
+@@ -450,7 +497,7 @@ static inline int
+ sweet_smmu_audio_install(const struct sweet_smmu_audio_io *io, uint32_t sid,
+ 	struct sweet_smmu_audio_mapping *mapping, uint64_t l1_pa)
+ {
+-	return sweet_smmu_audio_install_diagnostic(io, sid, mapping, l1_pa, NULL);
++	return sweet_smmu_audio_install_diagnostic(io, sid, mapping, l1_pa, NULL, NULL);
+ }
+ 
+ static inline int
