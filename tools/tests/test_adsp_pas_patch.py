@@ -34,6 +34,7 @@ LINUX_AFE_LIFECYCLE_PATCH = ROOT / "xnu/patches-12377/1165-beryllium-adsp-linux-
 LINUX_AFE_MODE5_PATCH = ROOT / "xnu/patches-12377/1166-beryllium-adsp-linux-afe-mode5.patch"
 LINUX_SMMU_AUDIO_PROBE_PATCH = ROOT / "xnu/patches-12377/1167-beryllium-adsp-smmu-audio-sid-readonly.patch"
 LINUX_ASM_ADM_PATCH = ROOT / "xnu/patches-12377/1168-beryllium-adsp-linux-asm-adm-packets.patch"
+PRIVATE_AUDIO_SMMU_PATCH = ROOT / "xnu/patches-12377/1169-beryllium-smmu-private-audio-buffer.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -246,6 +247,56 @@ int main(void) {
                 self.assertIn(status, result.stdout)
         patch_text = LINUX_SMMU_AUDIO_PROBE_PATCH.read_text()
         self.assertEqual(patch_text.count("diff --git "), 1)
+
+    def test_private_audio_smmu_fake_mmio_ownership_mapping_and_restore(self):
+        patch = PRIVATE_AUDIO_SMMU_PATCH.read_text()
+        section = diff_section(patch, "bsd/dev/sweet_smmu_audio_private.h")
+        self.assertTrue(section, "patch 1169 must add the testable private SMMU helper header")
+        header_lines = [line[1:] for line in section.splitlines()
+                        if line.startswith("+") and not line.startswith("+++")]
+        self.assertTrue(header_lines, "private SMMU helper header has no added contents")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            (work / "sweet_smmu_audio_private.h").write_text("\n".join(header_lines) + "\n")
+            binary = work / "smmu-audio-test"
+            compile_result = subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(work),
+                str(ROOT / "tools/tests/test_sweet_smmu_audio_private.c"), "-o", str(binary),
+            ], check=False, capture_output=True, text=True)
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run([str(binary)], check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("private audio SMMU fake-MMIO checks passed", result.stdout)
+
+    def test_private_audio_smmu_patch_replays_after_existing_smmu_users(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+            earlier = []
+            for patch in sorted(PATCH.parent.glob("*.patch")):
+                prefix = re.match(r"\d+", patch.name)
+                if prefix is None:
+                    continue
+                number = int(prefix.group(0))
+                if number >= 1169 or "bsd/dev/sweet_smmu.c" not in patch.read_text(errors="replace"):
+                    continue
+                earlier.append(patch)
+            self.assertGreater(len(earlier), 10)
+            for patch in earlier:
+                subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu.c", str(patch)],
+                               cwd=work, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--check", "--whitespace=error",
+                            str(PRIVATE_AUDIO_SMMU_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", str(PRIVATE_AUDIO_SMMU_PATCH)],
+                           cwd=work, check=True, capture_output=True, text=True)
+            source = (work / "bsd/dev/sweet_smmu.c").read_text()
+            header = (work / "bsd/dev/sweet_smmu_audio_private.h").read_text()
+            self.assertIn("sweet_smmu_audio_map_buffer", source)
+            self.assertIn("sweet_smmu_audio_restore_mapping", source)
+            self.assertIn("sweet_smmu_audio_prepare", source)
+            self.assertIn("SWEET_SMMU_AUDIO_ACK_RESTORE_REQUIRED", header)
+            self.assertIn("SWEET_SMMU_AUDIO_IOVA", header)
 
     def test_all_firmware_and_carveout_gates_precede_pas_mutation(self):
         start = added_function_body(self.driver, "beryllium_adsp_pas_start")
