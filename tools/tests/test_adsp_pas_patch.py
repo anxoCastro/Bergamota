@@ -33,6 +33,7 @@ AFE_GET_PARAM_PATCH = ROOT / "xnu/patches-12377/1164-beryllium-adsp-afe-get-para
 LINUX_AFE_LIFECYCLE_PATCH = ROOT / "xnu/patches-12377/1165-beryllium-adsp-linux-afe-lifecycle.patch"
 LINUX_AFE_MODE5_PATCH = ROOT / "xnu/patches-12377/1166-beryllium-adsp-linux-afe-mode5.patch"
 LINUX_SMMU_AUDIO_PROBE_PATCH = ROOT / "xnu/patches-12377/1167-beryllium-adsp-smmu-audio-sid-readonly.patch"
+LINUX_ASM_ADM_PATCH = ROOT / "xnu/patches-12377/1168-beryllium-adsp-linux-asm-adm-packets.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -1199,12 +1200,22 @@ class AdspAprMode4Tests(unittest.TestCase):
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(AFE_GET_PARAM_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
+            if LINUX_AFE_LIFECYCLE_PATCH.is_file():
+                subprocess.run(["git", "apply", f"--include={header_path}",
+                                str(LINUX_AFE_LIFECYCLE_PATCH)], cwd=work,
+                               check=True, capture_output=True, text=True)
+            if LINUX_ASM_ADM_PATCH.is_file():
+                subprocess.run(["git", "apply", f"--include={header_path}",
+                                str(LINUX_ASM_ADM_PATCH)], cwd=work,
+                               check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
-            subprocess.run([
+            compile_result = subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
                 "-I", str((work / header_path).parent), str(harness),
                 "-o", str(executable),
-            ], check=True, capture_output=True, text=True)
+            ], check=False, capture_output=True, text=True)
+            self.assertEqual(compile_result.returncode, 0,
+                             compile_result.stderr)
             result = subprocess.run([str(executable)], check=False,
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

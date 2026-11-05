@@ -48,6 +48,198 @@ make_afe_apr_header(uint8_t *p, uint16_t size, uint32_t opcode)
 	put32(p + 16, opcode);
 }
 
+static void
+make_linux_apr_header(uint8_t *p, uint16_t size, uint16_t src_port,
+	uint16_t dest_port, uint32_t token, uint32_t opcode)
+{
+	memset(p, 0, size);
+	put16(p, 0x0181); /* APR v1 response with a 32-byte header */
+	put16(p + 2, size);
+	put16(p + 6, src_port);
+	put16(p + 10, dest_port);
+	put32(p + 12, token);
+	put32(p + 16, opcode);
+}
+
+static void
+test_linux_asm_adm_packets(void)
+{
+	uint8_t packet[64] = { 0 };
+	uint8_t response[64] = { 0 };
+	size_t packet_bytes = 0;
+	uint32_t value = 0;
+	uint16_t copp_id = 0;
+	struct beryllium_adsp_apr_response service_table = { 0 };
+	const uint64_t dma_base = 0x0000000110000000ULL;
+	const uint64_t dma_period2 = 0x0000000110002580ULL;
+
+	assert(beryllium_adsp_apr_encode_asm_map_regions(packet, sizeof(packet),
+	    &packet_bytes, dma_base, 20480));
+	assert(packet_bytes == 40 && beryllium_adsp_apr_get16(packet) == 0x0250);
+	assert(beryllium_adsp_apr_get16(packet + 2) == 40);
+	assert(beryllium_adsp_apr_get16(packet + 6) == 0 &&
+	    beryllium_adsp_apr_get16(packet + 10) == 0);
+	assert(beryllium_adsp_apr_get32(packet + 12) == 0x100);
+	assert(beryllium_adsp_apr_get32(packet + 16) == 0x10d92);
+	assert(beryllium_adsp_apr_get16(packet + 20) == 3 &&
+	    beryllium_adsp_apr_get16(packet + 22) == 1);
+	assert(beryllium_adsp_apr_get32(packet + 24) == 0);
+	assert(beryllium_adsp_apr_get32(packet + 28) == 0x10000000 &&
+	    beryllium_adsp_apr_get32(packet + 32) == 1 &&
+	    beryllium_adsp_apr_get32(packet + 36) == 20480);
+	assert(!beryllium_adsp_apr_encode_asm_map_regions(packet,
+	    39, &packet_bytes, dma_base, 20480));
+	assert(!beryllium_adsp_apr_encode_asm_map_regions(packet, sizeof(packet),
+	    &packet_bytes, dma_base, 20479));
+
+	assert(beryllium_adsp_apr_encode_asm_open_write(packet, sizeof(packet),
+	    &packet_bytes));
+	assert(packet_bytes == 36 && beryllium_adsp_apr_get16(packet + 6) == 0x101 &&
+	    beryllium_adsp_apr_get16(packet + 10) == 0x101);
+	assert(beryllium_adsp_apr_get32(packet + 12) == 1 &&
+	    beryllium_adsp_apr_get32(packet + 16) == 0x10db3);
+	assert(beryllium_adsp_apr_get32(packet + 20) == 0 &&
+	    beryllium_adsp_apr_get16(packet + 24) == 0 &&
+	    beryllium_adsp_apr_get16(packet + 26) == 16 &&
+	    beryllium_adsp_apr_get32(packet + 28) == 0x10c68 &&
+	    beryllium_adsp_apr_get32(packet + 32) == 0x10da5);
+
+	assert(beryllium_adsp_apr_encode_asm_pcm_format(packet, sizeof(packet),
+	    &packet_bytes));
+	assert(packet_bytes == 44 && beryllium_adsp_apr_get16(packet + 6) == 0x101 &&
+	    beryllium_adsp_apr_get32(packet + 16) == 0x10d98);
+	assert(beryllium_adsp_apr_get32(packet + 20) == 20 &&
+	    beryllium_adsp_apr_get16(packet + 24) == 2 &&
+	    beryllium_adsp_apr_get16(packet + 26) == 16 &&
+	    beryllium_adsp_apr_get32(packet + 28) == 48000 &&
+	    beryllium_adsp_apr_get16(packet + 32) == 1 &&
+	    beryllium_adsp_apr_get16(packet + 34) == 0);
+	assert(packet[36] == 1 && packet[37] == 2 && packet[38] == 0 &&
+	    packet[43] == 0);
+
+	assert(beryllium_adsp_apr_encode_adm_open_quat(packet, sizeof(packet),
+	    &packet_bytes, 0));
+	assert(packet_bytes == 48 && beryllium_adsp_apr_get16(packet + 6) == 0x1006 &&
+	    beryllium_adsp_apr_get16(packet + 10) == 0x1006);
+	assert(beryllium_adsp_apr_get32(packet + 16) == 0x10326 &&
+	    beryllium_adsp_apr_get32(packet + 12) == (22u << 16));
+	assert(beryllium_adsp_apr_get16(packet + 22) == 1 &&
+	    beryllium_adsp_apr_get16(packet + 24) == 0x1006 &&
+	    beryllium_adsp_apr_get32(packet + 28) == 0x10312 &&
+	    beryllium_adsp_apr_get16(packet + 32) == 2 &&
+	    beryllium_adsp_apr_get16(packet + 34) == 16 &&
+	    beryllium_adsp_apr_get32(packet + 36) == 48000);
+	assert(packet[40] == 1 && packet[41] == 2 && packet[42] == 0 &&
+	    packet[47] == 0);
+
+	assert(beryllium_adsp_apr_encode_adm_matrix_map(packet, sizeof(packet),
+	    &packet_bytes, 7));
+	assert(packet_bytes == 36 && beryllium_adsp_apr_get32(packet + 16) == 0x10325 &&
+	    beryllium_adsp_apr_get32(packet + 20) == 0 &&
+	    beryllium_adsp_apr_get32(packet + 24) == 1 &&
+	    beryllium_adsp_apr_get16(packet + 28) == 1 &&
+	    beryllium_adsp_apr_get16(packet + 30) == 1 &&
+	    beryllium_adsp_apr_get16(packet + 32) == 7 &&
+	    beryllium_adsp_apr_get16(packet + 34) == 0);
+
+	assert(beryllium_adsp_apr_encode_asm_run(packet, sizeof(packet),
+	    &packet_bytes));
+	assert(packet_bytes == 32 && beryllium_adsp_apr_get16(packet + 6) == 0x101 &&
+	    beryllium_adsp_apr_get32(packet + 12) == 1 &&
+	    beryllium_adsp_apr_get32(packet + 16) == 0x10daa);
+	assert(beryllium_adsp_apr_get32(packet + 20) == 0 &&
+	    beryllium_adsp_apr_get32(packet + 24) == 0 &&
+	    beryllium_adsp_apr_get32(packet + 28) == 0);
+
+	assert(beryllium_adsp_apr_encode_asm_write(packet, sizeof(packet),
+	    &packet_bytes, dma_period2, 0x55, 4800, 2));
+	assert(packet_bytes == 52 && beryllium_adsp_apr_get16(packet + 6) == 0x101 &&
+	    beryllium_adsp_apr_get16(packet + 10) == 0x101);
+	assert(beryllium_adsp_apr_get32(packet + 12) == 0x12c00002 &&
+	    beryllium_adsp_apr_get32(packet + 16) == 0x10dab);
+	assert(beryllium_adsp_apr_get32(packet + 20) == 0x10002580 &&
+	    beryllium_adsp_apr_get32(packet + 24) == 1 &&
+	    beryllium_adsp_apr_get32(packet + 28) == 0x55 &&
+	    beryllium_adsp_apr_get32(packet + 32) == 4800 &&
+	    beryllium_adsp_apr_get32(packet + 36) == 2 &&
+	    beryllium_adsp_apr_get32(packet + 40) == 0 &&
+	    beryllium_adsp_apr_get32(packet + 44) == 0 &&
+	    beryllium_adsp_apr_get32(packet + 48) == 0);
+
+	assert(beryllium_adsp_apr_encode_asm_close(packet, sizeof(packet),
+	    &packet_bytes));
+	assert(packet_bytes == 20 && beryllium_adsp_apr_get16(packet + 6) == 0x101 &&
+	    beryllium_adsp_apr_get32(packet + 12) == 1 &&
+	    beryllium_adsp_apr_get32(packet + 16) == 0x10bcd);
+	assert(beryllium_adsp_apr_encode_asm_unmap(packet, sizeof(packet),
+	    &packet_bytes, 0x55));
+	assert(packet_bytes == 24 && beryllium_adsp_apr_get16(packet + 6) == 0 &&
+	    beryllium_adsp_apr_get32(packet + 12) == 0x100 &&
+	    beryllium_adsp_apr_get32(packet + 16) == 0x10d94 &&
+	    beryllium_adsp_apr_get32(packet + 20) == 0x55);
+	assert(beryllium_adsp_apr_encode_adm_close(packet, sizeof(packet),
+	    &packet_bytes, 7, 0));
+	assert(packet_bytes == 20 && beryllium_adsp_apr_get16(packet + 6) == 22 &&
+	    beryllium_adsp_apr_get16(packet + 10) == 7 &&
+	    beryllium_adsp_apr_get32(packet + 12) == (22u << 16) &&
+	    beryllium_adsp_apr_get32(packet + 16) == 0x10327);
+
+	make_linux_apr_header(response, 40, 0, 0, 0x100, 0x10d93);
+	put32(response + 32, 0x55);
+	assert(beryllium_adsp_apr_parse_asm_map_result(response, 40, 0x100,
+	    &value) && value == 0x55);
+	put32(response + 12, 0x101);
+	assert(!beryllium_adsp_apr_parse_asm_map_result(response, 40, 0x100,
+	    &value));
+
+	make_linux_apr_header(response, 40, 0, 0, 22u << 16, 0x10329);
+	put32(response + 32, 0);
+	beryllium_adsp_apr_put16(response + 36, 7);
+	beryllium_adsp_apr_put16(response + 38, 0);
+	assert(beryllium_adsp_apr_parse_adm_open_result(response, 40, 22u << 16,
+	    &copp_id) && copp_id == 7);
+	put32(response + 32, 1);
+	assert(!beryllium_adsp_apr_parse_adm_open_result(response, 40, 22u << 16,
+	    &copp_id));
+
+	make_linux_apr_header(response, 40, 0, 0x101, 1, 0x110e8);
+	put32(response + 32, 0x10db3);
+	put32(response + 36, 0);
+	assert(beryllium_adsp_apr_parse_linux_basic_result(response, 40,
+	    0x101, 1, 0x10db3, &value) && value == 0);
+	put32(response + 32, 0x10db4);
+	assert(!beryllium_adsp_apr_parse_linux_basic_result(response, 40,
+	    0x101, 1, 0x10db3, &value));
+
+	const uint32_t write_token = 0x12c00002;
+	make_linux_apr_header(response, 40, 0, 0x101, write_token, 0x10d99);
+	put32(response + 32, 0x10002580);
+	put32(response + 36, 1);
+	assert(beryllium_adsp_apr_parse_asm_write_done(response, 40,
+	    write_token, 0x0000000110002580ULL, 2, 4800));
+	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 40,
+	    write_token, 0x0000000110002581ULL, 2, 4800));
+	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 40,
+	    write_token + 1, 0x0000000110002580ULL, 2, 4800));
+
+	service_table.service_count = 3;
+	service_table.services[0].service_id = 7;
+	service_table.services[0].api_version = 1;
+	service_table.services[0].api_branch_version = 0;
+	service_table.services[1].service_id = 8;
+	service_table.services[1].api_version = 2;
+	service_table.services[1].api_branch_version = 0;
+	service_table.services[2].service_id = 4;
+	service_table.services[2].api_version = 2;
+	service_table.services[2].api_branch_version = 0;
+	assert(beryllium_adsp_apr_audio_services_available(&service_table));
+	service_table.services[0].api_version = 2;
+	assert(!beryllium_adsp_apr_audio_services_available(&service_table));
+	service_table.services[0].api_version = 1;
+	service_table.services[2] = service_table.services[0];
+	assert(!beryllium_adsp_apr_audio_services_available(&service_table));
+}
+
 int
 main(void)
 {
@@ -638,6 +830,7 @@ main(void)
 	    sizeof(afe_basic_response), &parsed_afe) ==
 	    BERYLLIUM_ADSP_AFE_RESPONSE_MALFORMED);
 
+	test_linux_asm_adm_packets();
 	puts("APR mode-4 helper checks passed");
 	return 0;
 }

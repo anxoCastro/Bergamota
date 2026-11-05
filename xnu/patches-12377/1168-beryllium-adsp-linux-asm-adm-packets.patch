@@ -1,0 +1,421 @@
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+index d88a9b8..cd5594b 100644
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -9,6 +9,10 @@
+ #define BERYLLIUM_ADSP_APR_DOMAIN_APPS 5u
+ #define BERYLLIUM_ADSP_APR_Q6CORE_SERVICE 3u
+ #define BERYLLIUM_ADSP_APR_AFE_SERVICE 4u
++#define BERYLLIUM_ADSP_APR_ASM_SERVICE 7u
++#define BERYLLIUM_ADSP_APR_ASM_API 1u
++#define BERYLLIUM_ADSP_APR_ADM_SERVICE 8u
++#define BERYLLIUM_ADSP_APR_ADM_API 2u
+ #define BERYLLIUM_ADSP_APR_HEADER_BYTES 20u
+ #define BERYLLIUM_ADSP_APR_SEQ_CMD_HDR_FIELD 0x0250u
+ #define BERYLLIUM_ADSP_APR_RSP_HDR_FIELD 0x0150u
+@@ -46,6 +50,52 @@
+ 	 BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES + BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES)
+ #define BERYLLIUM_ADSP_AFE_GET_PARAM_PAYLOAD_BYTES \
+ 	(BERYLLIUM_ADSP_AFE_PARAM_HEADER_BYTES + BERYLLIUM_ADSP_AFE_I2S_CONFIG_BYTES)
++#define BERYLLIUM_ADSP_ASM_SESSION_ID 1u
++#define BERYLLIUM_ADSP_ASM_STREAM_ID 1u
++#define BERYLLIUM_ADSP_ASM_PLAYBACK_PORT \
++	((BERYLLIUM_ADSP_ASM_SESSION_ID << 8) | BERYLLIUM_ADSP_ASM_STREAM_ID)
++#define BERYLLIUM_ADSP_ASM_MAP_TOKEN \
++	(BERYLLIUM_ADSP_ASM_SESSION_ID << 8)
++#define BERYLLIUM_ADSP_ASM_POOL_ID 3u
++#define BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS 0x00010d92u
++#define BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS_RSP 0x00010d93u
++#define BERYLLIUM_ADSP_ASM_SHARED_MEM_UNMAP_REGIONS 0x00010d94u
++#define BERYLLIUM_ADSP_ASM_MEDIA_FMT_UPDATE_V2 0x00010d98u
++#define BERYLLIUM_ADSP_ASM_WRITE_DONE_V2 0x00010d99u
++#define BERYLLIUM_ADSP_ASM_RUN_V2 0x00010daau
++#define BERYLLIUM_ADSP_ASM_WRITE_V2 0x00010dabu
++#define BERYLLIUM_ADSP_ASM_OPEN_WRITE_V3 0x00010db3u
++#define BERYLLIUM_ADSP_ASM_CLOSE 0x00010bcdu
++#define BERYLLIUM_ADSP_ASM_NULL_POPP_TOPOLOGY 0x00010c68u
++#define BERYLLIUM_ADSP_ASM_PCM_V2 0x00010da5u
++#define BERYLLIUM_ADSP_ADM_DEVICE_OPEN_V5 0x00010326u
++#define BERYLLIUM_ADSP_ADM_DEVICE_OPEN_V5_RSP 0x00010329u
++#define BERYLLIUM_ADSP_ADM_DEVICE_CLOSE_V5 0x00010327u
++#define BERYLLIUM_ADSP_ADM_MATRIX_MAP_ROUTINGS_V5 0x00010325u
++#define BERYLLIUM_ADSP_ADM_QUAT_LOGICAL_PORT 22u
++#define BERYLLIUM_ADSP_ADM_QUAT_ENDPOINT 0x1006u
++#define BERYLLIUM_ADSP_ADM_PATH_PLAYBACK 1u
++#define BERYLLIUM_ADSP_ADM_NULL_COPP_TOPOLOGY 0x00010312u
++#define BERYLLIUM_ADSP_ADM_RX_MATRIX 0u
++#define BERYLLIUM_ADSP_ASM_DMA_IOVA 0x10000000u
++#define BERYLLIUM_ADSP_ASM_DMA_ADDR \
++	(((uint64_t)1u << 32) | BERYLLIUM_ADSP_ASM_DMA_IOVA)
++#define BERYLLIUM_ADSP_ASM_PERIOD_BYTES 4800u
++#define BERYLLIUM_ADSP_ASM_PERIOD_COUNT 4u
++#define BERYLLIUM_ADSP_ASM_PCM_BYTES \
++	(BERYLLIUM_ADSP_ASM_PERIOD_BYTES * BERYLLIUM_ADSP_ASM_PERIOD_COUNT)
++#define BERYLLIUM_ADSP_ASM_MAP_BYTES 20480u
++#define BERYLLIUM_ADSP_ASM_MAP_REQUEST_BYTES 40u
++#define BERYLLIUM_ADSP_ASM_OPEN_WRITE_BYTES 36u
++#define BERYLLIUM_ADSP_ASM_PCM_FORMAT_BYTES 44u
++#define BERYLLIUM_ADSP_ADM_OPEN_BYTES 48u
++#define BERYLLIUM_ADSP_ADM_MATRIX_MAP_BYTES 36u
++#define BERYLLIUM_ADSP_ASM_RUN_BYTES 32u
++#define BERYLLIUM_ADSP_ASM_WRITE_BYTES 52u
++#define BERYLLIUM_ADSP_ADM_CLOSE_BYTES BERYLLIUM_ADSP_APR_HEADER_BYTES
++#define BERYLLIUM_ADSP_ASM_CLOSE_BYTES BERYLLIUM_ADSP_APR_HEADER_BYTES
++#define BERYLLIUM_ADSP_ASM_UNMAP_BYTES (BERYLLIUM_ADSP_APR_HEADER_BYTES + 4u)
++#define BERYLLIUM_ADSP_ADM_MAX_COPPS 8u
+ #define BERYLLIUM_ADSP_APR_CHANNEL_NAME "apr_audio_svc"
+ #define BERYLLIUM_ADSP_APR_CHANNEL_NAME_BYTES 14u
+ #define BERYLLIUM_ADSP_FASTRPC_CHANNEL_NAME "fastrpcglink-apps-dsp"
+@@ -707,6 +757,35 @@ beryllium_adsp_apr_afe_api_v2_available(
+ 	return matches == 1u && supported;
+ }
+ 
++static inline bool
++beryllium_adsp_apr_audio_services_available(
++	const struct beryllium_adsp_apr_response *response)
++{
++	uint32_t asm_matches = 0, adm_matches = 0;
++	bool asm_supported = false, adm_supported = false;
++	if (response == NULL || response->service_count >
++	    BERYLLIUM_ADSP_APR_MAX_DATA_BYTES / 12u) {
++		return false;
++	}
++	for (uint32_t i = 0; i < response->service_count; i++) {
++		const struct beryllium_adsp_apr_service_api *service =
++		    &response->services[i];
++		if (service->service_id == BERYLLIUM_ADSP_APR_ASM_SERVICE) {
++			asm_matches++;
++			asm_supported = service->api_version ==
++			    BERYLLIUM_ADSP_APR_ASM_API &&
++			    service->api_branch_version == 0;
++		} else if (service->service_id == BERYLLIUM_ADSP_APR_ADM_SERVICE) {
++			adm_matches++;
++			adm_supported = service->api_version ==
++			    BERYLLIUM_ADSP_APR_ADM_API &&
++			    service->api_branch_version == 0;
++		}
++	}
++	return asm_matches == 1u && asm_supported && adm_matches == 1u &&
++	    adm_supported;
++}
++
+ static inline enum beryllium_adsp_afe_response_kind
+ beryllium_adsp_apr_parse_afe_get_i2s_config(const uint8_t *packet,
+ 	size_t packet_bytes, struct beryllium_adsp_afe_response *response)
+@@ -796,4 +875,316 @@ beryllium_adsp_apr_parse_afe_get_i2s_config(const uint8_t *packet,
+ 	return BERYLLIUM_ADSP_AFE_RESPONSE_GET_PARAM;
+ }
+ 
++/* Linux q6asm/q6adm allocate zeroed APR headers and fill only these fields. */
++static inline bool
++beryllium_adsp_apr_encode_linux_header(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes, size_t total_bytes, uint16_t src_port,
++	uint16_t dest_port, uint32_t token, uint32_t opcode)
++{
++	if (packet == NULL || packet_bytes == NULL ||
++	    total_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    total_bytes > capacity || total_bytes > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES ||
++	    total_bytes > 0xffffu || opcode == 0) {
++		return false;
++	}
++	for (size_t i = 0; i < total_bytes; i++) {
++		packet[i] = 0;
++	}
++	beryllium_adsp_apr_put16(packet, BERYLLIUM_ADSP_APR_SEQ_CMD_HDR_FIELD);
++	beryllium_adsp_apr_put16(packet + 2, (uint16_t)total_bytes);
++	beryllium_adsp_apr_put16(packet + 6, src_port);
++	beryllium_adsp_apr_put16(packet + 10, dest_port);
++	beryllium_adsp_apr_put32(packet + 12, token);
++	beryllium_adsp_apr_put32(packet + 16, opcode);
++	*packet_bytes = total_bytes;
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_asm_map_regions(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes, uint64_t dma_addr, uint32_t mapped_bytes)
++{
++	if (dma_addr != BERYLLIUM_ADSP_ASM_DMA_ADDR ||
++	    mapped_bytes != BERYLLIUM_ADSP_ASM_MAP_BYTES ||
++	    !beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
++	    BERYLLIUM_ADSP_ASM_MAP_REQUEST_BYTES, 0, 0,
++	    BERYLLIUM_ADSP_ASM_MAP_TOKEN,
++	    BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS)) {
++		return false;
++	}
++	beryllium_adsp_apr_put16(packet + 20, BERYLLIUM_ADSP_ASM_POOL_ID);
++	beryllium_adsp_apr_put16(packet + 22, 1);
++	beryllium_adsp_apr_put32(packet + 24, 0);
++	beryllium_adsp_apr_put32(packet + 28, (uint32_t)dma_addr);
++	beryllium_adsp_apr_put32(packet + 32, (uint32_t)(dma_addr >> 32));
++	beryllium_adsp_apr_put32(packet + 36, mapped_bytes);
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_asm_open_write(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes)
++{
++	if (!beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
++	    BERYLLIUM_ADSP_ASM_OPEN_WRITE_BYTES,
++	    BERYLLIUM_ADSP_ASM_PLAYBACK_PORT, BERYLLIUM_ADSP_ASM_PLAYBACK_PORT,
++	    BERYLLIUM_ADSP_ASM_SESSION_ID,
++	    BERYLLIUM_ADSP_ASM_OPEN_WRITE_V3)) {
++		return false;
++	}
++	beryllium_adsp_apr_put16(packet + 26, 16);
++	beryllium_adsp_apr_put32(packet + 28,
++	    BERYLLIUM_ADSP_ASM_NULL_POPP_TOPOLOGY);
++	beryllium_adsp_apr_put32(packet + 32, BERYLLIUM_ADSP_ASM_PCM_V2);
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_asm_pcm_format(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes)
++{
++	if (!beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
++	    BERYLLIUM_ADSP_ASM_PCM_FORMAT_BYTES,
++	    BERYLLIUM_ADSP_ASM_PLAYBACK_PORT, BERYLLIUM_ADSP_ASM_PLAYBACK_PORT,
++	    BERYLLIUM_ADSP_ASM_SESSION_ID,
++	    BERYLLIUM_ADSP_ASM_MEDIA_FMT_UPDATE_V2)) {
++		return false;
++	}
++	beryllium_adsp_apr_put32(packet + 20, 20);
++	beryllium_adsp_apr_put16(packet + 24, 2);
++	beryllium_adsp_apr_put16(packet + 26, 16);
++	beryllium_adsp_apr_put32(packet + 28, 48000);
++	beryllium_adsp_apr_put16(packet + 32, 1);
++	packet[36] = 1; /* PCM_CHANNEL_FL */
++	packet[37] = 2; /* PCM_CHANNEL_FR */
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_adm_open_quat(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes, uint16_t copp_index)
++{
++	uint32_t token = (BERYLLIUM_ADSP_ADM_QUAT_LOGICAL_PORT << 16) |
++	    copp_index;
++	if (copp_index >= BERYLLIUM_ADSP_ADM_MAX_COPPS ||
++	    !beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
++	    BERYLLIUM_ADSP_ADM_OPEN_BYTES,
++	    BERYLLIUM_ADSP_ADM_QUAT_ENDPOINT,
++	    BERYLLIUM_ADSP_ADM_QUAT_ENDPOINT, token,
++	    BERYLLIUM_ADSP_ADM_DEVICE_OPEN_V5)) {
++		return false;
++	}
++	beryllium_adsp_apr_put16(packet + 22,
++	    BERYLLIUM_ADSP_ADM_PATH_PLAYBACK);
++	beryllium_adsp_apr_put16(packet + 24,
++	    BERYLLIUM_ADSP_ADM_QUAT_ENDPOINT);
++	beryllium_adsp_apr_put32(packet + 28,
++	    BERYLLIUM_ADSP_ADM_NULL_COPP_TOPOLOGY);
++	beryllium_adsp_apr_put16(packet + 32, 2);
++	beryllium_adsp_apr_put16(packet + 34, 16);
++	beryllium_adsp_apr_put32(packet + 36, 48000);
++	packet[40] = 1; /* PCM_CHANNEL_FL */
++	packet[41] = 2; /* PCM_CHANNEL_FR */
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_adm_matrix_map(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes, uint16_t copp_id)
++{
++	if (copp_id == 0 || copp_id == 0x00ffu ||
++	    !beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
++	    BERYLLIUM_ADSP_ADM_MATRIX_MAP_BYTES, 0, 0, 0,
++	    BERYLLIUM_ADSP_ADM_MATRIX_MAP_ROUTINGS_V5)) {
++		return false;
++	}
++	beryllium_adsp_apr_put32(packet + 20, BERYLLIUM_ADSP_ADM_RX_MATRIX);
++	beryllium_adsp_apr_put32(packet + 24, 1);
++	beryllium_adsp_apr_put16(packet + 28, BERYLLIUM_ADSP_ASM_SESSION_ID);
++	beryllium_adsp_apr_put16(packet + 30, 1);
++	beryllium_adsp_apr_put16(packet + 32, copp_id);
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_asm_run(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes)
++{
++	return beryllium_adsp_apr_encode_linux_header(packet, capacity,
++	    packet_bytes, BERYLLIUM_ADSP_ASM_RUN_BYTES,
++	    BERYLLIUM_ADSP_ASM_PLAYBACK_PORT, BERYLLIUM_ADSP_ASM_PLAYBACK_PORT,
++	    BERYLLIUM_ADSP_ASM_SESSION_ID, BERYLLIUM_ADSP_ASM_RUN_V2);
++}
++
++static inline bool
++beryllium_adsp_apr_encode_asm_write(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes, uint64_t dma_addr, uint32_t map_handle,
++	uint32_t write_bytes, uint32_t seq_id)
++{
++	uint64_t expected_addr = BERYLLIUM_ADSP_ASM_DMA_ADDR +
++	    (uint64_t)seq_id * BERYLLIUM_ADSP_ASM_PERIOD_BYTES;
++	if (seq_id >= BERYLLIUM_ADSP_ASM_PERIOD_COUNT ||
++	    dma_addr != expected_addr || map_handle == 0 ||
++	    write_bytes != BERYLLIUM_ADSP_ASM_PERIOD_BYTES ||
++	    !beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
++	    BERYLLIUM_ADSP_ASM_WRITE_BYTES,
++	    BERYLLIUM_ADSP_ASM_PLAYBACK_PORT, BERYLLIUM_ADSP_ASM_PLAYBACK_PORT,
++	    seq_id | (write_bytes << 16), BERYLLIUM_ADSP_ASM_WRITE_V2)) {
++		return false;
++	}
++	beryllium_adsp_apr_put32(packet + 20, (uint32_t)dma_addr);
++	beryllium_adsp_apr_put32(packet + 24, (uint32_t)(dma_addr >> 32));
++	beryllium_adsp_apr_put32(packet + 28, map_handle);
++	beryllium_adsp_apr_put32(packet + 32, write_bytes);
++	beryllium_adsp_apr_put32(packet + 36, seq_id);
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_asm_close(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes)
++{
++	return beryllium_adsp_apr_encode_linux_header(packet, capacity,
++	    packet_bytes, BERYLLIUM_ADSP_ASM_CLOSE_BYTES,
++	    BERYLLIUM_ADSP_ASM_PLAYBACK_PORT, BERYLLIUM_ADSP_ASM_PLAYBACK_PORT,
++	    BERYLLIUM_ADSP_ASM_SESSION_ID, BERYLLIUM_ADSP_ASM_CLOSE);
++}
++
++static inline bool
++beryllium_adsp_apr_encode_asm_unmap(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes, uint32_t map_handle)
++{
++	if (map_handle == 0 ||
++	    !beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
++	    BERYLLIUM_ADSP_ASM_UNMAP_BYTES, 0, 0,
++	    BERYLLIUM_ADSP_ASM_MAP_TOKEN,
++	    BERYLLIUM_ADSP_ASM_SHARED_MEM_UNMAP_REGIONS)) {
++		return false;
++	}
++	beryllium_adsp_apr_put32(packet + 20, map_handle);
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_encode_adm_close(uint8_t *packet, size_t capacity,
++	size_t *packet_bytes, uint16_t copp_id, uint16_t copp_index)
++{
++	uint32_t token = (BERYLLIUM_ADSP_ADM_QUAT_LOGICAL_PORT << 16) |
++	    copp_index;
++	if (copp_id == 0 || copp_id == 0x00ffu ||
++	    copp_index >= BERYLLIUM_ADSP_ADM_MAX_COPPS ||
++	    !beryllium_adsp_apr_encode_linux_header(packet, capacity, packet_bytes,
++	    BERYLLIUM_ADSP_ADM_CLOSE_BYTES,
++	    BERYLLIUM_ADSP_ADM_QUAT_LOGICAL_PORT, copp_id, token,
++	    BERYLLIUM_ADSP_ADM_DEVICE_CLOSE_V5)) {
++		return false;
++	}
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_linux_reply_view(const uint8_t *packet,
++	size_t packet_bytes, uint32_t expected_opcode, uint32_t expected_token,
++	uint16_t expected_dest_port, size_t expected_payload_bytes,
++	const uint8_t **payload)
++{
++	uint16_t header_field, declared_bytes;
++	uint8_t header_version, header_words, message_type;
++	size_t header_bytes;
++	if (packet == NULL || payload == NULL || expected_opcode == 0 ||
++	    packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    packet_bytes > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES) {
++		return false;
++	}
++	header_field = beryllium_adsp_apr_get16(packet);
++	header_version = (uint8_t)(header_field & 0x000fu);
++	header_words = (uint8_t)((header_field & 0x00f0u) >> 4);
++	message_type = (uint8_t)((header_field & 0x0300u) >> 8);
++	header_bytes = (size_t)header_words * 4u;
++	declared_bytes = beryllium_adsp_apr_get16(packet + 2);
++	if (header_version > 1u || message_type != 1u ||
++	    (header_field & 0xfc00u) != 0 ||
++	    header_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    header_bytes > packet_bytes || declared_bytes != packet_bytes ||
++	    packet[4] != 0 || packet[5] != 0 || packet[8] != 0 || packet[9] != 0 ||
++	    beryllium_adsp_apr_get32(packet + 12) != expected_token ||
++	    beryllium_adsp_apr_get32(packet + 16) != expected_opcode ||
++	    (expected_dest_port != 0xffffu &&
++	    beryllium_adsp_apr_get16(packet + 10) != expected_dest_port) ||
++	    packet_bytes != header_bytes + expected_payload_bytes) {
++		return false;
++	}
++	*payload = packet + header_bytes;
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_parse_asm_map_result(const uint8_t *packet,
++	size_t packet_bytes, uint32_t expected_token, uint32_t *map_handle)
++{
++	const uint8_t *payload = NULL;
++	if (map_handle == NULL ||
++	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
++	    BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS_RSP, expected_token, 0, 8,
++	    &payload) || beryllium_adsp_apr_get32(payload) == 0 ||
++	    beryllium_adsp_apr_get32(payload + 4) != 0) {
++		return false;
++	}
++	*map_handle = beryllium_adsp_apr_get32(payload);
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_parse_adm_open_result(const uint8_t *packet,
++	size_t packet_bytes, uint32_t expected_token, uint16_t *copp_id)
++{
++	const uint8_t *payload = NULL;
++	if (copp_id == NULL ||
++	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
++	    BERYLLIUM_ADSP_ADM_DEVICE_OPEN_V5_RSP, expected_token, 0xffffu, 8,
++	    &payload) || beryllium_adsp_apr_get32(payload) != 0 ||
++	    beryllium_adsp_apr_get16(payload + 6) != 0) {
++		return false;
++	}
++	*copp_id = beryllium_adsp_apr_get16(payload + 4);
++	return *copp_id != 0 && *copp_id != 0x00ffu;
++}
++
++static inline bool
++beryllium_adsp_apr_parse_linux_basic_result(const uint8_t *packet,
++	size_t packet_bytes, uint16_t expected_dest_port, uint32_t expected_token,
++	uint32_t expected_request_opcode, uint32_t *status)
++{
++	const uint8_t *payload = NULL;
++	if (status == NULL || expected_request_opcode == 0 ||
++	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_BASIC_RSP_RESULT, expected_token,
++	    expected_dest_port, 8, &payload) ||
++	    beryllium_adsp_apr_get32(payload) != expected_request_opcode) {
++		return false;
++	}
++	*status = beryllium_adsp_apr_get32(payload + 4);
++	return true;
++}
++
++static inline bool
++beryllium_adsp_apr_parse_asm_write_done(const uint8_t *packet,
++	size_t packet_bytes, uint32_t expected_token, uint64_t expected_dma_addr,
++	uint32_t expected_seq_id, uint32_t expected_write_bytes)
++{
++	const uint8_t *payload = NULL;
++	uint32_t token = expected_seq_id | (expected_write_bytes << 16);
++	if (expected_seq_id >= BERYLLIUM_ADSP_ASM_PERIOD_COUNT ||
++	    expected_write_bytes != BERYLLIUM_ADSP_ASM_PERIOD_BYTES ||
++	    expected_token != token ||
++	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
++	    BERYLLIUM_ADSP_ASM_WRITE_DONE_V2, token,
++	    BERYLLIUM_ADSP_ASM_PLAYBACK_PORT, 8, &payload)) {
++		return false;
++	}
++	return beryllium_adsp_apr_get32(payload) == (uint32_t)expected_dma_addr &&
++	    beryllium_adsp_apr_get32(payload + 4) ==
++	    (uint32_t)(expected_dma_addr >> 32);
++}
++
+ #endif /* _BERYLLIUM_ADSP_APR_PROBE_H_ */
