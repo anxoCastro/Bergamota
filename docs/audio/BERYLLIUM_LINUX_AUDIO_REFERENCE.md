@@ -251,6 +251,23 @@ the configuration and volume controls used by UCM. The DAI's pinmux and the
 I2C amplifier setup must both work for speaker output. This route is distinct
 from the WCD9340/SLIMbus route used by headphones and microphones.
 
+### TAS reset GPIO mapping for the first XNU tone test
+
+The Beryllium DTS assigns the TAS2559/TAS2560 reset lines to TLMM GPIOs 12 and
+76. The TI datasheet identifies `/RESET` as active-low, so the opt-in XNU
+transport test drives both physical lines low and keeps them low; it does not
+configure the amplifiers over I2C or attempt playback through their power
+stages. The DTS property itself records the GPIO numbers; reset polarity comes
+from the TI device datasheet.
+
+The SDM845 pinctrl table places GPIO 12 in the SOUTH region and GPIO 76 in the
+EAST region. Its register macro uses region base + `0x1000 * gpio` for the
+configuration register and adds 4 for the I/O register. With the TLMM base at
+`0x03400000`, the mode-7 driver maps GPIO 12's window from `0x03d00000` and
+GPIO 76's from `0x03500000`; GPIO 76 is not in NORTH. This mapping was checked
+against the `sdm845-6.18.2-r0` pinctrl source after catching the earlier
+NORTH assumption in a test-first check.
+
 ## Cross-port XNU reference: HakiOS Redwood audio
 
 The public HakiOS Redwood implementation separates the audio path into four
@@ -297,18 +314,18 @@ Q6ASM/Q6ADM, configure WCD9340 or TAS firmware, manipulate GPIO/pinctrl, or
 expose an iOS audio device. The test vector may enable the QUAT clock and
 port, but it is not audible playback.
 
-The next milestone is a bounded Linux-style PCM route: map a 19,200-byte
-four-period buffer rounded to 20,480 bytes in ASM pool 3, open MultiMedia1
-(session 1/stream 1), open and matrix-map the ADM QUAT COPP, set
-48 kHz/S16/stereo, then complete four 25 ms WRITE_V2 periods. Patches 1168 and
-1169 now contain the packet helpers and private per-buffer SMMU mapping; the
-mode-7 orchestration, CI build and device run are still pending. ASM/ADM use
+Patch 1170 now adds an opt-in bounded Linux-style PCM route: it maps a
+19,200-byte four-period buffer rounded to 20,480 bytes in ASM pool 3, opens
+MultiMedia1 (session 1/stream 1), opens and matrix-maps the ADM QUAT COPP, sets
+48 kHz/S16/stereo, and waits for four 25 ms WRITE_V2 completions. ASM/ADM use
 zeroed APR service/domain fields; the AFE requests retain the verified AFE
-service/domain fields. The mode keeps both TAS reset GPIOs low and does not
-claim audible playback. After this transport test, bring up pinmux and TAS
-configuration as a separate stage, then investigate an iOS 26
-AudioServerPlugIn/HAL bridge. The headphone and microphone route additionally
-requires WCD9340 and SLIMbus support.
+service/domain fields. Local host tests and ordered replay pass. This patch
+still needs the GitHub kernel build and a read-only phone boot. Even a complete
+APR/SMMU test would not prove audible playback because the TAS amplifiers stay
+in reset. After the transport stage, bring up pinmux and TAS configuration
+separately, then investigate an iOS 26 AudioServerPlugIn/HAL bridge. The
+headphone and microphone route additionally requires WCD9340 and SLIMbus
+support.
 Linux's working topology is a source reference, not evidence that any of
 these paths already work in XNU.
 
@@ -340,6 +357,10 @@ mode 7 is built and tested.
 ## Primary source references
 
 - [Beryllium common DTS](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/arch/arm64/boot/dts/qcom/sdm845-xiaomi-beryllium-common.dtsi)
+- [Beryllium TAS2559/TAS2560 reset GPIO declarations](https://github.com/Matheus-Garbelini/Kernel-Sphinx-Pocophone-F1/blob/master/arch/arm64/boot/dts/qcom/beryllium-p0.dtsi)
+- [SDM845 pinctrl GPIO region offsets and GPIO 12/76 groups](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/pinctrl/qcom/pinctrl-sdm845.c)
+- [SDM845 TLMM register base](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/arch/arm64/boot/dts/qcom/sdm845.dtsi)
+- [TI TAS2559 datasheet](https://www.ti.com/lit/ds/symlink/tas2559.pdf)
 - [SDM845 SoC DTS, including the Q6ASM DAI Apps SMMU specifier](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/arch/arm64/boot/dts/qcom/sdm845.dtsi)
 - [Q6AFE core driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6afe.c)
 - [Q6AFE DAI driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6afe-dai.c)

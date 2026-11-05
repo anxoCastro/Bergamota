@@ -67,10 +67,10 @@
 - Create: `xnu/patches-12377/1170-beryllium-adsp-linux-q6asm-finite-tone.patch`
 - Stage: ignored `.superpowers/patch-work-1170/`
 
-- [ ] Add failing mode/state-machine assertions before implementation: mode 7 requests PAS/GLINK/APR, stops on the first failed response, performs no more than four WRITE_V2 sends, rejects mismatched completions, and never requests TAS reset release. Keep mode 1–6 expected flags unchanged.
-- [ ] Implement reset GPIO 12/76 assertion and output verification before the SMMU mapping; abort with no SMMU writes if either line is not confirmed low.
-- [ ] Implement mode 7 using the tested helper sequence: private SMMU mapping, pool-3 map, ASM open, ADM QUAT COPP/matrix route, PCM format, existing AFE clock/config/start, RUN, four 25 ms WRITE_V2 cycles using four 4,800-byte offsets, then acknowledged close/unmap/ADM close/AFE stop.
-- [ ] On timeout or malformed response after possible DSP acceptance, stop sending new PCM, keep TAS resets low, and retain permanent PCM/page-table memory plus active SMMU mapping; log the exact uncertain stage.
+- [x] Add failing mode/state-machine assertions before implementation: mode 7 requests PAS/GLINK/APR, stops on the first failed response, performs no more than four WRITE_V2 sends, rejects mismatched completions, and never requests TAS reset release. Keep mode 1–6 expected flags unchanged.
+- [x] Implement reset GPIO 12/76 assertion and output verification before the SMMU mapping; abort with no SMMU writes if either line is not confirmed low. GPIO 12 maps through SOUTH; GPIO 76 maps through EAST.
+- [x] Implement mode 7 using the tested helper sequence: private SMMU mapping, pool-3 map, ASM open, ADM QUAT COPP/matrix route, PCM format, existing AFE clock/config/start, RUN, four 25 ms WRITE_V2 cycles using four 4,800-byte offsets, then acknowledged close/unmap/ADM close/AFE stop.
+- [x] On timeout or malformed response after possible DSP acceptance, stop sending new PCM, keep TAS resets low, and retain permanent PCM/page-table memory plus active SMMU mapping; log the exact uncertain stage.
 - [ ] Run patch replay, compiled mode/state-machine harness, focused/full tests, `git diff --check`, local C cross-compile where possible, and the GitHub Actions build. Record exact run ID, head SHA, kernel checksum and artifact status in `NOTES.md`.
 - [ ] Package a temporary read-only image with `sweetadsp=7`; verify its inner payload/loader checksums; capture Fastboot RAM boot logs. Confirm every expected APR result, exactly four WRITE_DONE events and SMMU restore, then leave the phone in Fastboot.
 - [ ] Commit the implementation and a separate handoff update with observed boot output and any remaining blocker.

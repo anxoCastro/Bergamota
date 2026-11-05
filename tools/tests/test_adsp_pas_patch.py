@@ -35,6 +35,7 @@ LINUX_AFE_MODE5_PATCH = ROOT / "xnu/patches-12377/1166-beryllium-adsp-linux-afe-
 LINUX_SMMU_AUDIO_PROBE_PATCH = ROOT / "xnu/patches-12377/1167-beryllium-adsp-smmu-audio-sid-readonly.patch"
 LINUX_ASM_ADM_PATCH = ROOT / "xnu/patches-12377/1168-beryllium-adsp-linux-asm-adm-packets.patch"
 PRIVATE_AUDIO_SMMU_PATCH = ROOT / "xnu/patches-12377/1169-beryllium-smmu-private-audio-buffer.patch"
+MODE7_PATCH = ROOT / "xnu/patches-12377/1170-beryllium-adsp-linux-q6asm-finite-tone.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -88,6 +89,21 @@ def c_function_definition(source: str, name: str) -> str:
     raise AssertionError(f"function {name} is not closed in replayed source")
 
 
+def c_named_function_definition(source: str, name: str) -> str:
+    match = re.search(rf"(?m)^(?:static\s+)?(?:void|bool|int)\s+{re.escape(name)}\s*\([^;]*?\)\s*\{{", source)
+    if not match:
+        raise AssertionError(f"function {name} not found in replayed source")
+    depth = 0
+    for index in range(match.start(), len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[match.start() : index + 1]
+    raise AssertionError(f"function {name} is not closed in replayed source")
+
+
 class AdspPasPatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -112,7 +128,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1167:
+                if not 1131 <= number <= 1170:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -147,6 +163,7 @@ static bool adsp_pas_requested;
 static bool adsp_glink_requested;
 static bool adsp_apr_requested;
 static bool adsp_linux_afe_requested;
+static bool adsp_linux_asm_requested;
 static int adsp_state;
 static int boot_mode, helper_result, parse_calls, smp2p_calls;
 static int smmu_calls, last_sid, last_level;
@@ -169,9 +186,9 @@ static int PE_parse_boot_argn(const char *name, void *out, size_t bytes) {
 	memcpy(out, &boot_mode, sizeof(boot_mode));
 	return 1;
 }
-static bool beryllium_adsp_glink_mode_valid(int mode) { return mode >= 1 && mode <= 5; }
-static bool beryllium_adsp_glink_mode_requests_pas(int mode) { return mode >= 2 && mode <= 5; }
-static bool beryllium_adsp_glink_mode_requests_glink(int mode) { return mode >= 3 && mode <= 5; }
+static bool beryllium_adsp_glink_mode_valid(int mode) { return (mode >= 1 && mode <= 5) || mode == 7; }
+static bool beryllium_adsp_glink_mode_requests_pas(int mode) { return (mode >= 2 && mode <= 5) || mode == 7; }
+static bool beryllium_adsp_glink_mode_requests_glink(int mode) { return (mode >= 3 && mode <= 5) || mode == 7; }
 static void adsp_smp2p_readonly_probe(bool unused) { (void)unused; smp2p_calls++; }
 int sweet_smmu_probe_sid(unsigned sid, unsigned level) {
 	smmu_calls++;
@@ -182,7 +199,7 @@ int sweet_smmu_probe_sid(unsigned sid, unsigned level) {
 
 static void reset_state(int mode, bool board, int result) {
 	adsp_probe_enabled = adsp_pas_requested = adsp_glink_requested = false;
-	adsp_apr_requested = adsp_linux_afe_requested = false;
+	adsp_apr_requested = adsp_linux_afe_requested = adsp_linux_asm_requested = false;
 	adsp_state = 0;
 	boot_mode = mode;
 	helper_result = result;
@@ -203,7 +220,8 @@ int main(void) {
 		beryllium_adsp_probe();
 		if (!adsp_probe_enabled || adsp_pas_requested != want_pas[mode] ||
 		    adsp_glink_requested != want_glink[mode] || adsp_apr_requested != want_apr[mode] ||
-		    adsp_linux_afe_requested != want_afe[mode] || smp2p_calls != 1 || smmu_calls != 0) {
+		    adsp_linux_afe_requested != want_afe[mode] || adsp_linux_asm_requested ||
+		    smp2p_calls != 1 || smmu_calls != 0) {
 			fprintf(stderr, "existing ADSP mode %d changed: enabled=%d pas=%d glink=%d apr=%d afe=%d smp2p=%d smmu=%d\n",
 			    mode, adsp_probe_enabled, adsp_pas_requested, adsp_glink_requested,
 			    adsp_apr_requested, adsp_linux_afe_requested, smp2p_calls, smmu_calls);
@@ -216,10 +234,19 @@ int main(void) {
 		beryllium_adsp_probe();
 		if (smmu_calls != 1 || last_sid != 0x1821 || last_level != 0 ||
 		    adsp_probe_enabled || adsp_pas_requested || adsp_glink_requested ||
-		    adsp_apr_requested || adsp_linux_afe_requested || smp2p_calls != 0) {
+		    adsp_apr_requested || adsp_linux_afe_requested || adsp_linux_asm_requested ||
+		    smp2p_calls != 0) {
 			fprintf(stderr, "mode 6 did not remain a standalone level-0 SMMU read\n");
 			return 2;
 		}
+	}
+	reset_state(7, true, 0);
+	beryllium_adsp_probe();
+	if (!adsp_probe_enabled || !adsp_pas_requested || !adsp_glink_requested ||
+	    !adsp_apr_requested || adsp_linux_afe_requested || !adsp_linux_asm_requested ||
+	    smp2p_calls != 1 || smmu_calls != 0) {
+		fprintf(stderr, "mode 7 did not opt in to only the finite PCM route\n");
+		return 4;
 	}
 	reset_state(6, false, 2);
 	beryllium_adsp_probe();
@@ -247,6 +274,79 @@ int main(void) {
                 self.assertIn(status, result.stdout)
         patch_text = LINUX_SMMU_AUDIO_PROBE_PATCH.read_text()
         self.assertEqual(patch_text.count("diff --git "), 1)
+
+    def test_mode_seven_asserts_both_tas_resets_before_private_smmu_mapping(self):
+        start = c_named_function_definition(self.latest_driver,
+                                            "adsp_linux_asm_mode7_start")
+        resets = c_named_function_definition(self.latest_driver,
+                                             "adsp_audio_assert_tas_resets_low")
+        self.assertLess(start.index("adsp_audio_assert_tas_resets_low()"),
+                        start.index("sweet_smmu_audio_map_buffer("))
+        self.assertIn("ADSP_TLMM_EAST_PA        0x03500000", self.latest_driver)
+        self.assertIn("ADSP_TLMM_SOUTH_PA       0x03d00000", self.latest_driver)
+        self.assertIn("GPIO 12", resets)
+        self.assertIn("GPIO 76", resets)
+        self.assertIn("input-low", resets)
+        self.assertLess(resets.index("adsp_audio_gpio_write(gpio12, ADSP_TLMM_GPIO_IO(12)"),
+                        resets.index("adsp_audio_gpio_write(gpio12, ADSP_TLMM_GPIO_CFG(12)"))
+        self.assertLess(resets.index("adsp_audio_gpio_write(gpio76, ADSP_TLMM_GPIO_IO(76)"),
+                        resets.index("adsp_audio_gpio_write(gpio76, ADSP_TLMM_GPIO_CFG(76)"))
+        self.assertIn("gpio76 = ml_io_map(ADSP_TLMM_EAST_PA", resets)
+
+    def test_mode_seven_uses_fail_closed_four_write_sequence(self):
+        start = c_named_function_definition(self.latest_driver,
+                                            "adsp_linux_asm_mode7_start")
+        command = c_named_function_definition(self.latest_driver,
+                                              "adsp_apr_linux_audio_command")
+        poll = c_named_function_definition(self.latest_driver,
+                                           "adsp_apr_poll_response")
+        self.assertIn("beryllium_adsp_audio_sequence_begin", command)
+        self.assertIn("beryllium_adsp_audio_sequence_complete", command)
+        self.assertIn("for (unsigned period = 0; period < BERYLLIUM_ADSP_ASM_PERIOD_COUNT; period++)", start)
+        self.assertIn("beryllium_adsp_apr_parse_asm_write_done", poll)
+        self.assertIn("sequence.failed", start)
+        self.assertIn("sequence.safe_to_restore", start)
+        self.assertIn("sweet_smmu_audio_restore_mapping", start)
+        self.assertNotRegex(start, r"(?i)(?:gpio|reset)[^;\n]*(?:high|release|1u\s*<<\s*1)")
+
+    def test_compiled_mode_seven_sequence_and_existing_mode_flags(self):
+        helper_paths = (
+            "bsd/dev/beryllium_adsp_glink_survey.h",
+            "bsd/dev/beryllium_adsp_glink_start.h",
+            "bsd/dev/beryllium_adsp_apr_probe.h",
+            "bsd/dev/beryllium_adsp_audio_sequence.h",
+        )
+        patches_by_path = {}
+        for path in helper_paths:
+            selected = []
+            for patch in sorted(MODE7_PATCH.parent.glob("*.patch")):
+                try:
+                    number = int(patch.name.split("-", 1)[0])
+                except ValueError:
+                    continue
+                if number <= 1170 and f"diff --git a/{path} b/{path}" in \
+                        patch.read_text(errors="replace"):
+                    selected.append(patch)
+            patches_by_path[path] = selected
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+            for path, patches in patches_by_path.items():
+                for patch in patches:
+                    subprocess.run(["git", "apply", f"--include={path}", str(patch)],
+                                   cwd=work, check=True, capture_output=True, text=True)
+            source = ROOT / "tools/tests/test_adsp_audio_sequence.c"
+            binary = work / "test-adsp-audio-sequence"
+            compile_result = subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                "-I", str(work / "bsd/dev"),
+                str(source), "-o", str(binary),
+            ], check=False, capture_output=True, text=True)
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run([str(binary)], check=False,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("mode 7 sequence checks passed", result.stdout)
 
     def test_private_audio_smmu_fake_mmio_ownership_mapping_and_restore(self):
         patch = PRIVATE_AUDIO_SMMU_PATCH.read_text()

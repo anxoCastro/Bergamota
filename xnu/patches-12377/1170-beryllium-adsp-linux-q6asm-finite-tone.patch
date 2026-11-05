@@ -1,0 +1,826 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 1c57aaf..df82ef4 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -30,7 +30,9 @@
+ #include "beryllium_adsp_glink_survey.h"
+ #include "beryllium_adsp_glink_start.h"
+ #include "beryllium_adsp_apr_probe.h"
++#include "beryllium_adsp_audio_sequence.h"
+ #include "beryllium_smp2p_negotiation.h"
++#include "sweet_smmu_audio_private.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern vm_offset_t ml_io_map_unmappable(vm_offset_t, vm_size_t, uint32_t);
+@@ -48,6 +50,9 @@ extern int sweet_gic_spi_config_snapshot(unsigned int, uint32_t *, uint32_t *,
+ extern int sweet_gic_spi_enable_edge(unsigned int);
+ extern uint32_t sweet_q6v5_wdog_irq_count_get(void);
+ extern int sweet_smmu_probe_sid(unsigned sid, unsigned level);
++extern int sweet_smmu_audio_map_buffer(uintptr_t buffer_va, size_t bytes,
++	uint64_t *iova);
++extern int sweet_smmu_audio_restore_mapping(unsigned ack_mask);
+ extern vnode_t rootvnode;
+ 
+ #define ADSP_FW_PATH             "/usr/standalone/firmware/sweet/adsp.mdt"
+@@ -141,6 +146,7 @@ static bool adsp_pas_requested;
+ static bool adsp_glink_requested;
+ static bool adsp_apr_requested;
+ static bool adsp_linux_afe_requested;
++static bool adsp_linux_asm_requested;
+ static uint8_t adsp_apr_rx_buffers[BERYLLIUM_ADSP_APR_INTENT_COUNT][BERYLLIUM_ADSP_APR_INTENT_BYTES];
+ static bool adsp_smp2p_known;
+ static bool adsp_remote_ready;
+@@ -2248,7 +2254,8 @@ adsp_glink_mode3_start(void)
+ 	uint32_t tx_off, tx_size;
+ 
+ 	printf("SWEET ADSP: explicit GLINK base startup requested (sweetadsp=%d)\n",
+-	    adsp_linux_afe_requested ? 5 : (adsp_apr_requested ? 4 : 3));
++	    adsp_linux_asm_requested ? 7 :
++	    (adsp_linux_afe_requested ? 5 : (adsp_apr_requested ? 4 : 3)));
+ 	if (!adsp_glink_cold_preflight(&baseline)) {
+ 		return false;
+ 	}
+@@ -2285,6 +2292,15 @@ struct adsp_apr_channel_state {
+ 	bool request_intent_reusable;
+ 	bool response_status_valid;
+ 	bool afe_api_v2;
++	bool asm_adm_api_versions_valid;
++	uint8_t request_service;
++	uint16_t request_dest_port;
++	uint32_t request_token;
++	uint32_t response_map_handle;
++	uint16_t response_copp_id;
++	uint64_t expected_write_address;
++	uint32_t expected_write_bytes;
++	uint32_t expected_write_sequence;
+ };
+ 
+ static bool
+@@ -2755,9 +2771,10 @@ adsp_apr_send_afe_i2s_get_param(const struct adsp_glink_survey_items *items,
+ }
+ 
+ static bool
+-adsp_apr_send_afe_packet(const struct adsp_glink_survey_items *items,
++adsp_apr_send_linux_packet(const struct adsp_glink_survey_items *items,
+ 	struct adsp_apr_channel_state *state, const uint8_t *packet,
+-	size_t packet_bytes, uint32_t request_opcode)
++	size_t packet_bytes, uint8_t service, uint32_t request_opcode,
++	const char *service_name)
+ {
+ 	uint8_t frame[16 + BERYLLIUM_ADSP_APR_MAX_DATA_BYTES] = { 0 };
+ 	const struct beryllium_adsp_glink_intent *selected = NULL;
+@@ -2766,7 +2783,8 @@ adsp_apr_send_afe_packet(const struct adsp_glink_survey_items *items,
+ 	    packet_bytes > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES ||
+ 	    beryllium_adsp_apr_get32(packet + 16) != request_opcode ||
+ 	    !state->request_intent_reusable) {
+-		printf("SWEET ADSP: Linux AFE command stopped; request or reusable intent invalid\n");
++		printf("SWEET ADSP: Linux %s command stopped; request or reusable intent invalid\n",
++		    service_name);
+ 		return false;
+ 	}
+ 	for (size_t i = 0; i < state->remote_intent_count; i++) {
+@@ -2780,13 +2798,30 @@ adsp_apr_send_afe_packet(const struct adsp_glink_survey_items *items,
+ 		break;
+ 	}
+ 	if (selected == NULL) {
+-		printf("SWEET ADSP: Linux AFE command stopped; reusable remote intent is too small\n");
++		printf("SWEET ADSP: Linux %s command stopped; reusable remote intent is too small\n",
++		    service_name);
+ 		return false;
+ 	}
+ 	state->request_intent_id = selected->id;
+ 	state->request_opcode = request_opcode;
++	state->request_service = service;
++	state->request_dest_port = beryllium_adsp_apr_get16(packet + 10);
++	state->request_token = beryllium_adsp_apr_get32(packet + 12);
+ 	state->request_intent_reusable = false;
+ 	state->response_status_valid = false;
++	state->response_map_handle = 0;
++	state->response_copp_id = 0;
++	state->expected_write_address = 0;
++	state->expected_write_bytes = 0;
++	state->expected_write_sequence = 0;
++	if (service == BERYLLIUM_ADSP_APR_ASM_SERVICE &&
++	    request_opcode == BERYLLIUM_ADSP_ASM_WRITE_V2) {
++		state->expected_write_address =
++		    (uint64_t)beryllium_adsp_apr_get32(packet + 20) |
++		    ((uint64_t)beryllium_adsp_apr_get32(packet + 24) << 32);
++		state->expected_write_bytes = beryllium_adsp_apr_get32(packet + 32);
++		state->expected_write_sequence = beryllium_adsp_apr_get32(packet + 36);
++	}
+ 	beryllium_adsp_apr_put16(frame, BERYLLIUM_ADSP_GLINK_CMD_TX_DATA);
+ 	beryllium_adsp_apr_put16(frame + 2, ADSP_APR_LOCAL_CHANNEL);
+ 	beryllium_adsp_apr_put32(frame + 4, selected->id);
+@@ -2796,16 +2831,25 @@ adsp_apr_send_afe_packet(const struct adsp_glink_survey_items *items,
+ 		frame[16 + i] = packet[i];
+ 	}
+ 	if (!adsp_glink_send_frame(items, frame, 16 + packet_bytes)) {
+-		printf("SWEET ADSP: Linux AFE command GLINK TX failed opcode=%#x\n",
+-		    request_opcode);
++		printf("SWEET ADSP: Linux %s command GLINK TX failed opcode=%#x\n",
++		    service_name, request_opcode);
+ 		return false;
+ 	}
+-	printf("SWEET ADSP: sent Linux AFE command opcode=%#x bytes=%lu port=%#x intent=%u\n",
+-	    request_opcode, (unsigned long)packet_bytes,
+-	    BERYLLIUM_ADSP_AFE_PORT_QUAT_MI2S_RX, selected->id);
++	printf("SWEET ADSP: sent Linux %s command opcode=%#x bytes=%lu port=%#x token=%#x intent=%u\n",
++	    service_name, request_opcode, (unsigned long)packet_bytes,
++	    state->request_dest_port, state->request_token, selected->id);
+ 	return true;
+ }
+ 
++static bool
++adsp_apr_send_afe_packet(const struct adsp_glink_survey_items *items,
++	struct adsp_apr_channel_state *state, const uint8_t *packet,
++	size_t packet_bytes, uint32_t request_opcode)
++{
++	return adsp_apr_send_linux_packet(items, state, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_AFE_SERVICE, request_opcode, "AFE");
++}
++
+ static bool
+ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 	struct adsp_apr_channel_state *state)
+@@ -2913,6 +2957,20 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 			    state->request_opcode == BERYLLIUM_ADSP_AFE_CMD_SET_PARAM_V2 ||
+ 			    state->request_opcode == BERYLLIUM_ADSP_AFE_CMD_DEVICE_START ||
+ 			    state->request_opcode == BERYLLIUM_ADSP_AFE_CMD_DEVICE_STOP;
++			bool asm_map_request = state->request_service ==
++				BERYLLIUM_ADSP_APR_ASM_SERVICE && state->request_opcode ==
++				BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS;
++			bool adm_open_request = state->request_service ==
++				BERYLLIUM_ADSP_APR_ADM_SERVICE && state->request_opcode ==
++				BERYLLIUM_ADSP_ADM_DEVICE_OPEN_V5;
++			bool asm_write_request = state->request_service ==
++				BERYLLIUM_ADSP_APR_ASM_SERVICE && state->request_opcode ==
++				BERYLLIUM_ADSP_ASM_WRITE_V2;
++			bool linux_audio_basic_request =
++				(state->request_service == BERYLLIUM_ADSP_APR_ASM_SERVICE ||
++				state->request_service == BERYLLIUM_ADSP_APR_ADM_SERVICE) &&
++				!asm_map_request && !adm_open_request && !asm_write_request;
++			uint32_t linux_audio_status = 0;
+ 			bool parsed_valid = false;
+ 			if (q6core_request) {
+ 				q6core_parsed = beryllium_adsp_apr_parse_response(
+@@ -2942,6 +3000,41 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 					state->response_status = afe_basic_response.status;
+ 					state->response_status_valid = true;
+ 				}
++			} else if (asm_map_request) {
++				parsed_valid = beryllium_adsp_apr_parse_asm_map_result(
++				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
++				    state->request_token, &state->response_map_handle);
++				if (parsed_valid) {
++					state->response_status = 0;
++					state->response_status_valid = true;
++				}
++			} else if (adm_open_request) {
++				parsed_valid = beryllium_adsp_apr_parse_adm_open_result(
++				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
++				    state->request_token, &state->response_copp_id);
++				if (parsed_valid) {
++					state->response_status = 0;
++					state->response_status_valid = true;
++				}
++			} else if (asm_write_request) {
++				parsed_valid = beryllium_adsp_apr_parse_asm_write_done(
++				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
++				    state->request_token, state->expected_write_address,
++				    state->expected_write_sequence,
++				    state->expected_write_bytes);
++				if (parsed_valid) {
++					state->response_status = 0;
++					state->response_status_valid = true;
++				}
++			} else if (linux_audio_basic_request) {
++				parsed_valid = beryllium_adsp_apr_parse_linux_basic_result(
++				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
++				    state->request_dest_port, state->request_token,
++				    state->request_opcode, &linux_audio_status);
++				if (parsed_valid) {
++					state->response_status = linux_audio_status;
++					state->response_status_valid = true;
++				}
+ 			}
+ 			if (!adsp_glink_rx_consume_frame(items, tail, frame_bytes)) {
+ 				printf("SWEET ADSP: APR response could not advance AP-owned RX tail\n");
+@@ -2956,6 +3049,8 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 			    BERYLLIUM_ADSP_APR_RESPONSE_FWK_VERSION) {
+ 				state->afe_api_v2 =
+ 				    beryllium_adsp_apr_afe_api_v2_available(&q6core_response);
++				state->asm_adm_api_versions_valid =
++				    beryllium_adsp_apr_audio_services_available(&q6core_response);
+ 				printf("SWEET ADSP: Q6Core firmware version %u.%u.%u.%u services=%u; APR GET_FWK_VERSION response validated\n",
+ 				    q6core_response.major, q6core_response.minor,
+ 				    q6core_response.branch, q6core_response.subbranch,
+@@ -2969,6 +3064,11 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 				printf("SWEET ADSP: AFE service id=%u API 2.0 %s\n",
+ 				    BERYLLIUM_ADSP_APR_AFE_SERVICE,
+ 				    state->afe_api_v2 ? "advertised uniquely" : "not advertised uniquely");
++				printf("SWEET ADSP: ASM service id=%u API 1.0 + ADM service id=%u API 2.0 %s\n",
++				    BERYLLIUM_ADSP_APR_ASM_SERVICE,
++				    BERYLLIUM_ADSP_APR_ADM_SERVICE,
++				    state->asm_adm_api_versions_valid ? "advertised uniquely" :
++				    "not advertised uniquely");
+ 			} else if (q6core_request && q6core_parsed ==
+ 			    BERYLLIUM_ADSP_APR_RESPONSE_BASIC_RESULT) {
+ 				printf("SWEET ADSP: Q6Core APR basic result for GET_FWK_VERSION status=%#x\n",
+@@ -3055,6 +3155,139 @@ adsp_apr_linux_afe_command(const struct adsp_glink_survey_items *items,
+ 	return true;
+ }
+ 
++#define ADSP_TLMM_EAST_PA        0x03500000u /* TLMM 0x03400000 + EAST 0x100000 */
++#define ADSP_TLMM_SOUTH_PA       0x03d00000u /* TLMM 0x03400000 + SOUTH 0x900000 */
++#define ADSP_TLMM_GPIO_MAP_SIZE  0x00050000u
++#define ADSP_TLMM_GPIO_CFG(pin)  ((uint32_t)(pin) * 0x1000u)
++#define ADSP_TLMM_GPIO_IO(pin)   (ADSP_TLMM_GPIO_CFG(pin) + 4u)
++
++static uint32_t
++adsp_audio_gpio_read(vm_offset_t base, uint32_t offset)
++{
++	uint32_t value = *(volatile uint32_t *)(base + offset);
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	return value;
++}
++
++static void
++adsp_audio_gpio_write(vm_offset_t base, uint32_t offset, uint32_t value)
++{
++	__asm__ volatile ("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + offset) = value;
++	__asm__ volatile ("dsb osh" ::: "memory");
++}
++
++static bool
++adsp_audio_assert_tas_resets_low(void)
++{
++	vm_offset_t gpio12, gpio76;
++	uint32_t cfg12, cfg76, io12, io76;
++	if (!sweet_board_beryllium()) {
++		return false;
++	}
++	/* SDM845 pinctrl places reset GPIO 12 in SOUTH and GPIO 76 in EAST. */
++	gpio12 = ml_io_map(ADSP_TLMM_SOUTH_PA, ADSP_TLMM_GPIO_MAP_SIZE);
++	gpio76 = ml_io_map(ADSP_TLMM_EAST_PA, ADSP_TLMM_GPIO_MAP_SIZE);
++	if (gpio12 == 0 || gpio76 == 0) {
++		printf("SWEET ADSP AUDIO: TAS reset TLMM windows unavailable; refusing SMMU setup\n");
++		return false;
++	}
++	cfg12 = adsp_audio_gpio_read(gpio12, ADSP_TLMM_GPIO_CFG(12));
++	cfg76 = adsp_audio_gpio_read(gpio76, ADSP_TLMM_GPIO_CFG(76));
++	io12 = adsp_audio_gpio_read(gpio12, ADSP_TLMM_GPIO_IO(12));
++	io76 = adsp_audio_gpio_read(gpio76, ADSP_TLMM_GPIO_IO(76));
++	printf("SWEET ADSP AUDIO: TAS reset GPIO 12 SOUTH cfg=%#x io=%#x; GPIO 76 EAST cfg=%#x io=%#x\n",
++	    cfg12, io12, cfg76, io76);
++	/* Write both low output latches before enabling either pin as an output. */
++	adsp_audio_gpio_write(gpio12, ADSP_TLMM_GPIO_IO(12), io12 & ~2u);
++	adsp_audio_gpio_write(gpio76, ADSP_TLMM_GPIO_IO(76), io76 & ~2u);
++	cfg12 = (cfg12 & ~0x3ffu) | 0x200u; /* GPIO mux, no pull, 2 mA, output */
++	cfg76 = (cfg76 & ~0x3ffu) | 0x200u;
++	adsp_audio_gpio_write(gpio12, ADSP_TLMM_GPIO_CFG(12), cfg12);
++	adsp_audio_gpio_write(gpio76, ADSP_TLMM_GPIO_CFG(76), cfg76);
++	cfg12 = adsp_audio_gpio_read(gpio12, ADSP_TLMM_GPIO_CFG(12));
++	cfg76 = adsp_audio_gpio_read(gpio76, ADSP_TLMM_GPIO_CFG(76));
++	io12 = adsp_audio_gpio_read(gpio12, ADSP_TLMM_GPIO_IO(12));
++	io76 = adsp_audio_gpio_read(gpio76, ADSP_TLMM_GPIO_IO(76));
++	if ((cfg12 & 0x3ffu) != 0x200u || (cfg76 & 0x3ffu) != 0x200u ||
++	    (io12 & 3u) != 0 || (io76 & 3u) != 0) {
++		printf("SWEET ADSP AUDIO: TAS reset GPIO 12/76 output-low verification failed; GPIO 12 io=%#x cfg=%#x GPIO 76 io=%#x cfg=%#x\n",
++		    io12, cfg12, io76, cfg76);
++		return false;
++	}
++	printf("SWEET ADSP AUDIO: TAS reset GPIO 12 and GPIO 76 read input-low/output-low; held low\n");
++	return true;
++}
++
++static bool
++adsp_audio_allocate_test_pcm(uint16_t **pcm_out, vm_size_t *allocation_bytes)
++{
++	static const int16_t sine_quarter[24] = {
++		0, 67, 133, 196, 256, 312, 362, 406,
++		443, 473, 495, 508, 512, 508, 495, 473,
++		443, 406, 362, 312, 256, 196, 133, 67,
++	};
++	vm_offset_t pcm_va = 0;
++	vm_size_t bytes = round_page(BERYLLIUM_ADSP_ASM_MAP_BYTES);
++	if (pcm_out == NULL || allocation_bytes == NULL ||
++	    kmem_alloc_contig(kernel_map, &pcm_va, bytes, PAGE_MASK, 0, 0,
++	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("SWEET ADSP AUDIO: permanent PCM allocation failed\n");
++		return false;
++	}
++	uint16_t *pcm = (uint16_t *)pcm_va;
++	for (uint32_t frame = 0; frame < BERYLLIUM_ADSP_ASM_PCM_BYTES / 4u; frame++) {
++		uint32_t phase = frame % 48u;
++		int16_t sample = phase < 24u ? sine_quarter[phase] :
++		    (int16_t)-sine_quarter[phase - 24u];
++		pcm[frame * 2u] = (uint16_t)sample;
++		pcm[frame * 2u + 1u] = (uint16_t)sample;
++	}
++	ppnum_t first_page = pmap_find_phys(kernel_pmap, (addr64_t)pcm_va);
++	if (first_page == 0) {
++		printf("SWEET ADSP AUDIO: permanent PCM allocation has no physical page; retaining it until reboot\n");
++		return false;
++	}
++	sweet_dma_sync_va((const void *)pcm_va, bytes);
++	flush_dcache64((addr64_t)ptoa_64(first_page), bytes, TRUE);
++	*pcm_out = pcm;
++	*allocation_bytes = bytes;
++	printf("SWEET ADSP AUDIO: low-amplitude 1 kHz signed-16 stereo buffer initialized bytes=%u allocation=%#lx\n",
++	    BERYLLIUM_ADSP_ASM_PCM_BYTES, (unsigned long)bytes);
++	return true;
++}
++
++static bool
++adsp_apr_linux_audio_command(const struct adsp_glink_survey_items *items,
++	struct adsp_apr_channel_state *state,
++	struct beryllium_adsp_audio_sequence *sequence,
++	enum beryllium_adsp_audio_command sequence_command,
++	const uint8_t *packet, size_t packet_bytes, uint8_t service,
++	uint32_t request_opcode, unsigned period, const char *label)
++{
++	if (!beryllium_adsp_audio_sequence_begin(sequence, sequence_command, period)) {
++		printf("SWEET ADSP AUDIO: sequence refused command %s; no APR request sent\n",
++		    label);
++		return false;
++	}
++	if (!adsp_apr_send_linux_packet(items, state, packet, packet_bytes,
++	    service, request_opcode, label) || !adsp_apr_poll_response(items, state)) {
++		beryllium_adsp_audio_sequence_abort(sequence);
++		printf("SWEET ADSP AUDIO: %s response uncertain; stop and retain PCM/SMMU route until reboot\n",
++		    label);
++		return false;
++	}
++	bool accepted = state->response_status_valid && state->response_status == 0;
++	if (!beryllium_adsp_audio_sequence_complete(sequence, sequence_command,
++	    accepted)) {
++		printf("SWEET ADSP AUDIO: %s rejected/malformed status=%#x; stop and retain PCM/SMMU route until reboot\n",
++		    label, state->response_status_valid ? state->response_status : UINT32_MAX);
++		return false;
++	}
++	printf("SWEET ADSP AUDIO: %s acknowledged status=0\n", label);
++	return true;
++}
++
+ static void
+ adsp_apr_mode4_start(void)
+ {
+@@ -3168,6 +3401,203 @@ adsp_apr_linux_afe_mode5_start(void)
+ 	printf("SWEET ADSP: Linux QUAT AFE lifecycle completed; no PCM/ASM/ADM/codec route was opened\n");
+ }
+ 
++static void
++adsp_linux_asm_mode7_start(void)
++{
++	struct adsp_glink_survey_items items;
++	struct adsp_apr_channel_state state;
++	struct beryllium_adsp_glink_indices indices;
++	struct beryllium_adsp_audio_sequence sequence;
++	uint8_t packet[BERYLLIUM_ADSP_APR_MAX_DATA_BYTES] = { 0 };
++	uint16_t *pcm = NULL;
++	vm_size_t pcm_allocation_bytes = 0;
++	size_t packet_bytes = 0;
++	uint64_t iova = 0, dma_addr = 0;
++	uint32_t map_handle = 0;
++	uint16_t copp_id = 0;
++	bool route_installed = false;
++	bzero(&state, sizeof(state));
++	beryllium_adsp_audio_sequence_init(&sequence);
++	if (!sweet_board_beryllium() || !adsp_glink_survey_read_items(4, &items) ||
++	    !adsp_glink_start_items_valid(&items, true) ||
++	    !adsp_glink_survey_read_indices(items.descriptor.off, &indices) ||
++	    !beryllium_adsp_glink_indices_valid(&indices, items.tx_fifo.size, items.rx_fifo.size)) {
++		printf("SWEET ADSP AUDIO: mode 7 stopped: GLINK metadata/indices invalid\n");
++		return;
++	}
++	if (!adsp_audio_assert_tas_resets_low()) {
++		printf("SWEET ADSP AUDIO: mode 7 stopped before APR/SMMU setup; TAS reset GPIO verification failed\n");
++		return;
++	}
++	bzero(adsp_apr_rx_buffers, sizeof(adsp_apr_rx_buffers));
++	if (!adsp_apr_open_channel(&items, &state) ||
++	    !adsp_apr_advertise_local_intents(&items) ||
++	    !adsp_apr_wait_remote_intent(&items, &state)) {
++		printf("SWEET ADSP AUDIO: mode 7 stopped before Q6Core service query; TAS resets remain low\n");
++		return;
++	}
++	if (!adsp_apr_send_fwk_version(&items, &state) ||
++	    !adsp_apr_poll_response(&items, &state)) {
++		printf("SWEET ADSP AUDIO: mode 7 stopped without validated Q6Core service table; TAS resets remain low\n");
++		return;
++	}
++	if (!state.afe_api_v2 || !state.asm_adm_api_versions_valid) {
++		printf("SWEET ADSP AUDIO: mode 7 stopped; requires unique AFE API 2.0, ASM API 1.0, and ADM API 2.0\n");
++		return;
++	}
++	if (!adsp_audio_allocate_test_pcm(&pcm, &pcm_allocation_bytes)) {
++		return;
++	}
++	if (sweet_smmu_audio_map_buffer((uintptr_t)pcm,
++	    BERYLLIUM_ADSP_ASM_MAP_BYTES, &iova) != 0) {
++		printf("SWEET ADSP AUDIO: private SMMU map failed/uncertain; permanent PCM and any partial route retained until reboot\n");
++		return;
++	}
++	if (!sweet_smmu_audio_encode_q6asm_address(iova, &dma_addr)) {
++		printf("SWEET ADSP AUDIO: private SMMU map succeeded but Q6ASM address encoding failed; route retained until reboot\n");
++		return;
++	}
++	route_installed = true;
++	printf("SWEET ADSP AUDIO: mode 7 private PCM IOVA=%#llx Q6ASM address=%#llx allocation=%#lx\n",
++	    (unsigned long long)iova, (unsigned long long)dma_addr,
++	    (unsigned long)pcm_allocation_bytes);
++
++	if (!beryllium_adsp_apr_encode_asm_map_regions(packet, sizeof(packet),
++	    &packet_bytes, dma_addr, BERYLLIUM_ADSP_ASM_MAP_BYTES) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_ASM_MAP, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ASM_SERVICE,
++	    BERYLLIUM_ADSP_ASM_SHARED_MEM_MAP_REGIONS,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ASM pool-3 map")) {
++		goto retain;
++	}
++	map_handle = state.response_map_handle;
++	if (map_handle == 0 ||
++	    !beryllium_adsp_apr_encode_asm_open_write(packet, sizeof(packet),
++	    &packet_bytes) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_ASM_OPEN, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ASM_SERVICE, BERYLLIUM_ADSP_ASM_OPEN_WRITE_V3,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ASM OPEN_WRITE_V3")) {
++		goto retain;
++	}
++	if (!beryllium_adsp_apr_encode_adm_open_quat(packet, sizeof(packet),
++	    &packet_bytes, 0) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_ADM_OPEN, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ADM_SERVICE, BERYLLIUM_ADSP_ADM_DEVICE_OPEN_V5,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ADM QUAT COPP open")) {
++		goto retain;
++	}
++	copp_id = state.response_copp_id;
++	if (copp_id == 0 ||
++	    !beryllium_adsp_apr_encode_adm_matrix_map(packet, sizeof(packet),
++	    &packet_bytes, copp_id) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_ADM_MATRIX, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ADM_SERVICE,
++	    BERYLLIUM_ADSP_ADM_MATRIX_MAP_ROUTINGS_V5,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ADM RX matrix route")) {
++		goto retain;
++	}
++	if (!beryllium_adsp_apr_encode_asm_pcm_format(packet, sizeof(packet),
++	    &packet_bytes) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_PCM_FORMAT, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ASM_SERVICE,
++	    BERYLLIUM_ADSP_ASM_MEDIA_FMT_UPDATE_V2,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ASM PCM format")) {
++		goto retain;
++	}
++	if (!beryllium_adsp_apr_encode_afe_clock_set(packet, sizeof(packet),
++	    &packet_bytes, true) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_AFE_CLOCK, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_AFE_SERVICE,
++	    BERYLLIUM_ADSP_AFE_CMD_SVC_SET_PARAM,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "QUAT clock set") ||
++	    !beryllium_adsp_apr_encode_afe_i2s_set_param(packet, sizeof(packet),
++	    &packet_bytes) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_AFE_CONFIG, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_AFE_SERVICE,
++	    BERYLLIUM_ADSP_AFE_CMD_SET_PARAM_V2,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "QUAT I2S config") ||
++	    !beryllium_adsp_apr_encode_afe_device_command(packet, sizeof(packet),
++	    &packet_bytes, true) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_AFE_START, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_AFE_SERVICE,
++	    BERYLLIUM_ADSP_AFE_CMD_DEVICE_START,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "QUAT DEVICE_START")) {
++		goto retain;
++	}
++	if (!beryllium_adsp_apr_encode_asm_run(packet, sizeof(packet),
++	    &packet_bytes) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_ASM_RUN, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ASM_SERVICE, BERYLLIUM_ADSP_ASM_RUN_V2,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ASM RUN_V2")) {
++		goto retain;
++	}
++	for (unsigned period = 0; period < BERYLLIUM_ADSP_ASM_PERIOD_COUNT; period++) {
++		uint64_t period_address = dma_addr +
++		    (uint64_t)period * BERYLLIUM_ADSP_ASM_PERIOD_BYTES;
++		if (!beryllium_adsp_apr_encode_asm_write(packet, sizeof(packet),
++		    &packet_bytes, period_address, map_handle,
++		    BERYLLIUM_ADSP_ASM_PERIOD_BYTES, period) ||
++		    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++		    BERYLLIUM_ADSP_AUDIO_ASM_WRITE, packet, packet_bytes,
++		    BERYLLIUM_ADSP_APR_ASM_SERVICE, BERYLLIUM_ADSP_ASM_WRITE_V2,
++		    period, "ASM WRITE_V2/WRITE_DONE")) {
++			goto retain;
++		}
++	}
++	if (!beryllium_adsp_apr_encode_asm_close(packet, sizeof(packet),
++	    &packet_bytes) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_ASM_CLOSE, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ASM_SERVICE, BERYLLIUM_ADSP_ASM_CLOSE,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ASM close") ||
++	    !beryllium_adsp_apr_encode_asm_unmap(packet, sizeof(packet),
++	    &packet_bytes, map_handle) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_ASM_UNMAP, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ASM_SERVICE,
++	    BERYLLIUM_ADSP_ASM_SHARED_MEM_UNMAP_REGIONS,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ASM shared-memory unmap") ||
++	    !beryllium_adsp_apr_encode_adm_close(packet, sizeof(packet),
++	    &packet_bytes, copp_id, 0) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_ADM_CLOSE, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_ADM_SERVICE, BERYLLIUM_ADSP_ADM_DEVICE_CLOSE_V5,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ADM COPP close") ||
++	    !beryllium_adsp_apr_encode_afe_device_command(packet, sizeof(packet),
++	    &packet_bytes, false) ||
++	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
++	    BERYLLIUM_ADSP_AUDIO_AFE_STOP, packet, packet_bytes,
++	    BERYLLIUM_ADSP_APR_AFE_SERVICE, BERYLLIUM_ADSP_AFE_CMD_DEVICE_STOP,
++	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "QUAT DEVICE_STOP")) {
++		goto retain;
++	}
++	if (!sequence.safe_to_restore ||
++	    sweet_smmu_audio_restore_mapping(SWEET_SMMU_AUDIO_ACK_RESTORE_REQUIRED) != 0 ||
++	    !beryllium_adsp_audio_sequence_restored(&sequence, true)) {
++		beryllium_adsp_audio_sequence_abort(&sequence);
++		goto retain;
++	}
++	printf("SWEET ADSP AUDIO: mode 7 complete; four matched WRITE_DONE events, SMMU state restored, TAS resets remain low\n");
++	return;
++retain:
++	if (route_installed) {
++		beryllium_adsp_audio_sequence_abort(&sequence);
++		printf("SWEET ADSP AUDIO: mode 7 failed/uncertain sequence.failed=%u; permanent PCM and private SMMU route retained until reboot\n",
++		    sequence.failed ? 1u : 0u);
++	} else {
++		printf("SWEET ADSP AUDIO: mode 7 stopped before a private SMMU route was installed\n");
++	}
++}
++
+ static bool
+ beryllium_adsp_pas_start(void)
+ {
+@@ -3182,8 +3612,8 @@ beryllium_adsp_pas_start(void)
+ 		return false;
+ 	}
+ 	printf("SWEET ADSP: explicit PAS ID 1 startup requested (sweetadsp=%d)\n",
+-	    adsp_linux_afe_requested ? 5 :
+-	    (adsp_apr_requested ? 4 : (adsp_glink_requested ? 3 : 2)));
++	    adsp_linux_asm_requested ? 7 : (adsp_linux_afe_requested ? 5 :
++	    (adsp_apr_requested ? 4 : (adsp_glink_requested ? 3 : 2))));
+ 	/* Re-read remote-owned item 443 immediately before the explicit start attempt. */
+ 	adsp_smp2p_readonly_probe(false);
+ 	if (adsp_smp2p_ambiguous) {
+@@ -3398,7 +3828,9 @@ beryllium_adsp_pas_start(void)
+ 		if (adsp_glink_requested) {
+ 			if (adsp_glink_mode3_start()) {
+ 				if (adsp_apr_requested) {
+-					if (adsp_linux_afe_requested) {
++					if (adsp_linux_asm_requested) {
++						adsp_linux_asm_mode7_start();
++					} else if (adsp_linux_afe_requested) {
+ 						adsp_apr_linux_afe_mode5_start();
+ 					} else {
+ 						adsp_apr_mode4_start();
+@@ -3456,16 +3888,19 @@ beryllium_adsp_probe(void)
+ 	adsp_probe_enabled = true;
+ 	adsp_pas_requested = beryllium_adsp_glink_mode_requests_pas(mode);
+ 	adsp_glink_requested = beryllium_adsp_glink_mode_requests_glink(mode);
+-	adsp_apr_requested = mode == 4 || mode == 5;
++	adsp_apr_requested = mode == 4 || mode == 5 || mode == 7;
+ 	adsp_linux_afe_requested = mode == 5;
++	adsp_linux_asm_requested = mode == 7;
+ 	adsp_state = BERYLLIUM_ADSP_PREFLIGHT;
+-	printf("SWEET ADSP: opt-in %s\n", adsp_linux_afe_requested ?
++	printf("SWEET ADSP: opt-in %s\n", adsp_linux_asm_requested ?
++	    "PAS plus GLINK, APR, TAS-safe finite Q6ASM/ADM PCM route requested" :
++	    (adsp_linux_afe_requested ?
+ 	    "PAS plus GLINK and Linux QUAT AFE lifecycle requested; no PCM path" :
+ 	    (adsp_apr_requested ?
+ 	    "PAS plus GLINK and one Q6Core APR version query requested; early SMP2P probe remains read-only" :
+ 	    (adsp_glink_requested ? "PAS plus GLINK-only startup requested; early SMP2P probe remains read-only" :
+ 	    (adsp_pas_requested ? "PAS startup mode requested; early SMP2P probe remains read-only" :
+-	    "read-only preflight (PAS/SMEM writes disabled)"))));
++	    "read-only preflight (PAS/SMEM writes disabled)")))));
+ 	adsp_smp2p_readonly_probe(false);
+ 	printf("SWEET ADSP: early SMP2P snapshot complete; state=%u\n", (unsigned)adsp_state);
+ }
+diff --git a/bsd/dev/beryllium_adsp_audio_sequence.h b/bsd/dev/beryllium_adsp_audio_sequence.h
+new file mode 100644
+index 0000000..1d51a72
+--- /dev/null
++++ b/bsd/dev/beryllium_adsp_audio_sequence.h
+@@ -0,0 +1,176 @@
++#ifndef _BERYLLIUM_ADSP_AUDIO_SEQUENCE_H_
++#define _BERYLLIUM_ADSP_AUDIO_SEQUENCE_H_
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "beryllium_adsp_apr_probe.h"
++
++#define BERYLLIUM_ADSP_AUDIO_NO_PERIOD (~0u)
++
++enum beryllium_adsp_audio_command {
++	BERYLLIUM_ADSP_AUDIO_ASM_MAP = 1,
++	BERYLLIUM_ADSP_AUDIO_ASM_OPEN,
++	BERYLLIUM_ADSP_AUDIO_ADM_OPEN,
++	BERYLLIUM_ADSP_AUDIO_ADM_MATRIX,
++	BERYLLIUM_ADSP_AUDIO_PCM_FORMAT,
++	BERYLLIUM_ADSP_AUDIO_AFE_CLOCK,
++	BERYLLIUM_ADSP_AUDIO_AFE_CONFIG,
++	BERYLLIUM_ADSP_AUDIO_AFE_START,
++	BERYLLIUM_ADSP_AUDIO_ASM_RUN,
++	BERYLLIUM_ADSP_AUDIO_ASM_WRITE,
++	BERYLLIUM_ADSP_AUDIO_ASM_CLOSE,
++	BERYLLIUM_ADSP_AUDIO_ASM_UNMAP,
++	BERYLLIUM_ADSP_AUDIO_ADM_CLOSE,
++	BERYLLIUM_ADSP_AUDIO_AFE_STOP,
++	BERYLLIUM_ADSP_AUDIO_RESTORE,
++};
++
++struct beryllium_adsp_audio_sequence {
++	enum beryllium_adsp_audio_command next_command;
++	enum beryllium_adsp_audio_command pending_command;
++	uint8_t writes_sent;
++	uint8_t writes_completed;
++	bool pending;
++	bool failed;
++	bool safe_to_restore;
++	bool complete;
++};
++
++static inline void
++beryllium_adsp_audio_sequence_init(struct beryllium_adsp_audio_sequence *sequence)
++{
++	if (sequence == NULL) {
++		return;
++	}
++	sequence->next_command = BERYLLIUM_ADSP_AUDIO_ASM_MAP;
++	sequence->pending_command = 0;
++	sequence->writes_sent = 0;
++	sequence->writes_completed = 0;
++	sequence->pending = false;
++	sequence->failed = false;
++	sequence->safe_to_restore = false;
++	sequence->complete = false;
++}
++
++static inline void
++beryllium_adsp_audio_sequence_abort(struct beryllium_adsp_audio_sequence *sequence)
++{
++	if (sequence != NULL) {
++		sequence->pending = false;
++		sequence->failed = true;
++		sequence->safe_to_restore = false;
++	}
++}
++
++static inline bool
++beryllium_adsp_audio_sequence_begin(struct beryllium_adsp_audio_sequence *sequence,
++	enum beryllium_adsp_audio_command command, unsigned period)
++{
++	if (sequence == NULL || sequence->failed || sequence->complete ||
++	    sequence->safe_to_restore || sequence->pending ||
++	    sequence->next_command != command) {
++		beryllium_adsp_audio_sequence_abort(sequence);
++		return false;
++	}
++	if (command == BERYLLIUM_ADSP_AUDIO_ASM_WRITE) {
++		if (period != sequence->writes_sent ||
++		    sequence->writes_sent >= BERYLLIUM_ADSP_ASM_PERIOD_COUNT ||
++		    sequence->writes_completed != sequence->writes_sent) {
++			beryllium_adsp_audio_sequence_abort(sequence);
++			return false;
++		}
++		sequence->writes_sent++;
++	} else if (period != BERYLLIUM_ADSP_AUDIO_NO_PERIOD) {
++		beryllium_adsp_audio_sequence_abort(sequence);
++		return false;
++	}
++	sequence->pending_command = command;
++	sequence->pending = true;
++	return true;
++}
++
++static inline bool
++beryllium_adsp_audio_sequence_complete(struct beryllium_adsp_audio_sequence *sequence,
++	enum beryllium_adsp_audio_command command, bool response_valid)
++{
++	if (sequence == NULL || sequence->failed || !sequence->pending ||
++	    sequence->pending_command != command) {
++		beryllium_adsp_audio_sequence_abort(sequence);
++		return false;
++	}
++	sequence->pending = false;
++	if (!response_valid) {
++		beryllium_adsp_audio_sequence_abort(sequence);
++		return false;
++	}
++	switch (command) {
++	case BERYLLIUM_ADSP_AUDIO_ASM_MAP:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_ASM_OPEN;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_ASM_OPEN:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_ADM_OPEN;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_ADM_OPEN:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_ADM_MATRIX;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_ADM_MATRIX:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_PCM_FORMAT;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_PCM_FORMAT:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_AFE_CLOCK;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_AFE_CLOCK:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_AFE_CONFIG;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_AFE_CONFIG:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_AFE_START;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_AFE_START:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_ASM_RUN;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_ASM_RUN:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_ASM_WRITE;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_ASM_WRITE:
++		sequence->writes_completed++;
++		sequence->next_command = sequence->writes_completed <
++		    BERYLLIUM_ADSP_ASM_PERIOD_COUNT ? BERYLLIUM_ADSP_AUDIO_ASM_WRITE :
++		    BERYLLIUM_ADSP_AUDIO_ASM_CLOSE;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_ASM_CLOSE:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_ASM_UNMAP;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_ASM_UNMAP:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_ADM_CLOSE;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_ADM_CLOSE:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_AFE_STOP;
++		break;
++	case BERYLLIUM_ADSP_AUDIO_AFE_STOP:
++		sequence->next_command = BERYLLIUM_ADSP_AUDIO_RESTORE;
++		sequence->safe_to_restore = true;
++		break;
++	default:
++		beryllium_adsp_audio_sequence_abort(sequence);
++		return false;
++	}
++	return true;
++}
++
++static inline bool
++beryllium_adsp_audio_sequence_restored(struct beryllium_adsp_audio_sequence *sequence,
++	bool restored)
++{
++	if (sequence == NULL || sequence->failed || sequence->pending ||
++	    !sequence->safe_to_restore ||
++	    sequence->next_command != BERYLLIUM_ADSP_AUDIO_RESTORE || !restored) {
++		beryllium_adsp_audio_sequence_abort(sequence);
++		return false;
++	}
++	sequence->safe_to_restore = false;
++	sequence->complete = true;
++	return true;
++}
++
++#endif /* _BERYLLIUM_ADSP_AUDIO_SEQUENCE_H_ */
+diff --git a/bsd/dev/beryllium_adsp_glink_start.h b/bsd/dev/beryllium_adsp_glink_start.h
+index f074b7d..40cc455 100644
+--- a/bsd/dev/beryllium_adsp_glink_start.h
++++ b/bsd/dev/beryllium_adsp_glink_start.h
+@@ -29,19 +29,19 @@ struct beryllium_adsp_glink_message {
+ static inline bool
+ beryllium_adsp_glink_mode_valid(int mode)
+ {
+-	return mode >= 1 && mode <= 5;
++	return (mode >= 1 && mode <= 5) || mode == 7;
+ }
+ 
+ static inline bool
+ beryllium_adsp_glink_mode_requests_pas(int mode)
+ {
+-	return mode == 2 || mode == 3 || mode == 4 || mode == 5;
++	return mode == 2 || mode == 3 || mode == 4 || mode == 5 || mode == 7;
+ }
+ 
+ static inline bool
+ beryllium_adsp_glink_mode_requests_glink(int mode)
+ {
+-	return mode == 3 || mode == 4 || mode == 5;
++	return mode == 3 || mode == 4 || mode == 5 || mode == 7;
+ }
+ 
+ static inline bool
