@@ -213,6 +213,24 @@ private translation before Q6ASM sees the DMA address. The same boot showed
 context bank 3 used by a different stream and its shared identity map; do not
 reuse CB3 for Q6ASM.
 
+### Mode-7 context-bank TCR2
+
+The mode-7 private mapping initially rejected context bank 4 because a write
+of `TCR2=0x38002` read back as `0x38062`. ARM's SMMUv2 register definition
+identifies bits 6 and 5 as `TBI1` and `TBI0`; they control whether the top byte
+of a full 64-bit tagged input address participates in matching. The Q6ASM
+address used here is below 2^36, so these top-byte controls do not change its
+translation. The XNU readback check now ignores only those two bits while
+continuing to check the other TCR2 fields and all other context-bank registers.
+
+Comparing the initial value against the pinned Linux SMMU driver also found
+that mode 7 omitted `TCR2.AS`. Linux sets this bit for an AArch64 context bank
+after generating `SEP=7` and `PASize=2`; the corrected write is therefore
+`0x38012`. Linux does not compare the TCR2 readback. In XNU, the saved TCR2 is
+still restored and checked exactly. After this correction is built, the next
+hardware trace must confirm whether the remaining context-bank fields accept
+the Linux configuration before the SMR/S2CR route is installed.
+
 XNU already has `sweet_smmu_map_sid()`, but it creates a shared identity map
 for DRAM. That is not the per-buffer IOVA-to-physical mapping required by the
 Linux Q6ASM address contract. Do not pass `1` to that helper or reuse the
@@ -370,6 +388,7 @@ mode 7 is built and tested.
 - [Q6ADM driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6adm.c)
 - [Q6 routing driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6routing.c)
 - [ARM SMMU v1/v2 driver](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/iommu/arm/arm-smmu/arm-smmu.c)
+- [ARM SMMUv2 architecture specification, TCR2 fields](https://documentation-service.arm.com/static/5f900d34f86e16515cdc08fb)
 - [Beryllium ALSA UCM profile](https://gitlab.com/sdm845-mainline/alsa-ucm-conf/-/blob/sdm845-phones/ucm2/Xiaomi/beryllium/HiFi.conf)
 - [HakiOS Redwood Q6AFE/Q6ASM/Q6ADM + SMMU path](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/base/xnu/files/bsd/dev/redwood_sound.c)
 - [HakiOS Redwood iOS AudioServerPlugIn](https://github.com/superboyyy/hakios-arm64e-dada/blob/main/userland/userland/src/audio_plugin.c)

@@ -1,0 +1,59 @@
+diff --git a/bsd/dev/sweet_smmu_audio_private.h b/bsd/dev/sweet_smmu_audio_private.h
+index d8a1a79..a61a5c7 100644
+--- a/bsd/dev/sweet_smmu_audio_private.h
++++ b/bsd/dev/sweet_smmu_audio_private.h
+@@ -27,6 +27,9 @@
+ #define SWEET_SMMU_AUDIO_CB_SCTLR            0x000u
+ #define SWEET_SMMU_AUDIO_CB_ACTLR            0x004u
+ #define SWEET_SMMU_AUDIO_CB_TCR2             0x010u
++/* The Q6ASM IOVA is below 2^36, so TBI0/TBI1 do not alter this mapping. */
++#define SWEET_SMMU_AUDIO_TCR2_TBI_MASK       (3u << 5)
++#define SWEET_SMMU_AUDIO_TCR2_AS             (1u << 4)
+ #define SWEET_SMMU_AUDIO_CB_TTBR0            0x020u
+ #define SWEET_SMMU_AUDIO_CB_TTBR1            0x028u
+ #define SWEET_SMMU_AUDIO_CB_TCR              0x030u
+@@ -191,6 +194,24 @@ sweet_smmu_audio_check_readback32(const struct sweet_smmu_audio_io *io,
+ 	return false;
+ }
+ 
++static inline bool
++sweet_smmu_audio_check_readback32_masked(const struct sweet_smmu_audio_io *io,
++	uint32_t offset, uint32_t expected, uint32_t ignored_mask,
++	struct sweet_smmu_audio_readback *readback)
++{
++	uint32_t actual = io->read32(io->context, offset);
++	if ((actual & ~ignored_mask) == (expected & ~ignored_mask)) {
++		return true;
++	}
++	if (readback != NULL) {
++		readback->valid = true;
++		readback->offset = offset;
++		readback->expected = expected;
++		readback->actual = actual;
++	}
++	return false;
++}
++
+ static inline bool
+ sweet_smmu_audio_check_readback64(const struct sweet_smmu_audio_io *io,
+ 	uint32_t offset, uint64_t expected, struct sweet_smmu_audio_readback *readback)
+@@ -346,7 +367,7 @@ sweet_smmu_audio_write_cb(const struct sweet_smmu_audio_io *io,
+ 	unsigned cb = mapping->cb_index;
+ 	uint32_t cb_offset = SWEET_SMMU_AUDIO_CB(cb, 0);
+ 	uint32_t cbar = (1u << 16) | (0xfu << 12) | (3u << 8);
+-	uint32_t tcr2 = (7u << 15) | 2u;
++	uint32_t tcr2 = (7u << 15) | SWEET_SMMU_AUDIO_TCR2_AS | 2u;
+ 	uint32_t tcr = 25u | (1u << 23);
+ 	uint32_t sctlr = (1u << 6) | (1u << 5) | (1u << 2) | (1u << 1) | 1u;
+ 
+@@ -379,7 +400,9 @@ sweet_smmu_audio_write_cb(const struct sweet_smmu_audio_io *io,
+ 	}
+ 	return sweet_smmu_audio_check_readback32(io, SWEET_SMMU_AUDIO_CBA2R(cb), 1u, readback) &&
+ 	    sweet_smmu_audio_check_readback32(io, SWEET_SMMU_AUDIO_CBAR(cb), cbar, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_TCR2, tcr2, readback) &&
++	    sweet_smmu_audio_check_readback32_masked(io,
++	    cb_offset + SWEET_SMMU_AUDIO_CB_TCR2, tcr2,
++	    SWEET_SMMU_AUDIO_TCR2_TBI_MASK, readback) &&
+ 	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_TCR, tcr, readback) &&
+ 	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_CONTEXTIDR, cb, readback) &&
+ 	    sweet_smmu_audio_check_readback64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR0,

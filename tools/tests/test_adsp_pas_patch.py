@@ -38,6 +38,7 @@ PRIVATE_AUDIO_SMMU_PATCH = ROOT / "xnu/patches-12377/1169-beryllium-smmu-private
 MODE7_PATCH = ROOT / "xnu/patches-12377/1170-beryllium-adsp-linux-q6asm-finite-tone.patch"
 MODE7_SMMU_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1171-beryllium-smmu-audio-map-diagnostics.patch"
 MODE7_SMMU_READBACK_PATCH = ROOT / "xnu/patches-12377/1172-beryllium-smmu-readback-values.patch"
+MODE7_SMMU_LINUX_TCR2_PATCH = ROOT / "xnu/patches-12377/1173-beryllium-smmu-linux-tcr2-readback.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -130,7 +131,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1172:
+                if not 1131 <= number <= 1173:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -378,6 +379,13 @@ int main(void) {
             subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu_audio_private.h",
                             str(MODE7_SMMU_READBACK_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--check", "--whitespace=error",
+                            "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_LINUX_TCR2_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_LINUX_TCR2_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
             binary = work / "smmu-audio-test"
             compile_result = subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(header_path.parent),
@@ -394,7 +402,7 @@ int main(void) {
             subprocess.run(["git", "init", "-q"], cwd=work, check=True)
             for patch in sorted(PATCH.parent.glob("*.patch")):
                 prefix = re.match(r"\d+", patch.name)
-                if prefix is None or int(prefix.group(0)) > 1172:
+                if prefix is None or int(prefix.group(0)) > 1173:
                     continue
                 if "bsd/dev/sweet_smmu.c" not in patch.read_text(errors="replace"):
                     continue
