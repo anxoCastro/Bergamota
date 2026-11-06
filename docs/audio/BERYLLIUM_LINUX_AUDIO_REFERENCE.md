@@ -421,6 +421,25 @@ GPIO 76's from `0x03500000`; GPIO 76 is not in NORTH. This mapping was checked
 against the `sdm845-6.18.2-r0` pinctrl source after catching the earlier
 NORTH assumption in a test-first check.
 
+The same pinctrl driver's `EAST` base is `0x00100000` relative to the TLMM
+physical base `0x03400000`, and its GPIO groups use `0x1000 * gpio`. GPIO76,
+85, and 86 are EAST pins; GPIO85/86 therefore map to `0x03555000` and
+`0x03556000`. Linux's SDM845 DTS places SE5 at GENI base `0x00894000`, with
+QUP function 5 on GPIO85/86. These exact addresses are inputs to the first
+TAS bus probe and should be asserted in its fake-MMIO regression.
+
+### XNU identity-only milestone
+
+Patch `1189-beryllium-tas-identity-probe.patch` adds opt-in `sweetadsp=8`.
+It holds the active-low reset GPIOs 12/76 low, snapshots GPIO85/86 TLMM state,
+uses bounded open-drain software I2C to read TAS2559 register `0x03` at `0x4c`
+and TAS2560 register `0x7d` at `0x4d`, then reasserts and verifies reset-low
+before restoring the bus pins. It performs no amplifier configuration writes,
+firmware upload, VBoost, or audio routing. Host tests cover the I2C helper and
+static dispatch/mapping checks. Hardware IDs and XNU build status belong in
+`NOTES.md`; until confirmed on-device, this is an implementation target rather
+than evidence that the bus is operational.
+
 ### TAS2559/TAS2560 firmware and power-up sequence
 
 The downstream Beryllium kernel declares a paired TAS2559/TAS2560 on

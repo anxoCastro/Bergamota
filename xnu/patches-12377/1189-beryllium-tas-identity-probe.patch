@@ -1,0 +1,376 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 420888d..2b7a170 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -31,6 +31,7 @@
+ #include "beryllium_adsp_glink_start.h"
+ #include "beryllium_adsp_apr_probe.h"
+ #include "beryllium_adsp_audio_sequence.h"
++#include "beryllium_tas_id_probe.h"
+ #include "beryllium_smp2p_negotiation.h"
+ #include "sweet_smmu_audio_private.h"
+ 
+@@ -3932,6 +3933,182 @@ out:
+ 	return result;
+ }
+ 
++#define ADSP_TAS2559_ADDR 0x4cu
++#define ADSP_TAS2560_ADDR 0x4du
++#define ADSP_TAS2559_PGID_REG 0x03u
++#define ADSP_TAS2560_ID_REG 0x7du
++/* Pinctrl EAST GPIO windows: GPIO85=0x03555000, GPIO86=0x03556000. */
++#define ADSP_TAS_SDA_GPIO 85u
++#define ADSP_TAS_SCL_GPIO 86u
++#define ADSP_TAS_TLMM_MAP_SIZE 0x00060000u
++
++struct adsp_tas_i2c_context {
++	vm_offset_t gpio;
++};
++
++static void
++adsp_tas_i2c_set_line(vm_offset_t gpio, unsigned pin, bool release)
++{
++	uint32_t cfg = ADSP_TLMM_GPIO_CFG(pin);
++	uint32_t io = ADSP_TLMM_GPIO_IO(pin);
++	uint32_t value = adsp_audio_gpio_read(gpio, cfg);
++	if (release) {
++		adsp_audio_gpio_write(gpio, cfg, value & ~0x200u);
++	} else {
++		uint32_t output = adsp_audio_gpio_read(gpio, io) & ~2u;
++		adsp_audio_gpio_write(gpio, io, output);
++		adsp_audio_gpio_write(gpio, cfg, value | 0x200u);
++	}
++}
++
++static void
++adsp_tas_i2c_set_sda_release(void *context, bool release)
++{
++	struct adsp_tas_i2c_context *bus = context;
++	adsp_tas_i2c_set_line(bus->gpio, ADSP_TAS_SDA_GPIO, release);
++}
++
++static void
++adsp_tas_i2c_set_scl_release(void *context, bool release)
++{
++	struct adsp_tas_i2c_context *bus = context;
++	adsp_tas_i2c_set_line(bus->gpio, ADSP_TAS_SCL_GPIO, release);
++}
++
++static bool
++adsp_tas_i2c_read_sda(void *context)
++{
++	struct adsp_tas_i2c_context *bus = context;
++	return (adsp_audio_gpio_read(bus->gpio,
++	    ADSP_TLMM_GPIO_IO(ADSP_TAS_SDA_GPIO)) & 1u) != 0;
++}
++
++static bool
++adsp_tas_i2c_read_scl(void *context)
++{
++	struct adsp_tas_i2c_context *bus = context;
++	return (adsp_audio_gpio_read(bus->gpio,
++	    ADSP_TLMM_GPIO_IO(ADSP_TAS_SCL_GPIO)) & 1u) != 0;
++}
++
++static void
++adsp_tas_i2c_delay(void *context, unsigned microseconds)
++{
++	(void)context;
++	delay(microseconds);
++}
++
++static const struct beryllium_tas_i2c_ops adsp_tas_i2c_ops = {
++	.set_sda_release = adsp_tas_i2c_set_sda_release,
++	.set_scl_release = adsp_tas_i2c_set_scl_release,
++	.read_sda = adsp_tas_i2c_read_sda,
++	.read_scl = adsp_tas_i2c_read_scl,
++	.delay_us = adsp_tas_i2c_delay,
++};
++
++static bool
++adsp_tas_reset(vm_offset_t gpio12, vm_offset_t gpioeast, bool release)
++{
++	const unsigned pins[] = { 12u, 76u };
++	vm_offset_t bases[] = { gpio12, gpioeast };
++	for (unsigned i = 0; i < 2; ++i) {
++		uint32_t cfg = ADSP_TLMM_GPIO_CFG(pins[i]);
++		uint32_t io = ADSP_TLMM_GPIO_IO(pins[i]);
++		uint32_t out = adsp_audio_gpio_read(bases[i], io);
++		out = release ? out | 2u : out & ~2u;
++		adsp_audio_gpio_write(bases[i], io, out);
++		uint32_t config = adsp_audio_gpio_read(bases[i], cfg);
++		config = (config & ~0x3ffu) | 0x200u;
++		adsp_audio_gpio_write(bases[i], cfg, config);
++	}
++	for (unsigned i = 0; i < 2; ++i) {
++		uint32_t config = adsp_audio_gpio_read(bases[i],
++		    ADSP_TLMM_GPIO_CFG(pins[i]));
++		uint32_t output = adsp_audio_gpio_read(bases[i],
++		    ADSP_TLMM_GPIO_IO(pins[i]));
++		if ((config & 0x3ffu) != 0x200u ||
++		    ((output & 2u) != 0) != release)
++			return false;
++	}
++	return true;
++}
++
++static bool
++adsp_tas_id_probe_start(void)
++{
++	vm_offset_t gpiosouth = ml_io_map(ADSP_TLMM_SOUTH_PA,
++	    ADSP_TAS_TLMM_MAP_SIZE);
++	vm_offset_t gpioeast = ml_io_map(ADSP_TLMM_EAST_PA,
++	    ADSP_TAS_TLMM_MAP_SIZE);
++	uint32_t sda_cfg = 0, sda_io = 0, scl_cfg = 0, scl_io = 0;
++	uint8_t tas2559_pgid = 0, tas2560_id = 0;
++	bool bus_saved = false, success = false, resets_low = false;
++	int left_result = BERYLLIUM_TAS_I2C_INVALID;
++	int right_result = BERYLLIUM_TAS_I2C_INVALID;
++	struct adsp_tas_i2c_context bus = { .gpio = gpioeast };
++
++	if (!sweet_board_beryllium() || gpiosouth == 0 || gpioeast == 0) {
++		printf("SWEET TAS: TLMM mapping unavailable; no ID transaction attempted\n");
++		return false;
++	}
++	/* Assert both active-low resets before touching the I2C pins. */
++	if (!adsp_tas_reset(gpiosouth, gpioeast, false)) {
++		printf("SWEET TAS: could not verify GPIO12/76 reset-low; aborting\n");
++		return false;
++	}
++	sda_cfg = adsp_audio_gpio_read(gpioeast,
++	    ADSP_TLMM_GPIO_CFG(ADSP_TAS_SDA_GPIO));
++	sda_io = adsp_audio_gpio_read(gpioeast,
++	    ADSP_TLMM_GPIO_IO(ADSP_TAS_SDA_GPIO));
++	scl_cfg = adsp_audio_gpio_read(gpioeast,
++	    ADSP_TLMM_GPIO_CFG(ADSP_TAS_SCL_GPIO));
++	scl_io = adsp_audio_gpio_read(gpioeast,
++	    ADSP_TLMM_GPIO_IO(ADSP_TAS_SCL_GPIO));
++	bus_saved = true;
++	/* GPIO mode, 2 mA, no internal pulls, input/released for open-drain I2C. */
++	adsp_audio_gpio_write(gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SDA_GPIO),
++	    (sda_cfg & ~0x3ffu) | (2u << 6));
++	adsp_audio_gpio_write(gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SCL_GPIO),
++	    (scl_cfg & ~0x3ffu) | (2u << 6));
++	if (!adsp_tas_i2c_read_sda(&bus) || !adsp_tas_i2c_read_scl(&bus)) {
++		printf("SWEET TAS: SE5 SDA/SCL not both pulled high; resets stay low\n");
++		goto out;
++	}
++	/* Power-on reset only: the class-D/boost registers remain at hardware defaults. */
++	delay(10000);
++	if (!adsp_tas_reset(gpiosouth, gpioeast, true)) {
++		printf("SWEET TAS: reset release readback failed; returning to reset-low\n");
++		goto out;
++	}
++	delay(10000);
++	left_result = beryllium_tas_i2c_read_reg(&adsp_tas_i2c_ops, &bus,
++	    ADSP_TAS2559_ADDR, ADSP_TAS2559_PGID_REG, &tas2559_pgid);
++	if (left_result == BERYLLIUM_TAS_I2C_OK) {
++		right_result = beryllium_tas_i2c_read_reg(&adsp_tas_i2c_ops, &bus,
++		    ADSP_TAS2560_ADDR, ADSP_TAS2560_ID_REG, &tas2560_id);
++	}
++	success = left_result == BERYLLIUM_TAS_I2C_OK &&
++	    right_result == BERYLLIUM_TAS_I2C_OK;
++out:
++	/* Always reassert reset before returning, even if an I2C transfer failed. */
++	resets_low = adsp_tas_reset(gpiosouth, gpioeast, false);
++	if (!resets_low) {
++		printf("SWEET TAS: reset-low cleanup readback failed\n");
++		success = false;
++	}
++	if (bus_saved) {
++		adsp_audio_gpio_write(gpioeast, ADSP_TLMM_GPIO_IO(ADSP_TAS_SDA_GPIO), sda_io);
++		adsp_audio_gpio_write(gpioeast, ADSP_TLMM_GPIO_IO(ADSP_TAS_SCL_GPIO), scl_io);
++		adsp_audio_gpio_write(gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SDA_GPIO), sda_cfg);
++		adsp_audio_gpio_write(gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SCL_GPIO), scl_cfg);
++	}
++	printf("SWEET TAS: SE5 GPIO85/86 ID probe left=%d/%02x right=%d/%02x resets=%s result=%s\n",
++	    left_result, tas2559_pgid, right_result, tas2560_id,
++	    resets_low ? "verified-low" : "unverified",
++	    success ? "read-acked" : "failed");
++	return success;
++}
++
+ void
+ beryllium_adsp_probe(void)
+ {
+@@ -3941,6 +4118,10 @@ beryllium_adsp_probe(void)
+ 		return;
+ 	}
+ 	(void)PE_parse_boot_argn("sweetadsp", &mode, sizeof(mode));
++	if (mode == 8) {
++		(void)adsp_tas_id_probe_start();
++		return;
++	}
+ 	if (mode == 6) {
+ 		int result = sweet_smmu_probe_sid(0x1821, 0);
+ 		printf("SWEET ADSP: read-only audio SMMU probe sid 0x1821 level 0 -> %d (0 none, 1 bypass, 2 translate, 3 fault, 4 mixed, -1 unavailable/busy)\n",
+diff --git a/bsd/dev/beryllium_tas_id_probe.h b/bsd/dev/beryllium_tas_id_probe.h
+new file mode 100644
+index 0000000..74e55e3
+--- /dev/null
++++ b/bsd/dev/beryllium_tas_id_probe.h
+@@ -0,0 +1,164 @@
++#ifndef BERYLLIUM_TAS_ID_PROBE_H
++#define BERYLLIUM_TAS_ID_PROBE_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#define BERYLLIUM_TAS_I2C_HALF_PERIOD_US 5u
++#define BERYLLIUM_TAS_I2C_STRETCH_LIMIT_US 1000u
++
++enum beryllium_tas_i2c_result {
++	BERYLLIUM_TAS_I2C_OK = 0,
++	BERYLLIUM_TAS_I2C_NACK = -1,
++	BERYLLIUM_TAS_I2C_TIMEOUT = -2,
++	BERYLLIUM_TAS_I2C_BUS_BUSY = -3,
++	BERYLLIUM_TAS_I2C_INVALID = -4,
++};
++
++struct beryllium_tas_i2c_ops {
++	void (*set_sda_release)(void *context, bool release);
++	void (*set_scl_release)(void *context, bool release);
++	bool (*read_sda)(void *context);
++	bool (*read_scl)(void *context);
++	void (*delay_us)(void *context, unsigned microseconds);
++};
++
++static bool
++beryllium_tas_i2c_ops_valid(const struct beryllium_tas_i2c_ops *ops)
++{
++	return ops != 0 && ops->set_sda_release != 0 &&
++	    ops->set_scl_release != 0 && ops->read_sda != 0 &&
++	    ops->read_scl != 0 && ops->delay_us != 0;
++}
++
++static bool
++beryllium_tas_i2c_scl_high(const struct beryllium_tas_i2c_ops *ops,
++	void *context)
++{
++	ops->set_scl_release(context, true);
++	for (unsigned elapsed = 0; elapsed < BERYLLIUM_TAS_I2C_STRETCH_LIMIT_US;
++	    ++elapsed) {
++		if (ops->read_scl(context)) {
++			ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++			return true;
++		}
++		ops->delay_us(context, 1u);
++	}
++	return false;
++}
++
++static int
++beryllium_tas_i2c_start(const struct beryllium_tas_i2c_ops *ops,
++	void *context)
++{
++	ops->set_sda_release(context, true);
++	if (!beryllium_tas_i2c_scl_high(ops, context))
++		return BERYLLIUM_TAS_I2C_TIMEOUT;
++	if (!ops->read_sda(context))
++		return BERYLLIUM_TAS_I2C_BUS_BUSY;
++	ops->set_sda_release(context, false);
++	ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++	ops->set_scl_release(context, false);
++	ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++	return BERYLLIUM_TAS_I2C_OK;
++}
++
++static void
++beryllium_tas_i2c_stop(const struct beryllium_tas_i2c_ops *ops,
++	void *context)
++{
++	ops->set_sda_release(context, false);
++	ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++	(void)beryllium_tas_i2c_scl_high(ops, context);
++	ops->set_sda_release(context, true);
++	ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++}
++
++static int
++beryllium_tas_i2c_write_byte(const struct beryllium_tas_i2c_ops *ops,
++	void *context, uint8_t value)
++{
++	for (int bit = 7; bit >= 0; --bit) {
++		ops->set_sda_release(context, (value & (1u << bit)) != 0);
++		ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++		if (!beryllium_tas_i2c_scl_high(ops, context))
++			return BERYLLIUM_TAS_I2C_TIMEOUT;
++		ops->set_scl_release(context, false);
++	}
++	ops->set_sda_release(context, true);
++	ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++	if (!beryllium_tas_i2c_scl_high(ops, context))
++		return BERYLLIUM_TAS_I2C_TIMEOUT;
++	bool ack = !ops->read_sda(context);
++	ops->set_scl_release(context, false);
++	ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++	return ack ? BERYLLIUM_TAS_I2C_OK : BERYLLIUM_TAS_I2C_NACK;
++}
++
++static int
++beryllium_tas_i2c_read_byte(const struct beryllium_tas_i2c_ops *ops,
++	void *context, uint8_t *value)
++{
++	uint8_t result = 0;
++	ops->set_sda_release(context, true);
++	for (int bit = 7; bit >= 0; --bit) {
++		ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++		if (!beryllium_tas_i2c_scl_high(ops, context))
++			return BERYLLIUM_TAS_I2C_TIMEOUT;
++		if (ops->read_sda(context))
++			result |= (uint8_t)(1u << bit);
++		ops->set_scl_release(context, false);
++	}
++	/* Master NACKs the one-byte identity read, then emits STOP. */
++	ops->set_sda_release(context, true);
++	ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
++	if (!beryllium_tas_i2c_scl_high(ops, context))
++		return BERYLLIUM_TAS_I2C_TIMEOUT;
++	ops->set_scl_release(context, false);
++	ops->set_sda_release(context, true);
++	*value = result;
++	return BERYLLIUM_TAS_I2C_OK;
++}
++
++static int
++beryllium_tas_i2c_read_reg(const struct beryllium_tas_i2c_ops *ops,
++	void *context, uint8_t address, uint8_t reg, uint8_t *value)
++{
++	if (!beryllium_tas_i2c_ops_valid(ops) || context == 0 || value == 0 ||
++	    address > 0x7fu)
++		return BERYLLIUM_TAS_I2C_INVALID;
++	int result = beryllium_tas_i2c_start(ops, context);
++	if (result != BERYLLIUM_TAS_I2C_OK) {
++		ops->set_sda_release(context, true);
++		ops->set_scl_release(context, true);
++		return result;
++	}
++	result = beryllium_tas_i2c_write_byte(ops, context,
++	    (uint8_t)(address << 1));
++	if (result == BERYLLIUM_TAS_I2C_OK)
++		result = beryllium_tas_i2c_write_byte(ops, context, reg);
++	if (result != BERYLLIUM_TAS_I2C_OK) {
++		beryllium_tas_i2c_stop(ops, context);
++		return result;
++	}
++	result = beryllium_tas_i2c_start(ops, context);
++	if (result != BERYLLIUM_TAS_I2C_OK) {
++		beryllium_tas_i2c_stop(ops, context);
++		return result;
++	}
++	result = beryllium_tas_i2c_write_byte(ops, context,
++	    (uint8_t)((address << 1) | 1u));
++	if (result != BERYLLIUM_TAS_I2C_OK) {
++		beryllium_tas_i2c_stop(ops, context);
++		return result;
++	}
++	result = beryllium_tas_i2c_read_byte(ops, context, value);
++	if (result != BERYLLIUM_TAS_I2C_OK) {
++		beryllium_tas_i2c_stop(ops, context);
++		return result;
++	}
++	beryllium_tas_i2c_stop(ops, context);
++	return BERYLLIUM_TAS_I2C_OK;
++}
++
++#endif /* BERYLLIUM_TAS_ID_PROBE_H */
