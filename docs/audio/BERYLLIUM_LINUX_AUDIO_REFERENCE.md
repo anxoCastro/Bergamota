@@ -417,9 +417,9 @@ zeroed APR service/domain fields; the AFE requests retain the verified AFE
 service/domain fields. On the 2026-11-06 read-only phone boot, XNU opened the
 ASM and ADM routes, configured QUAT, started AFE, and received a successful
 ASM RUN acknowledgement. The first WRITE_DONE event arrived with the captured
-48-byte layout described above; patch 1182 now parses that event. Its XNU 26.5
-kernel build is in progress, and a new RAM boot must still verify all four
-period events and the bounded cleanup sequence. This stage has not yet proved
+48-byte layout described above; patch 1182 now parses that event. The XNU 26.5
+kernel build passed in CI run 42186173762; a new RAM boot must still verify all
+four period events and the bounded cleanup sequence. This stage has not yet proved
 audible playback: the TAS amplifiers stay in reset. After the transport and
 restore path succeeds, bring up pinmux and TAS configuration separately, then
 investigate an iOS 26 AudioServerPlugIn/HAL bridge. The headphone and
