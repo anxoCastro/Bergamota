@@ -11,6 +11,21 @@ main(void)
 	struct beryllium_adsp_glink_indices nonzero = { 0, 8, 0, 0 };
 	struct beryllium_adsp_glink_indices unaligned = { 0, 1, 0, 0 };
 	struct beryllium_adsp_glink_indices out_of_range = { 16384, 0, 0, 0 };
+	struct beryllium_adsp_glink_indices tx_first = {
+	    0x3e8, 0x3f0, 0xaa0, 0xaa0
+	};
+	struct beryllium_adsp_glink_indices tx_remote_advanced = {
+	    0x3f0, 0x3f0, 0xaa0, 0xaa0
+	};
+	struct beryllium_adsp_glink_indices tx_local_rx_advanced = {
+	    0x3f0, 0x3f0, 0xaa8, 0xaa0
+	};
+	struct beryllium_adsp_glink_indices tx_remote_rx_advanced = {
+	    0x3f0, 0x3f0, 0xaa0, 0xaa8
+	};
+	struct beryllium_adsp_glink_indices tx_producer_changed = {
+	    0x3f0, 0x3f8, 0xaa0, 0xaa0
+	};
 	struct beryllium_adsp_glink_message decoded = { 0, 0, 0 };
 	uint8_t wire[8];
 	uint32_t available = 0, next = 0;
@@ -44,6 +59,18 @@ main(void)
 	assert(!beryllium_adsp_glink_cold_indices_valid(&out_of_range, 16384, 16384));
 	assert(!beryllium_adsp_glink_cold_indices_valid(&zero, 0, 16384));
 	assert(!beryllium_adsp_glink_cold_indices_valid(&zero, 16384, 0));
+	/* The captured DSP tx_tail movement must not reject an AP TX send. */
+	assert(beryllium_adsp_glink_tx_head_stable(&tx_first,
+	    &tx_remote_advanced));
+	assert(beryllium_adsp_glink_indices_valid(&tx_remote_advanced,
+	    16384, 16384));
+	assert(beryllium_adsp_glink_tx_head_stable(&tx_first,
+	    &tx_local_rx_advanced));
+	assert(beryllium_adsp_glink_tx_head_stable(&tx_first,
+	    &tx_remote_rx_advanced));
+	assert(!beryllium_adsp_glink_tx_head_stable(&tx_first,
+	    &tx_producer_changed));
+	assert(!beryllium_adsp_glink_tx_head_stable(NULL, &tx_first));
 
 	assert(beryllium_adsp_glink_ring_available(0, 0, 16384, &available));
 	assert(available == 16368);

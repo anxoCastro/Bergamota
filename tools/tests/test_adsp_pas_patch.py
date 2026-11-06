@@ -47,6 +47,7 @@ MODE7_APR_MAP_REPLY_TOKEN_PATCH = ROOT / "xnu/patches-12377/1179-beryllium-apr-v
 MODE7_ADM_ZERO_COPP_PATCH = ROOT / "xnu/patches-12377/1180-beryllium-adm-zero-copp-id.patch"
 GLINK_TX_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1181-beryllium-glink-tx-rejection-diagnostics.patch"
 APR_WRITE_DONE_EVENT_PATCH = ROOT / "xnu/patches-12377/1182-beryllium-apr-write-done-event-layout.patch"
+GLINK_TX_OWNERSHIP_PATCH = ROOT / "xnu/patches-12377/1183-beryllium-glink-remote-index-race.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -615,9 +616,12 @@ int main(void) {
 
     def test_compiled_glink_mode3_helpers(self):
         header_path = "bsd/dev/beryllium_adsp_glink_start.h"
+        survey_header_path = "bsd/dev/beryllium_adsp_glink_survey.h"
         harness = ROOT / "tools/tests/test_adsp_glink_mode3.c"
         self.assertTrue(GLINK_MODE3_PATCH.is_file(),
                         "patch 1149 must provide the production GLINK-start helper header")
+        self.assertTrue(GLINK_TX_OWNERSHIP_PATCH.is_file(),
+                        "patch 1183 must validate TX indices according to GLINK ownership")
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             subprocess.run(["git", "init", "-q"], cwd=work,
@@ -627,6 +631,9 @@ int main(void) {
                            check=True, capture_output=True, text=True)
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(GLINK_MODE3_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", f"--include={survey_header_path}",
+                            str(GLINK_TX_OWNERSHIP_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-glink-mode3"
             subprocess.run([
@@ -638,6 +645,50 @@ int main(void) {
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "GLINK mode-3 helper checks passed")
+
+    def test_glink_tx_ownership_patch_accepts_remote_index_progress(self):
+        self.assertTrue(GLINK_TX_OWNERSHIP_PATCH.is_file(),
+                        "patch 1183 must fix the captured remote TX-tail race")
+        patch = GLINK_TX_OWNERSHIP_PATCH.read_text()
+        driver = diff_section(patch, "bsd/dev/beryllium_adsp.c")
+        added_driver = "\n".join(line[1:] for line in driver.splitlines()
+                                  if line.startswith("+") and not line.startswith("+++"))
+        self.assertIn("beryllium_adsp_glink_tx_head_stable(&first, &second)",
+                      added_driver)
+        self.assertIn("TX producer head changed", added_driver)
+        self.assertNotIn("descriptor index samples differ", added_driver)
+
+    def test_glink_tx_ownership_patch_replays_after_adsp_chain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work,
+                           check=True, capture_output=True, text=True)
+            included = (
+                "bsd/dev/beryllium_adsp.c",
+                "bsd/dev/beryllium_adsp_apr_probe.h",
+                "bsd/dev/beryllium_adsp_glink_survey.h",
+                "bsd/dev/beryllium_adsp_glink_start.h",
+            )
+            for patch in sorted((ROOT / "xnu/patches-12377").glob("*.patch")):
+                try:
+                    number = int(patch.name.split("-", 1)[0])
+                except ValueError:
+                    continue
+                if not 1131 <= number <= 1183:
+                    continue
+                command = ["git", "apply"]
+                if number == 1183:
+                    command.append("--whitespace=error")
+                command.extend(f"--include={path}" for path in included)
+                command.append(str(patch))
+                subprocess.run(command, cwd=work, check=True,
+                               capture_output=True, text=True)
+            driver = (work / "bsd/dev/beryllium_adsp.c").read_text()
+            send = added_function_body(driver, "adsp_glink_send_frame")
+            self.assertIn("beryllium_adsp_glink_tx_head_stable(&first, &second)",
+                          send)
+            self.assertNotIn("beryllium_adsp_glink_indices_equal(&first, &second)",
+                             send)
 
     def test_mode3_glink_is_gated_by_ready_and_owns_only_ap_fields(self):
         self.assertTrue(GLINK_MODE3_PATCH.is_file(), "patch 1149 is missing")

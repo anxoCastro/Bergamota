@@ -1,0 +1,39 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 0b5ebfc..5555339 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2355,10 +2355,9 @@ adsp_glink_send_frame(const struct adsp_glink_survey_items *items,
+ 		printf("SWEET ADSP: APR GLINK TX stopped: descriptor index sample read failed\n");
+ 		return false;
+ 	}
+-	if (!beryllium_adsp_glink_indices_equal(&first, &second)) {
+-		printf("SWEET ADSP: APR GLINK TX stopped: descriptor index samples differ first tx_tail=%#x tx_head=%#x rx_tail=%#x rx_head=%#x second tx_tail=%#x tx_head=%#x rx_tail=%#x rx_head=%#x\n",
+-		    first.tx_tail, first.tx_head, first.rx_tail, first.rx_head,
+-		    second.tx_tail, second.tx_head, second.rx_tail, second.rx_head);
++	if (!beryllium_adsp_glink_tx_head_stable(&first, &second)) {
++		printf("SWEET ADSP: APR GLINK TX stopped: TX producer head changed during descriptor snapshot first=%#x second=%#x remote_tail=%#x->%#x\n",
++		    first.tx_head, second.tx_head, first.tx_tail, second.tx_tail);
+ 		return false;
+ 	}
+ 	indices = second;
+diff --git a/bsd/dev/beryllium_adsp_glink_survey.h b/bsd/dev/beryllium_adsp_glink_survey.h
+index f87e326..dde10d8 100644
+--- a/bsd/dev/beryllium_adsp_glink_survey.h
++++ b/bsd/dev/beryllium_adsp_glink_survey.h
+@@ -51,4 +51,16 @@ beryllium_adsp_glink_indices_equal(
+ 	    a->rx_tail == b->rx_tail && a->rx_head == b->rx_head;
+ }
+ 
++/* Only the AP-owned TX producer index must stay fixed while preparing a send.
++ * The DSP may consume TX data and advance tx_tail during this snapshot; the
++ * independent RX indices may also advance without affecting TX availability.
++ */
++static inline bool
++beryllium_adsp_glink_tx_head_stable(
++    const struct beryllium_adsp_glink_indices *first,
++    const struct beryllium_adsp_glink_indices *second)
++{
++	return first != NULL && second != NULL && first->tx_head == second->tx_head;
++}
++
+ #endif /* _BERYLLIUM_ADSP_GLINK_SURVEY_H_ */
