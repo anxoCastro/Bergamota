@@ -48,6 +48,7 @@ MODE7_ADM_ZERO_COPP_PATCH = ROOT / "xnu/patches-12377/1180-beryllium-adm-zero-co
 GLINK_TX_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1181-beryllium-glink-tx-rejection-diagnostics.patch"
 APR_WRITE_DONE_EVENT_PATCH = ROOT / "xnu/patches-12377/1182-beryllium-apr-write-done-event-layout.patch"
 GLINK_TX_OWNERSHIP_PATCH = ROOT / "xnu/patches-12377/1183-beryllium-glink-remote-index-race.patch"
+MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1185-beryllium-smmu-restore-stage-diagnostics.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -432,6 +433,13 @@ int main(void) {
             subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu_audio_private.h",
                             str(MODE7_SMMU_ACTLR_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--check", "--whitespace=error",
+                            "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
             binary = work / "smmu-audio-test"
             compile_result = subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(header_path.parent),
@@ -441,6 +449,41 @@ int main(void) {
             result = subprocess.run([str(binary)], check=False, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("private audio SMMU fake-MMIO checks passed", result.stdout)
+
+    def test_private_audio_smmu_restore_diagnostic_patch_replays_on_production_sources(self):
+        paths = ("bsd/dev/sweet_smmu.c", "bsd/dev/sweet_smmu_audio_private.h")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+            earlier = []
+            for patch in sorted(PATCH.parent.glob("*.patch")):
+                prefix = re.match(r"\d+", patch.name)
+                if prefix is None or int(prefix.group(0)) >= 1185:
+                    continue
+                contents = patch.read_text(errors="replace")
+                if any(f"diff --git a/{path} b/{path}" in contents for path in paths):
+                    earlier.append(patch)
+            self.assertGreater(len(earlier), 5)
+            for patch in earlier:
+                command = ["git", "apply"]
+                for path in paths:
+                    command.append(f"--include={path}")
+                command.append(str(patch))
+                subprocess.run(command, cwd=work, check=True, capture_output=True, text=True)
+            apply_check = ["git", "apply", "--check", "--whitespace=error"]
+            apply_check.extend(f"--include={path}" for path in paths)
+            apply_check.append(str(MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH))
+            subprocess.run(apply_check, cwd=work, check=True, capture_output=True, text=True)
+            apply_patch = ["git", "apply"]
+            apply_patch.extend(f"--include={path}" for path in paths)
+            apply_patch.append(str(MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH))
+            subprocess.run(apply_patch, cwd=work, check=True, capture_output=True, text=True)
+            source = (work / "bsd/dev/sweet_smmu.c").read_text()
+            header = (work / "bsd/dev/sweet_smmu_audio_private.h").read_text()
+            self.assertIn("sweet_smmu_audio_restore_diagnostic", source)
+            self.assertIn("route restore failed stage=%s error=%d", source)
+            self.assertIn("SWEET_SMMU_AUDIO_RESTORE_STAGE_TLB_SYNC", header)
+            self.assertIn("sweet_smmu_audio_restore_stage_name", header)
 
     def test_private_audio_smmu_diagnostic_patch_replays_after_mode_seven(self):
         with tempfile.TemporaryDirectory() as tmp:
