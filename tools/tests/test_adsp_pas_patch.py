@@ -51,6 +51,7 @@ GLINK_TX_OWNERSHIP_PATCH = ROOT / "xnu/patches-12377/1183-beryllium-glink-remote
 MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1185-beryllium-smmu-restore-stage-diagnostics.patch"
 MODE7_SMMU_RESTORE_TRACE_PATCH = ROOT / "xnu/patches-12377/1186-beryllium-smmu-cbar-restore-trace.patch"
 MODE7_SMMU_MMIO_ACCESS_PATCH = ROOT / "xnu/patches-12377/1187-beryllium-smmu-explicit-mmio-addressing.patch"
+MODE7_SMMU_CBAR_LIFECYCLE_PATCH = ROOT / "xnu/patches-12377/1188-beryllium-smmu-cbar-lifecycle.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -449,6 +450,13 @@ int main(void) {
             subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu_audio_private.h",
                             str(MODE7_SMMU_RESTORE_TRACE_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--check", "--whitespace=error",
+                            "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_CBAR_LIFECYCLE_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--include=bsd/dev/sweet_smmu_audio_private.h",
+                            str(MODE7_SMMU_CBAR_LIFECYCLE_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
             binary = work / "smmu-audio-test"
             compile_result = subprocess.run([
                 "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(header_path.parent),
@@ -491,6 +499,10 @@ int main(void) {
             subprocess.run(apply_check, cwd=work, check=True, capture_output=True, text=True)
             apply_patch[-1] = str(MODE7_SMMU_RESTORE_TRACE_PATCH)
             subprocess.run(apply_patch, cwd=work, check=True, capture_output=True, text=True)
+            apply_check[-1] = str(MODE7_SMMU_CBAR_LIFECYCLE_PATCH)
+            subprocess.run(apply_check, cwd=work, check=True, capture_output=True, text=True)
+            apply_patch[-1] = str(MODE7_SMMU_CBAR_LIFECYCLE_PATCH)
+            subprocess.run(apply_patch, cwd=work, check=True, capture_output=True, text=True)
             source = (work / "bsd/dev/sweet_smmu.c").read_text()
             header = (work / "bsd/dev/sweet_smmu_audio_private.h").read_text()
             self.assertIn("sweet_smmu_audio_restore_diagnostic", source)
@@ -498,6 +510,8 @@ int main(void) {
             self.assertIn("cbar_after_cbar_write", header)
             self.assertIn("SWEET_SMMU_AUDIO_RESTORE_STAGE_TLB_SYNC", header)
             self.assertIn("sweet_smmu_audio_restore_stage_name", header)
+            self.assertIn("SWEET_SMMU_AUDIO_CBAR_AUDIO", header)
+            self.assertIn("actual_cbar == SWEET_SMMU_AUDIO_CBAR_AUDIO", header)
 
     def test_smmu_mmio_accessors_use_non_writeback_assembly_accesses(self):
         paths = ("bsd/dev/sweet_smmu.c", "bsd/dev/sweet_smmu_audio_private.h")
@@ -520,7 +534,8 @@ int main(void) {
                 subprocess.run(command, cwd=work, check=True, capture_output=True, text=True)
             for patch in (MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH,
                           MODE7_SMMU_RESTORE_TRACE_PATCH,
-                          MODE7_SMMU_MMIO_ACCESS_PATCH):
+                          MODE7_SMMU_MMIO_ACCESS_PATCH,
+                          MODE7_SMMU_CBAR_LIFECYCLE_PATCH):
                 command = ["git", "apply"]
                 command.extend(f"--include={path}" for path in paths)
                 command.append(str(patch))

@@ -19,6 +19,7 @@ struct fake_mmio {
 	size_t write_count;
 	uint32_t ignored_write_offset;
 	bool ignore_write;
+	bool sticky_cbar;
 	bool actlr_sticky;
 	bool tcr2_tbi_sticky;
 };
@@ -39,6 +40,12 @@ fake_write(void *context, uint32_t offset, uint32_t value)
 	assert(mmio->write_count < FAKE_WRITE_CAPACITY);
 	mmio->writes[mmio->write_count++] = (struct fake_write){ offset, value };
 	if (!mmio->ignore_write || offset != mmio->ignored_write_offset) {
+		if (mmio->sticky_cbar && offset >= SWEET_SMMU_AUDIO_GR1 &&
+		    offset < SWEET_SMMU_AUDIO_GR1 + 0x800u &&
+		    (offset - SWEET_SMMU_AUDIO_GR1) % sizeof(uint32_t) == 0 &&
+		    value == 0 && mmio->regs[offset / sizeof(uint32_t)] == 0x1f300u) {
+			return;
+		}
 		if (mmio->tcr2_tbi_sticky &&
 		    offset == SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_TCR2)) {
 			value |= 3u << 5;
@@ -77,8 +84,8 @@ fake_init(struct fake_mmio *mmio)
 	mmio->regs[SWEET_SMMU_AUDIO_S2CR(10) / 4] = 3;
 	mmio->regs[SWEET_SMMU_AUDIO_SMR(5) / 4] = SWEET_SMMU_AUDIO_SMR_VALID | 0x740;
 	mmio->regs[SWEET_SMMU_AUDIO_SMR(0) / 4] = 0x123;
-	/* Disabled candidate bank has nonzero stale config; it must be saved/restored. */
-	mmio->regs[SWEET_SMMU_AUDIO_CBAR(0) / 4] = 0x13579;
+	/* Disabled candidate bank has stale context state; it must be saved/restored. */
+	mmio->regs[SWEET_SMMU_AUDIO_CBAR(0) / 4] = 0;
 	mmio->regs[SWEET_SMMU_AUDIO_CBA2R(0) / 4] = 0x2468a;
 	mmio->regs[SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_SCTLR) / 4] = 2;
 	mmio->regs[SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_ACTLR) / 4] = 0x12345678;
@@ -166,6 +173,20 @@ test_install_reprobes_sid_immediately_before_mutation(void)
 	mmio.regs[SWEET_SMMU_AUDIO_SMR(1) / 4] = SWEET_SMMU_AUDIO_SMR_VALID | 0x1821;
 	assert(sweet_smmu_audio_install(&io, 0x1821, &mapping, 0x500000) == SWEET_SMMU_AUDIO_EEXIST);
 	assert(mmio.write_count == 0);
+}
+
+static void
+test_prepare_skips_noncanonical_cbar(void)
+{
+	struct fake_mmio mmio;
+	struct sweet_smmu_audio_mapping mapping;
+	struct sweet_smmu_audio_io io;
+
+	fake_init(&mmio);
+	io = fake_io(&mmio);
+	mmio.regs[SWEET_SMMU_AUDIO_CBAR(0) / 4] = 0x13579u;
+	assert(sweet_smmu_audio_prepare(&io, 0x1821, &mapping) == SWEET_SMMU_AUDIO_OK);
+	assert(mapping.cb_index == 1);
 }
 
 static void
@@ -319,7 +340,7 @@ test_map_restore_preserves_disabled_bank_and_route_registers(void)
 	assert(!mapping.prepared && !mapping.installed && !mapping.uncertain);
 	assert(mmio.regs[SWEET_SMMU_AUDIO_SMR(0) / 4] == saved_smr);
 	assert(mmio.regs[SWEET_SMMU_AUDIO_S2CR(0) / 4] == saved_s2cr);
-	assert(mmio.regs[SWEET_SMMU_AUDIO_CBAR(0) / 4] == saved_cbar);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_CBAR(0) / 4] == 0x1f300u);
 	assert(mmio.regs[SWEET_SMMU_AUDIO_CBA2R(0) / 4] == saved_cba2r);
 	assert(mmio.regs[SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_SCTLR) / 4] == 2);
 	assert(mmio.regs[SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_ACTLR) / 4] == 0x12345678);
@@ -352,8 +373,7 @@ test_restore_diagnostic_reports_context_bank_readback_mismatch(void)
 	io = fake_io(&mmio);
 	assert(sweet_smmu_audio_prepare(&io, 0x1821, &mapping) == SWEET_SMMU_AUDIO_OK);
 	assert(sweet_smmu_audio_install(&io, 0x1821, &mapping, 0x500000) == SWEET_SMMU_AUDIO_OK);
-	mmio.ignore_write = true;
-	mmio.ignored_write_offset = cbar;
+	mmio.regs[cbar / 4] = 0xdeadbeefu;
 	assert(sweet_smmu_audio_restore_diagnostic(&io, &mapping,
 	    SWEET_SMMU_AUDIO_ACK_RESTORE_REQUIRED, &stage, &readback) == SWEET_SMMU_AUDIO_EIO);
 	assert(stage == SWEET_SMMU_AUDIO_RESTORE_STAGE_CONTEXT_BANK_READBACK);
@@ -380,10 +400,9 @@ test_restore_diagnostic_records_cbar_write_sequence(void)
 	io = fake_io(&mmio);
 	assert(sweet_smmu_audio_prepare(&io, 0x1821, &mapping) == SWEET_SMMU_AUDIO_OK);
 	assert(sweet_smmu_audio_install(&io, 0x1821, &mapping, 0x500000) == SWEET_SMMU_AUDIO_OK);
-	mmio.ignore_write = true;
-	mmio.ignored_write_offset = cbar;
+	mmio.sticky_cbar = true;
 	assert(sweet_smmu_audio_restore_diagnostic(&io, &mapping,
-	    SWEET_SMMU_AUDIO_ACK_RESTORE_REQUIRED, &stage, &readback) == SWEET_SMMU_AUDIO_EIO);
+	    SWEET_SMMU_AUDIO_ACK_RESTORE_REQUIRED, &stage, &readback) == SWEET_SMMU_AUDIO_OK);
 	assert(readback.cbar_before_restore == 0x1f300u);
 	assert(readback.cbar_after_cba2r_write == 0x1f300u);
 	assert(readback.cbar_after_cbar_write == 0x1f300u);
@@ -392,7 +411,35 @@ test_restore_diagnostic_records_cbar_write_sequence(void)
 	assert(readback.cba2r_after_cba2r_write == 0u);
 	assert(readback.id0 == 76u && readback.id1 == 0x5000002du);
 	assert(readback.saved_cbar == 0u && readback.saved_cba2r == 0u);
-	assert(stage == SWEET_SMMU_AUDIO_RESTORE_STAGE_CONTEXT_BANK_READBACK);
+	assert(stage == SWEET_SMMU_AUDIO_RESTORE_STAGE_COMPLETE);
+}
+
+static void
+test_restore_accepts_persistent_canonical_cbar(void)
+{
+	struct fake_mmio mmio;
+	struct sweet_smmu_audio_mapping mapping;
+	struct sweet_smmu_audio_io io;
+	enum sweet_smmu_audio_restore_stage stage = SWEET_SMMU_AUDIO_RESTORE_STAGE_COMPLETE;
+
+	fake_init(&mmio);
+	mmio.regs[SWEET_SMMU_AUDIO_CBAR(0) / 4] = 0;
+	mmio.regs[SWEET_SMMU_AUDIO_CBA2R(0) / 4] = 0;
+	io = fake_io(&mmio);
+	assert(sweet_smmu_audio_prepare(&io, 0x1821, &mapping) == SWEET_SMMU_AUDIO_OK);
+	assert(sweet_smmu_audio_install(&io, 0x1821, &mapping, 0x500000) == SWEET_SMMU_AUDIO_OK);
+	mmio.sticky_cbar = true;
+	assert(sweet_smmu_audio_restore_diagnostic(&io, &mapping,
+	    SWEET_SMMU_AUDIO_ACK_RESTORE_REQUIRED, &stage, NULL) == SWEET_SMMU_AUDIO_OK);
+	assert(stage == SWEET_SMMU_AUDIO_RESTORE_STAGE_COMPLETE);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_CBAR(0) / 4] == 0x1f300u);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_CBA2R(0) / 4] == 0);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_SCTLR) / 4] == 2u);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_TTBR0) / 4] == 0x11111000u);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_CB(0, SWEET_SMMU_AUDIO_CB_TTBR1) / 4] == 0x22222000u);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_S2CR(0) / 4] == SWEET_SMMU_AUDIO_S2CR_BYPASS);
+	assert(mmio.regs[SWEET_SMMU_AUDIO_SMR(0) / 4] == 0x123u);
+	assert(!mapping.prepared && !mapping.installed && !mapping.uncertain);
 }
 
 static void
@@ -459,6 +506,7 @@ main(void)
 	test_exact_masked_and_duplicate_sid_matches_are_rejected();
 	test_no_invalid_smr_and_no_unowned_context_bank_are_rejected();
 	test_install_reprobes_sid_immediately_before_mutation();
+	test_prepare_skips_noncanonical_cbar();
 	test_install_reports_context_bank_tlb_timeout_without_mapping_sid();
 	test_install_reports_first_context_bank_readback_mismatch();
 	test_install_matches_linux_tcr2_and_tolerates_tbi_readback_bits();
@@ -466,6 +514,7 @@ main(void)
 	test_map_restore_preserves_disabled_bank_and_route_registers();
 	test_restore_diagnostic_reports_context_bank_readback_mismatch();
 	test_restore_diagnostic_records_cbar_write_sequence();
+	test_restore_accepts_persistent_canonical_cbar();
 	test_restore_diagnostic_reports_tlb_timeout_register();
 	test_five_page_stage1_descriptors_and_q6asm_address();
 	puts("private audio SMMU fake-MMIO checks passed");

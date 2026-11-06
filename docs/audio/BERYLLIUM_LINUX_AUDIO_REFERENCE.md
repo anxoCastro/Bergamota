@@ -329,22 +329,36 @@ remained low, so this is evidence of DSP command acceptance, not audible output.
 
 The restore check then failed closed for CB4: the saved CBAR/CBA2R snapshot was
 zero, while the pre-restore reads were CBAR `0x1f300` and CBA2R `1`. After
-writing the saved CBA2R, CBAR, and SCTLR values, each logged CBAR read remained
-`0x1f300`; the logged CBA2R read immediately after its restore write was also
-`0x1f300`. The first explicit mismatch is CBAR offset `0x1010`, expected zero,
-actual `0x1f300`. XNU retained the DMA buffer and private tables because the
-restored state was uncertain. The observation identifies the failed readback;
-it does not yet establish why the value persisted.
+writing the saved CBA2R, CBAR, and SCTLR values, each complete logged CBAR read
+remained `0x1f300`. The first explicit mismatch is CBAR offset `0x1010`,
+expected zero, actual `0x1f300`. The diagnostic line is longer than XNU's
+255-character console print limit: `SERIAL_CONS_BUF_SIZE` is 256 and
+`console_printbuf_putc()` drops excess characters unless `drain_uart_sync` is
+enabled. Thus the CBA2R-after-write number is not printed. The restore helper
+checks CBA2R equality before CBAR; since its reported first mismatch is CBAR
+`0x1010`, the control flow establishes that CBA2R read back its saved value,
+zero. XNU retained the DMA buffer and private tables because the restored state
+was uncertain.
 
 Qualcomm's SDM845 Linux ARM SMMU driver programs CBA2R before CBAR when it
-initializes a context bank, and its domain teardown disables `SCTLR` before
-freeing page tables; it does not provide a matching save-and-restore sequence
-for a bank's prior CBAR/CBA2R contents. Therefore Linux's setup ordering alone
-does not validate XNU's attempt to return an initially zero bank to zero. Next
-compare the exact MMIO access path and register values with the pinned Linux
-source and the working GPU SMMU path. Keep the restore gate and memory retention
-until that discrepancy is explained. [Qualcomm Linux SMMU context-bank setup
-and teardown](https://android.googlesource.com/kernel/msm/%2B/845c8307ee66/drivers/iommu/arm-smmu.c#1543)
+initializes a context bank. On domain teardown, it sets `SCTLR=0` and frees
+page tables without clearing CBAR/CBA2R or restoring their previous values.
+This is direct precedent for treating CBAR as persistent configuration once a
+bank has been used; it does not explain why this device ignores the write from
+`0x1f300` to zero. The next XNU experiment will keep CBAR at its canonical
+audio value and check that translation is disabled, the rest of the bank state
+is safe, and the stream route is restored. [Qualcomm Linux SMMU context-bank
+setup and teardown](https://android.googlesource.com/kernel/msm/%2B/89594f79eb3779e02c47b5fd47427c55497cd5c9/drivers/iommu/arm-smmu.c#1622)
+
+The 1188 fake-MMIO regression now exercises that lifecycle: a disabled bank is
+selectable only with CBAR zero or the canonical audio value `0x1f300`; restore
+does not write CBAR back to zero. It verifies CBA2R, SCTLR (including the
+translation-enable bit), ACTLR, TCR/TCR2, TTBRs, MAIR, then requires the CBAR to
+remain zero or equal `0x1f300` before restoring the original S2CR and SMR.
+Noncanonical CBAR and any other context-bank mismatch retain the fail-closed
+path. The fake-MMIO test and host regression suite pass; hardware validation is
+still pending. This models Linux's teardown behavior but does not by itself
+prove the persistent CBAR is safe under every firmware state.
 
 XNU already has `sweet_smmu_map_sid()`, but it creates a shared identity map
 for DRAM. That is not the per-buffer IOVA-to-physical mapping required by the

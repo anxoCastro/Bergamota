@@ -1,0 +1,81 @@
+diff --git a/bsd/dev/sweet_smmu_audio_private.h b/bsd/dev/sweet_smmu_audio_private.h
+--- a/bsd/dev/sweet_smmu_audio_private.h
++++ b/bsd/dev/sweet_smmu_audio_private.h
+@@ -20,6 +20,7 @@
+ #define SWEET_SMMU_AUDIO_S2CR(i)             (0xc00u + 4u * (uint32_t)(i))
+ #define SWEET_SMMU_AUDIO_GR1                0x1000u
+ #define SWEET_SMMU_AUDIO_CBAR(i)             (SWEET_SMMU_AUDIO_GR1 + 4u * (uint32_t)(i))
++#define SWEET_SMMU_AUDIO_CBAR_AUDIO          ((1u << 16) | (0xfu << 12) | (3u << 8))
+ #define SWEET_SMMU_AUDIO_CBA2R(i)            (SWEET_SMMU_AUDIO_GR1 + 0x800u + 4u * (uint32_t)(i))
+ #define SWEET_SMMU_AUDIO_CB_BASE             0x40000u
+ #define SWEET_SMMU_AUDIO_CB(i, reg)          (SWEET_SMMU_AUDIO_CB_BASE + 0x1000u * (uint32_t)(i) + (uint32_t)(reg))
+@@ -354,7 +355,9 @@
+ 	for (unsigned i = ns2cb; i < ncb; i++) {
+ 		uint32_t sctlr = io->read32(io->context,
+ 		    SWEET_SMMU_AUDIO_CB(i, SWEET_SMMU_AUDIO_CB_SCTLR));
+-		if (!used[i] && (sctlr & 1u) == 0) {
++		uint32_t cbar = io->read32(io->context, SWEET_SMMU_AUDIO_CBAR(i));
++		if (!used[i] && (sctlr & 1u) == 0 &&
++		    (cbar == 0 || cbar == SWEET_SMMU_AUDIO_CBAR_AUDIO)) {
+ 			cb_index = i;
+ 			break;
+ 		}
+@@ -417,7 +420,7 @@
+ {
+ 	unsigned cb = mapping->cb_index;
+ 	uint32_t cb_offset = SWEET_SMMU_AUDIO_CB(cb, 0);
+-	uint32_t cbar = (1u << 16) | (0xfu << 12) | (3u << 8);
++	uint32_t cbar = SWEET_SMMU_AUDIO_CBAR_AUDIO;
+ 	uint32_t tcr2 = (7u << 15) | SWEET_SMMU_AUDIO_TCR2_AS | 2u;
+ 	uint32_t tcr = 25u | (1u << 23);
+ 	uint32_t sctlr = (1u << 6) | (1u << 5) | (1u << 2) | (1u << 1) | 1u;
+@@ -483,7 +486,6 @@
+ 		readback->cbar_after_cba2r_write = io->read32(io->context, SWEET_SMMU_AUDIO_CBAR(cb));
+ 		readback->cba2r_after_cba2r_write = io->read32(io->context, SWEET_SMMU_AUDIO_CBA2R(cb));
+ 	}
+-	io->write32(io->context, SWEET_SMMU_AUDIO_CBAR(cb), saved->cbar);
+ 	if (readback != NULL) {
+ 		readback->cbar_after_cbar_write = io->read32(io->context, SWEET_SMMU_AUDIO_CBAR(cb));
+ 	}
+@@ -501,17 +503,30 @@
+ 	if (stage != NULL) {
+ 		*stage = SWEET_SMMU_AUDIO_RESTORE_STAGE_CONTEXT_BANK_READBACK;
+ 	}
+-	return sweet_smmu_audio_check_readback32(io, SWEET_SMMU_AUDIO_CBA2R(cb), saved->cba2r, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, SWEET_SMMU_AUDIO_CBAR(cb), saved->cbar, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_SCTLR, saved->sctlr, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_ACTLR, saved->actlr, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_TCR2, saved->tcr2, readback) &&
+-	    sweet_smmu_audio_check_readback64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR0, saved->ttbr0, readback) &&
+-	    sweet_smmu_audio_check_readback64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR1, saved->ttbr1, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_TCR, saved->tcr, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_CONTEXTIDR, saved->contextidr, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR0, saved->mair0, readback) &&
+-	    sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR1, saved->mair1, readback);
++	if (!sweet_smmu_audio_check_readback32(io, SWEET_SMMU_AUDIO_CBA2R(cb), saved->cba2r, readback) ||
++	    !sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_SCTLR, saved->sctlr, readback) ||
++	    !sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_ACTLR, saved->actlr, readback) ||
++	    !sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_TCR2, saved->tcr2, readback) ||
++	    !sweet_smmu_audio_check_readback64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR0, saved->ttbr0, readback) ||
++	    !sweet_smmu_audio_check_readback64(io, cb_offset + SWEET_SMMU_AUDIO_CB_TTBR1, saved->ttbr1, readback) ||
++	    !sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_TCR, saved->tcr, readback) ||
++	    !sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_CONTEXTIDR, saved->contextidr, readback) ||
++	    !sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR0, saved->mair0, readback) ||
++	    !sweet_smmu_audio_check_readback32(io, cb_offset + SWEET_SMMU_AUDIO_CB_MAIR1, saved->mair1, readback)) {
++		return false;
++	}
++	uint32_t actual_cbar = io->read32(io->context, SWEET_SMMU_AUDIO_CBAR(cb));
++	if (actual_cbar == saved->cbar ||
++	    (saved->cbar == 0 && actual_cbar == SWEET_SMMU_AUDIO_CBAR_AUDIO)) {
++		return true;
++	}
++	if (readback != NULL) {
++		readback->valid = true;
++		readback->offset = SWEET_SMMU_AUDIO_CBAR(cb);
++		readback->expected = saved->cbar;
++		readback->actual = actual_cbar;
++	}
++	return false;
+ }
+ 
+ static inline int
