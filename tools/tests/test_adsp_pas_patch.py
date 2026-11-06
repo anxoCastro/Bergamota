@@ -52,6 +52,7 @@ MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1185-beryllium-
 MODE7_SMMU_RESTORE_TRACE_PATCH = ROOT / "xnu/patches-12377/1186-beryllium-smmu-cbar-restore-trace.patch"
 MODE7_SMMU_MMIO_ACCESS_PATCH = ROOT / "xnu/patches-12377/1187-beryllium-smmu-explicit-mmio-addressing.patch"
 MODE7_SMMU_CBAR_LIFECYCLE_PATCH = ROOT / "xnu/patches-12377/1188-beryllium-smmu-cbar-lifecycle.patch"
+TAS_ID_PROBE_PATCH = ROOT / "xnu/patches-12377/1189-beryllium-tas-identity-probe.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -1768,6 +1769,95 @@ class AdspAprMode4Tests(unittest.TestCase):
         self.assertNotRegex(patch,
                             r"AFE_PORT_CMD_(?:SET_PARAM|DEVICE_START|DEVICE_STOP)")
         self.assertNotRegex(patch, r"ASM_STREAM_CMD|ADM_CMD|AFE_CMD_REMOTE_LPASS")
+
+class TasIdentityProbeTests(unittest.TestCase):
+    def test_tas_i2c_helper_compiles_and_handles_ack_nack_and_timeout(self):
+        self.assertTrue(TAS_ID_PROBE_PATCH.is_file(), "patch 1189 is missing")
+        patch = TAS_ID_PROBE_PATCH.read_text()
+        section = diff_section(patch, "bsd/dev/beryllium_tas_id_probe.h")
+        self.assertTrue(section, "patch 1189 must add the testable TAS I2C helper")
+        self.assertIn("address << 1", section)
+        self.assertIn("(address << 1) | 1u", section)
+        self.assertIn("context, reg", section)
+        self.assertGreaterEqual(section.count("beryllium_tas_i2c_start(ops, context)"), 2)
+        header_lines = [line[1:] for line in section.splitlines()
+                        if line.startswith("+") and not line.startswith("+++")]
+        self.assertTrue(header_lines, "TAS I2C helper header has no added contents")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            header = work / "beryllium_tas_id_probe.h"
+            header.write_text("\n".join(header_lines) + "\n")
+            binary = work / "test-adsp-tas-probe"
+            compile_result = subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(work),
+                str(ROOT / "tools/tests/test_adsp_tas_probe.c"), "-o", str(binary),
+            ], check=False, capture_output=True, text=True)
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run([str(binary)], check=False,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("TAS I2C helper checks passed", result.stdout)
+
+    def test_tas_mode_8_is_separate_and_never_programs_the_amplifiers(self):
+        self.assertTrue(TAS_ID_PROBE_PATCH.is_file(), "patch 1189 is missing")
+        patch = TAS_ID_PROBE_PATCH.read_text()
+        driver = diff_section(patch, "bsd/dev/beryllium_adsp.c")
+        helper = diff_section(patch, "bsd/dev/beryllium_tas_id_probe.h")
+        self.assertIn("0x03555000", driver)
+        self.assertIn("0x03556000", driver)
+        self.assertIn("mode == 8", driver)
+        self.assertIn("adsp_tas_id_probe_start", driver)
+        self.assertIn("GPIO85", driver)
+        self.assertIn("TAS2559", driver)
+        self.assertIn("TAS2560", driver)
+        self.assertIn("#define ADSP_TAS2559_ADDR 0x4cu", driver)
+        self.assertIn("#define ADSP_TAS2560_ADDR 0x4du", driver)
+        self.assertIn("#define ADSP_TAS2559_PGID_REG 0x03u", driver)
+        self.assertIn("#define ADSP_TAS2560_ID_REG 0x7du", driver)
+        probe = added_function_body(driver, "adsp_tas_id_probe_start")
+        set_line = added_function_body(driver, "adsp_tas_i2c_set_line")
+        self.assertIn("beryllium_tas_i2c_read_reg", probe)
+        self.assertIn("ADSP_TAS2559_PGID_REG", probe)
+        self.assertIn("ADSP_TAS2560_ID_REG", probe)
+        self.assertIn("adsp_tas_reset(gpiosouth, gpioeast, false)", probe)
+        self.assertIn("goto out", probe)
+        reset_low = probe.index("adsp_tas_reset(gpiosouth, gpioeast, false)")
+        bus_ready = probe.index("adsp_tas_i2c_read_scl(&bus)")
+        reset_release = probe.index("adsp_tas_reset(gpiosouth, gpioeast, true)")
+        first_id_read = probe.index("beryllium_tas_i2c_read_reg")
+        cleanup = probe.rindex("adsp_tas_reset(gpiosouth, gpioeast, false)")
+        self.assertLess(reset_low, bus_ready)
+        self.assertLess(bus_ready, reset_release)
+        self.assertLess(reset_release, first_id_read)
+        self.assertLess(first_id_read, cleanup)
+        self.assertIn("value & ~0x200u", set_line)
+        self.assertIn("output = adsp_audio_gpio_read(gpio, io) & ~2u", set_line)
+        self.assertLess(set_line.index("output = adsp_audio_gpio_read(gpio, io) & ~2u"),
+                        set_line.index("adsp_audio_gpio_write(gpio, io, output)"))
+        self.assertNotIn("output | 2u", set_line)
+        self.assertNotRegex(probe + helper,
+                            r"(?i)firmware|VBoost|AFE_PORT_CMD|ASM_STREAM_CMD|ADM_CMD|mute\s*\(")
+        self.assertNotRegex(driver,
+                            r"mode\s*(?:<=|==)\s*8\s*\|\||mode\s*<=\s*8")
+        self.assertNotIn("beryllium_adsp_glink_mode_valid", driver)
+        self.assertNotIn("-#define ADSP_TLMM_GPIO_MAP_SIZE", driver)
+
+        AdspPasPatchTests.setUpClass()
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "bsd/dev/beryllium_adsp.c"
+            source.parent.mkdir(parents=True)
+            source.write_text(AdspPasPatchTests.latest_driver)
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+            subprocess.run(["git", "apply", "--check", "--whitespace=error",
+                            str(TAS_ID_PROBE_PATCH)], cwd=work, check=True,
+                           capture_output=True, text=True)
+            subprocess.run(["git", "apply", "--whitespace=error",
+                            str(TAS_ID_PROBE_PATCH)], cwd=work, check=True,
+                           capture_output=True, text=True)
+            self.assertIn("if (mode == 8)", source.read_text())
+            self.assertTrue((work / "bsd/dev/beryllium_tas_id_probe.h").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
