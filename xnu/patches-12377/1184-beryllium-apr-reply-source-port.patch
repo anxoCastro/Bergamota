@@ -1,0 +1,30 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 5555339..420888d 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -2295,6 +2295,7 @@ struct adsp_apr_channel_state {
+ 	bool asm_adm_api_versions_valid;
+ 	uint8_t request_service;
+ 	uint16_t request_dest_port;
++	uint16_t request_reply_dest_port;
+ 	uint32_t request_token;
+ 	uint32_t response_map_handle;
+ 	uint16_t response_copp_id;
+@@ -2863,6 +2864,8 @@ adsp_apr_send_linux_packet(const struct adsp_glink_survey_items *items,
+ 	state->request_opcode = request_opcode;
+ 	state->request_service = service;
+ 	state->request_dest_port = beryllium_adsp_apr_get16(packet + 10);
++	/* APR replies target the source port of the request. */
++	state->request_reply_dest_port = beryllium_adsp_apr_get16(packet + 6);
+ 	state->request_token = beryllium_adsp_apr_get32(packet + 12);
+ 	state->request_intent_reusable = false;
+ 	state->response_status_valid = false;
+@@ -3089,7 +3092,7 @@ adsp_apr_poll_response(const struct adsp_glink_survey_items *items,
+ 			} else if (linux_audio_basic_request) {
+ 				parsed_valid = beryllium_adsp_apr_parse_linux_basic_result(
+ 				    adsp_apr_rx_buffers[param2 - 1], payload_bytes,
+-				    state->request_service, state->request_dest_port,
++				    state->request_service, state->request_reply_dest_port,
+ 				    state->request_token,
+ 				    state->request_opcode, &linux_audio_status);
+ 				if (parsed_valid) {

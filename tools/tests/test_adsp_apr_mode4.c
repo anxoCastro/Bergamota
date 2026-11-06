@@ -312,6 +312,21 @@ test_linux_asm_adm_packets(void)
 	assert(!beryllium_adsp_apr_parse_linux_basic_result(response, 40,
 	    BERYLLIUM_ADSP_APR_ASM_SERVICE, 0x101, 1, 0x10db3, &value));
 
+	assert(beryllium_adsp_apr_encode_adm_close(packet, sizeof(packet),
+	    &packet_bytes, 0, 0));
+	make_linux_apr_header(response, 40, 0, 22, 0x00160000u, 0x000110e8u);
+	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ADM_SERVICE);
+	put32(response + 32, 0x00010327u);
+	put32(response + 36, 0);
+	assert(!beryllium_adsp_apr_parse_linux_basic_result(response, 40,
+	    BERYLLIUM_ADSP_APR_ADM_SERVICE,
+	    beryllium_adsp_apr_get16(packet + 10), 0x00160000u,
+	    0x00010327u, &value));
+	assert(beryllium_adsp_apr_parse_linux_basic_result(response, 40,
+	    BERYLLIUM_ADSP_APR_ADM_SERVICE,
+	    beryllium_adsp_apr_get16(packet + 6), 0x00160000u,
+	    0x00010327u, &value) && value == 0);
+
 	const uint32_t write_token = 0x12c00000;
 	assert(beryllium_adsp_apr_parse_asm_write_done(
 	    captured_asm_write_done_event, sizeof(captured_asm_write_done_event),

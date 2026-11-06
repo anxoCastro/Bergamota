@@ -140,7 +140,7 @@ class AdspPasPatchTests(unittest.TestCase):
                     number = int(later.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1177:
+                if not 1131 <= number <= 1184:
                     continue
                 if "bsd/dev/beryllium_adsp.c" not in later.read_text(errors="replace"):
                     continue
@@ -156,8 +156,20 @@ class AdspPasPatchTests(unittest.TestCase):
     def test_linux_basic_reply_parser_checks_the_request_service(self):
         self.assertTrue(MODE7_APR_REPLY_ROUTE_PATCH.is_file(),
                         "patch 1177 must validate Linux APR reply routing")
-        self.assertIn("state->request_service, state->request_dest_port",
+        self.assertIn("state->request_service, state->request_reply_dest_port",
                       self.latest_driver)
+
+    def test_linux_basic_reply_routes_to_the_request_source_port(self):
+        send = added_function_body(self.latest_driver,
+                                   "adsp_apr_send_linux_packet")
+        poll = added_function_body(self.latest_driver,
+                                   "adsp_apr_poll_response")
+        self.assertIn(
+            "state->request_reply_dest_port = beryllium_adsp_apr_get16(packet + 6);",
+            send,
+        )
+        self.assertIn("state->request_reply_dest_port,", poll)
+        self.assertNotIn("state->request_dest_port,", poll)
 
     def test_pas_start_has_an_explicit_mode_two_gate(self):
         probe = added_function_body(self.driver, "beryllium_adsp_probe")
@@ -674,10 +686,10 @@ int main(void) {
                     number = int(patch.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1183:
+                if not 1131 <= number <= 1184:
                     continue
                 command = ["git", "apply"]
-                if number == 1183:
+                if number in (1183, 1184):
                     command.append("--whitespace=error")
                 command.extend(f"--include={path}" for path in included)
                 command.append(str(patch))
