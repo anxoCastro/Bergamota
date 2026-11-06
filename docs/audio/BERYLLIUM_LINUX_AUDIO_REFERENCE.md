@@ -414,13 +414,16 @@ Patch 1170 now adds an opt-in bounded Linux-style PCM route: it maps a
 MultiMedia1 (session 1/stream 1), opens and matrix-maps the ADM QUAT COPP, sets
 48 kHz/S16/stereo, and waits for four 25 ms WRITE_V2 completions. ASM/ADM use
 zeroed APR service/domain fields; the AFE requests retain the verified AFE
-service/domain fields. Local host tests and ordered replay pass. This patch
-still needs the GitHub kernel build and a read-only phone boot. Even a complete
-APR/SMMU test would not prove audible playback because the TAS amplifiers stay
-in reset. After the transport stage, bring up pinmux and TAS configuration
-separately, then investigate an iOS 26 AudioServerPlugIn/HAL bridge. The
-headphone and microphone route additionally requires WCD9340 and SLIMbus
-support.
+service/domain fields. On the 2026-11-06 read-only phone boot, XNU opened the
+ASM and ADM routes, configured QUAT, started AFE, and received a successful
+ASM RUN acknowledgement. The first WRITE_DONE event arrived with the captured
+48-byte layout described above; patch 1182 now parses that event. Its XNU 26.5
+kernel build is in progress, and a new RAM boot must still verify all four
+period events and the bounded cleanup sequence. This stage has not yet proved
+audible playback: the TAS amplifiers stay in reset. After the transport and
+restore path succeeds, bring up pinmux and TAS configuration separately, then
+investigate an iOS 26 AudioServerPlugIn/HAL bridge. The headphone and
+microphone route additionally requires WCD9340 and SLIMbus support.
 Linux's working topology is a source reference, not evidence that any of
 these paths already work in XNU.
 
