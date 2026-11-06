@@ -319,6 +319,33 @@ it remains unchanged during restoration. It no longer writes ACTLR while
 installing or restoring the context bank. The next boot must verify that setup
 advances past the remaining context-bank readbacks before installing SMR/S2CR.
 
+### Mode-7 CBAR restore readback
+
+The 1186 read-only RAM boot advanced through the complete audio sequence:
+Q6Core 2.8.0.0, ASM/ADM service discovery, private SID `0x1821` mapping, ASM
+open, ADM QUAT route, PCM format, AFE setup/start, RUN, four `WRITE_DONE`
+acknowledgements, and the close/unmap/AFE-stop requests. The TAS reset GPIOs
+remained low, so this is evidence of DSP command acceptance, not audible output.
+
+The restore check then failed closed for CB4: the saved CBAR/CBA2R snapshot was
+zero, while the pre-restore reads were CBAR `0x1f300` and CBA2R `1`. After
+writing the saved CBA2R, CBAR, and SCTLR values, each logged CBAR read remained
+`0x1f300`; the logged CBA2R read immediately after its restore write was also
+`0x1f300`. The first explicit mismatch is CBAR offset `0x1010`, expected zero,
+actual `0x1f300`. XNU retained the DMA buffer and private tables because the
+restored state was uncertain. The observation identifies the failed readback;
+it does not yet establish why the value persisted.
+
+Qualcomm's SDM845 Linux ARM SMMU driver programs CBA2R before CBAR when it
+initializes a context bank, and its domain teardown disables `SCTLR` before
+freeing page tables; it does not provide a matching save-and-restore sequence
+for a bank's prior CBAR/CBA2R contents. Therefore Linux's setup ordering alone
+does not validate XNU's attempt to return an initially zero bank to zero. Next
+compare the exact MMIO access path and register values with the pinned Linux
+source and the working GPU SMMU path. Keep the restore gate and memory retention
+until that discrepancy is explained. [Qualcomm Linux SMMU context-bank setup
+and teardown](https://android.googlesource.com/kernel/msm/%2B/845c8307ee66/drivers/iommu/arm-smmu.c#1543)
+
 XNU already has `sweet_smmu_map_sid()`, but it creates a shared identity map
 for DRAM. That is not the per-buffer IOVA-to-physical mapping required by the
 Linux Q6ASM address contract. Do not pass `1` to that helper or reuse the

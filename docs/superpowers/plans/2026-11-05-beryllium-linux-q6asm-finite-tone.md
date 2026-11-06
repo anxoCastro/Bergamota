@@ -71,9 +71,9 @@
 - [x] Implement reset GPIO 12/76 assertion and output verification before the SMMU mapping; abort with no SMMU writes if either line is not confirmed low. GPIO 12 maps through SOUTH; GPIO 76 maps through EAST.
 - [x] Implement mode 7 using the tested helper sequence: private SMMU mapping, pool-3 map, ASM open, ADM QUAT COPP/matrix route, PCM format, existing AFE clock/config/start, RUN, four 25 ms WRITE_V2 cycles using four 4,800-byte offsets, then acknowledged close/unmap/ADM close/AFE stop.
 - [x] On timeout or malformed response after possible DSP acceptance, stop sending new PCM, keep TAS resets low, and retain permanent PCM/page-table memory plus active SMMU mapping; log the exact uncertain stage.
-- [ ] Run patch replay, compiled mode/state-machine harness, focused/full tests, `git diff --check`, local C cross-compile where possible, and the GitHub Actions build. Record exact run ID, head SHA, kernel checksum and artifact status in `NOTES.md`.
-- [ ] Package a temporary read-only image with `sweetadsp=7`; verify its inner payload/loader checksums; capture Fastboot RAM boot logs. Confirm every expected APR result, exactly four WRITE_DONE events and SMMU restore, then leave the phone in Fastboot.
-- [ ] Commit the implementation and a separate handoff update with observed boot output and any remaining blocker.
+- [x] Run patch replay, compiled mode/state-machine harness, focused/full tests, `git diff --check`, and GitHub Actions build. The local XNU cross-compile was unavailable on Linux (no Apple Clang/Xcode). CI run 42253495749 succeeded; exact head SHA, kernel checksum, artifact IDs and link scan are recorded in `NOTES.md`.
+- [x] Package and validate a temporary read-only `sweetadsp=7` image, then RAM boot with Fastboot and capture logs. Q6Core/ASM/ADM/AFE and all four `WRITE_DONE` replies succeeded, but SMMU CB4 restore failed its CBAR readback and correctly retained the buffer/tables. TAS resets stayed low, so no audible tone was established. Capture stopped at `mount_hfs`; no panic or SpringBoard result was observed, and Fastboot/ADB no longer enumerate. No partition or userdata was written.
+- [x] Commit this result/handoff update separately from the implementation commit (`docs(audio): record 1186 CBAR restore result`).
 
 ### Task 4: Refresh the Linux audio reference and active handoff
 
