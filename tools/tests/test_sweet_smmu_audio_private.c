@@ -365,6 +365,37 @@ test_restore_diagnostic_reports_context_bank_readback_mismatch(void)
 }
 
 static void
+test_restore_diagnostic_records_cbar_write_sequence(void)
+{
+	struct fake_mmio mmio;
+	struct sweet_smmu_audio_mapping mapping;
+	struct sweet_smmu_audio_io io;
+	struct sweet_smmu_audio_readback readback = { 0 };
+	enum sweet_smmu_audio_restore_stage stage = SWEET_SMMU_AUDIO_RESTORE_STAGE_COMPLETE;
+	const uint32_t cbar = SWEET_SMMU_AUDIO_CBAR(0);
+
+	fake_init(&mmio);
+	mmio.regs[cbar / 4] = 0;
+	mmio.regs[SWEET_SMMU_AUDIO_CBA2R(0) / 4] = 0;
+	io = fake_io(&mmio);
+	assert(sweet_smmu_audio_prepare(&io, 0x1821, &mapping) == SWEET_SMMU_AUDIO_OK);
+	assert(sweet_smmu_audio_install(&io, 0x1821, &mapping, 0x500000) == SWEET_SMMU_AUDIO_OK);
+	mmio.ignore_write = true;
+	mmio.ignored_write_offset = cbar;
+	assert(sweet_smmu_audio_restore_diagnostic(&io, &mapping,
+	    SWEET_SMMU_AUDIO_ACK_RESTORE_REQUIRED, &stage, &readback) == SWEET_SMMU_AUDIO_EIO);
+	assert(readback.cbar_before_restore == 0x1f300u);
+	assert(readback.cbar_after_cba2r_write == 0x1f300u);
+	assert(readback.cbar_after_cbar_write == 0x1f300u);
+	assert(readback.cbar_after_sctlr_restore == 0x1f300u);
+	assert(readback.cba2r_before_restore == 1u);
+	assert(readback.cba2r_after_cba2r_write == 0u);
+	assert(readback.id0 == 76u && readback.id1 == 0x5000002du);
+	assert(readback.saved_cbar == 0u && readback.saved_cba2r == 0u);
+	assert(stage == SWEET_SMMU_AUDIO_RESTORE_STAGE_CONTEXT_BANK_READBACK);
+}
+
+static void
 test_restore_diagnostic_reports_tlb_timeout_register(void)
 {
 	struct fake_mmio mmio;
@@ -434,6 +465,7 @@ main(void)
 	test_install_preserves_linux_default_actlr();
 	test_map_restore_preserves_disabled_bank_and_route_registers();
 	test_restore_diagnostic_reports_context_bank_readback_mismatch();
+	test_restore_diagnostic_records_cbar_write_sequence();
 	test_restore_diagnostic_reports_tlb_timeout_register();
 	test_five_page_stage1_descriptors_and_q6asm_address();
 	puts("private audio SMMU fake-MMIO checks passed");
