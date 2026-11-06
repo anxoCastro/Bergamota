@@ -198,6 +198,7 @@ jobs:
           ccache -p | grep -E 'base_dir|cache_dir|max_size|sloppiness|compiler_check|hash_dir|compression ' || true
 
       - name: Build
+        id: core_build
         working-directory: dxb
         env:
           # keep going after errors so one run reports every compile failure
@@ -221,7 +222,7 @@ jobs:
           wc -l out/errors.txt out/link-errors.txt
           head -100 out/errors.txt
           { echo '### compile errors (first 60)'; echo '```'; head -60 out/errors.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          gzip -c dxb/build.log > out/build.log.gz || true
+          gzip -1 -c dxb/build.log > out/build.log.gz || true
           # parallel make interleaves compiler output: re-run every failed compile serially for clean errors
           objs=$(grep -aoE "\[[A-Za-z0-9_+-]+\.(o|cpo)\] Error" dxb/build.log | sed -E 's/^\[(.*)\.(o|cpo)\] Error$/\1/' | sort -u)
           srcs=""
@@ -230,7 +231,7 @@ jobs:
             [ -n "$f" ] && srcs="$srcs ${f#dxb/xnu/}"
           done
           echo "failed objects: $objs"
-          if [ -n "$srcs" ]; then
+          if [ "${{ steps.core_build.outcome }}" != "success" ] && [ -n "$srcs" ]; then
             XNU_CC_TARGET=arm64-apple-macos26.0 python3 tools/xnu-cc.py dxb/build.log dxb $srcs --per-file > out/recompile.txt 2>&1 || true
             grep -E "error" out/recompile.txt | head -150
             { echo '### failed compiles, re-run serially'; echo '```'; grep -E "error" out/recompile.txt | head -80; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

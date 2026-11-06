@@ -91,11 +91,13 @@
 **Files:**
 - Modify: `tools/tests/test_adsp_pas_patch.py`
 - Create: `xnu/patches-12377/1187-beryllium-smmu-explicit-mmio-addressing.patch`
+- Modify: `.github/workflows/xnu.yml`
 - Modify: `NOTES.md`
 
 - [x] Add a regression asserting that all three SMMU accessors use explicit non-writeback AArch64 `ldr`/`str` instructions and no volatile C dereference; confirm it fails against the prior implementation.
 - [x] Replace only `smmu_rd`, `smmu_wr`, and `smmu_wr64` with explicit-address inline assembly and keep all restoration gates unchanged.
 - [x] Run focused ADSP tests (68/68) and the full host suite (72/72); the focused accessor regression passes.
-- [ ] Check whitespace, ordered patch replay, and inspect the diff; commit and push with the configured repository identity.
-- [ ] Build the exact pushed SHA through GitHub Actions, verify the kernel artifact and package a read-only RAM-only image.
+- [x] Check whitespace, inspect the diff and commit/push as `anxoCastro` (`2b8d321`); the focused regression supplies the ordered SMMU source replay through patch 1187.
+- [x] Dispatch CI run `42266004548` from `audio-poco-f1-apr-route` at `2b8d321`. XNU's `Build` step succeeded, but the hosted runner lost communication during the post-build `Error summary` step after 1h22m; no artifacts were uploaded.
+- [ ] Retry the exact 1187 build after making post-build diagnostics cheaper: only serially recompile failed objects when the core build failed, and gzip the retained log at level 1. Verify the kernel artifact and package a read-only RAM-only image.
 - [ ] Boot only with `fastboot boot` and compare CBAR/CBA2R readbacks against 1186. Treat an improved readback as evidence for the addressing hypothesis, not a confirmed root cause; keep mappings/pages retained on failed restore. Record the device and mount outcome.
