@@ -59,7 +59,7 @@
 - [x] **Step 2: Implement the XNU MMIO wrappers and mode 8 sequencing** in the same patch: force reset low, save SDA/SCL TLMM registers, validate/release lines, release reset only for ID reads, read both IDs, assert reset low on every exit, restore SDA/SCL configuration.
 - [x] **Step 3: Return both raw identity bytes after ACKed reads;** reject NACK, timeout, and invalid line levels without assuming undocumented expected ID values.
 - [x] **Step 4: Run the focused harness and patch replay**; verify modes 0-7 source behavior remains unchanged.
-- [ ] **Step 5: Commit patch and tests** with user-configured Git identity and no co-author trailer.
+- [x] **Step 5: Commit patch and tests** with user-configured Git identity and no co-author trailer.
 
 ### Task 3: Build and package a read-only RAM image
 
@@ -72,7 +72,7 @@
 - Produces: successful KDK-enabled XNU artifact and a verified read-only Fastboot image using `sweetadsp=8`.
 
 - [x] **Step 1: Run focused and full host tests** and verify patch replay before CI.
-- [ ] **Step 2: Trigger the XNU build with `gh`** and record the workflow/job IDs and exact build result in `NOTES.md`.
+- [x] **Step 2: Trigger the XNU build with `gh`** and record the workflow/job IDs and exact build result in `NOTES.md`.
 - [ ] **Step 3: Verify kernel checksum and image header/payload**, confirm the image omits writable-root flags, and record hashes.
 
 ### Task 4: RAM-boot and inspect the identity result
