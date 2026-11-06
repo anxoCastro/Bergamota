@@ -6,8 +6,12 @@
 
 struct fake_bus {
 	bool scl_high;
+	bool scl_stuck_low;
 	unsigned sda_releases;
 	unsigned sda_drives_low;
+	bool sda_trace[96];
+	unsigned sda_trace_count;
+	unsigned scl_rises;
 	unsigned delay_us;
 	unsigned sda_index;
 	unsigned sda_count;
@@ -18,6 +22,8 @@ static void
 fake_set_sda(void *context, bool release)
 {
 	struct fake_bus *bus = context;
+	if (bus->sda_trace_count < sizeof(bus->sda_trace) / sizeof(bus->sda_trace[0]))
+		bus->sda_trace[bus->sda_trace_count++] = release;
 	if (release)
 		bus->sda_releases++;
 	else
@@ -27,8 +33,10 @@ fake_set_sda(void *context, bool release)
 static void
 fake_set_scl(void *context, bool release)
 {
-	(void)context;
-	(void)release;
+	struct fake_bus *bus = context;
+	if (release && !bus->scl_high && !bus->scl_stuck_low)
+		bus->scl_rises++;
+	bus->scl_high = release && !bus->scl_stuck_low;
 }
 
 static bool
@@ -60,23 +68,66 @@ static const struct beryllium_tas_i2c_ops fake_ops = {
 	.delay_us = fake_delay,
 };
 
-static int
-test_read_ack(void)
+static void
+expect_sda(bool *trace, unsigned *count, bool release)
 {
-	struct fake_bus bus = { .scl_high = true };
+	trace[(*count)++] = release;
+}
+
+static void
+expect_write_byte(bool *trace, unsigned *count, uint8_t value)
+{
+	for (int bit = 7; bit >= 0; --bit)
+		expect_sda(trace, count, (value & (1u << bit)) != 0);
+	expect_sda(trace, count, true); /* release SDA for ACK */
+}
+
+static int
+test_read_ack(uint8_t address, uint8_t reg)
+{
+	struct fake_bus bus = { .scl_high = false };
 	const bool response[] = { true, false, false, true, false,
 		true, false, true, false, false, true, false, true };
 	for (unsigned i = 0; i < sizeof(response) / sizeof(response[0]); ++i)
 		bus.sda_script[i] = response[i];
 	bus.sda_count = sizeof(response) / sizeof(response[0]);
 	uint8_t value = 0;
-	int result = beryllium_tas_i2c_read_reg(&fake_ops, &bus, 0x4c, 0x03, &value);
+	int result = beryllium_tas_i2c_read_reg(&fake_ops, &bus, address, reg, &value);
+	bool expected[96];
+	unsigned expected_count = 0;
+	expect_sda(expected, &expected_count, true); /* bus idle / START setup */
+	expect_sda(expected, &expected_count, false); /* START */
+	expect_write_byte(expected, &expected_count, (uint8_t)(address << 1));
+	expect_write_byte(expected, &expected_count, reg);
+	expect_sda(expected, &expected_count, true);
+	expect_sda(expected, &expected_count, false); /* repeated START */
+	expect_write_byte(expected, &expected_count, (uint8_t)((address << 1) | 1u));
+	expect_sda(expected, &expected_count, true); /* release for receive */
+	expect_sda(expected, &expected_count, true); /* master NACK */
+	expect_sda(expected, &expected_count, true); /* release before STOP */
+	expect_sda(expected, &expected_count, false); /* STOP */
+	expect_sda(expected, &expected_count, true);
 	if (result != BERYLLIUM_TAS_I2C_OK || value != 0xa5 ||
 	    bus.sda_index != bus.sda_count || bus.sda_drives_low == 0 ||
-	    bus.sda_releases == 0) {
-		fprintf(stderr, "ACK read failed: result=%d value=%02x script=%u/%u\n",
-		    result, value, bus.sda_index, bus.sda_count);
+	    bus.sda_releases == 0 || bus.sda_trace_count != expected_count ||
+	    bus.scl_rises != 39) {
+		fprintf(stderr, "ACK read failed: result=%d value=%02x script=%u/%u trace=%u/%u scl-rises=%u\n",
+		    result, value, bus.sda_index, bus.sda_count,
+		    bus.sda_trace_count, expected_count, bus.scl_rises);
+		for (unsigned i = 0; i < bus.sda_trace_count; ++i)
+			fprintf(stderr, "%u", bus.sda_trace[i]);
+		fputc('\n', stderr);
+		for (unsigned i = 0; i < expected_count; ++i)
+			fprintf(stderr, "%u", expected[i]);
+		fputc('\n', stderr);
 		return 1;
+	}
+	for (unsigned i = 0; i < expected_count; ++i) {
+		if (bus.sda_trace[i] != expected[i]) {
+			fprintf(stderr, "wrong SDA bit/event %u: got=%u expected=%u\n",
+			    i, bus.sda_trace[i], expected[i]);
+			return 1;
+		}
 	}
 	return 0;
 }
@@ -101,7 +152,7 @@ test_nack(void)
 static int
 test_stuck_scl_times_out(void)
 {
-	struct fake_bus bus = { .scl_high = false };
+	struct fake_bus bus = { .scl_high = false, .scl_stuck_low = true };
 	uint8_t value = 0;
 	int result = beryllium_tas_i2c_read_reg(&fake_ops, &bus, 0x4c, 0x03, &value);
 	if (result != BERYLLIUM_TAS_I2C_TIMEOUT || bus.delay_us > 1100) {
@@ -138,7 +189,8 @@ test_bus_busy_and_invalid_arguments(void)
 int
 main(void)
 {
-	if (test_read_ack() || test_nack() || test_stuck_scl_times_out() ||
+	if (test_read_ack(0x4c, 0x03) || test_read_ack(0x4d, 0x7d) ||
+	    test_nack() || test_stuck_scl_times_out() ||
 	    test_bus_busy_and_invalid_arguments())
 		return 1;
 	puts("TAS I2C helper checks passed");
