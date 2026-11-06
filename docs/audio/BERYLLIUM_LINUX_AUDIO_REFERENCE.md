@@ -421,6 +421,48 @@ GPIO 76's from `0x03500000`; GPIO 76 is not in NORTH. This mapping was checked
 against the `sdm845-6.18.2-r0` pinctrl source after catching the earlier
 NORTH assumption in a test-first check.
 
+### TAS2559/TAS2560 firmware and power-up sequence
+
+The downstream Beryllium kernel declares a paired TAS2559/TAS2560 on
+`qupv3_se5_i2c`, at 7-bit addresses `0x4c` and `0x4d`. The same node assigns
+the TAS2559 reset to TLMM GPIO 12, the TAS2560 reset to GPIO 76, IRQs 11/30,
+left/right channels 0/1, YCRC enabled, echo reference disabled, and 16-bit
+bitrate. This is the concrete board route; a speaker driver must use SE5,
+not infer the bus from the separate SE14 touch controller.
+
+The Sphinx downstream driver requests the proprietary `tas2559_uCDSP.bin`
+firmware and requires it to parse into at least one program and configuration
+before setting a program. Program setup resets both devices, writes software
+reset, loads platform defaults, uploads the program blocks to both devices,
+loads configuration coefficients, then on power-up applies the saved/configured
+VBoost before `DevStartup`, post-power-up configuration, and unmute. On
+Beryllium, `tas2559_set_VBoost()` deliberately defers the boost update until
+before power-up and programs both devices according to the selected firmware
+configuration. This is not safe to replace with guessed register values.
+
+The calibration path is separate: downstream names `/persist/audio/tas2559_cal.bin`;
+Lineage's Beryllium proprietary-file list also carries the left/right factory
+configuration files `tas2559_l.ftcfg` and `tas2559_r.ftcfg`. TI's factory guide
+states that after the driver fully configures the device, it applies a present
+calibration bin. Calibration records speaker-specific Re and related
+parameters. Absence of the calibration file does not justify inventing values;
+we need to establish which of the firmware's normal playback configurations
+can operate safely without factory calibration.
+
+The mainline Linux path is useful evidence that the board can play: current
+postmarketOS/ROCKNIX setup loads the same proprietary TAS firmware and UCM route.
+However, its speaker is documented as quiet because the mainline driver lacks
+the downstream VBoost programming; it should not be treated as a full-power
+reference. Headphone playback uses a different WCD9340/SLIMbus route.
+
+Local artifact search did not find `tas2559_uCDSP.bin`, either `.ftcfg`, or
+`tas2559_cal.bin` under the GitHub workspace. These proprietary files must stay
+outside git. Until the matching firmware/configuration and SE5 bus support are
+available, keep GPIOs 12/76 asserted low and do not send TAS I2C writes. The
+first XNU amp milestone should be a bounded, opt-in SE5 I2C identity/read-only
+probe after the bus clocks and pinmux are separately validated; any later
+program/configuration upload and VBoost power-up is a distinct milestone.
+
 ## Cross-port XNU reference: HakiOS Redwood audio
 
 The public HakiOS Redwood implementation separates the audio path into four
@@ -517,6 +559,11 @@ mode 7 is built and tested.
 
 - [Beryllium common DTS](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/arch/arm64/boot/dts/qcom/sdm845-xiaomi-beryllium-common.dtsi)
 - [Beryllium TAS2559/TAS2560 reset GPIO declarations](https://github.com/Matheus-Garbelini/Kernel-Sphinx-Pocophone-F1/blob/master/arch/arm64/boot/dts/qcom/beryllium-p0.dtsi)
+- [Beryllium downstream TAS2559/TAS2560 driver core](https://github.com/Matheus-Garbelini/Kernel-Sphinx-Pocophone-F1/blob/master/techpack/audio/asoc/codecs/tas2559/tas2559-core.c)
+- [Beryllium downstream TAS2559 I2C/firmware loader](https://github.com/Matheus-Garbelini/Kernel-Sphinx-Pocophone-F1/blob/master/techpack/audio/asoc/codecs/tas2559/tas2559-regmap.c)
+- [Beryllium LineageOS proprietary TAS files](https://github.com/LineageOS/android_device_xiaomi_beryllium/blob/lineage-23.2/proprietary-files.txt)
+- [TI TAS2559 factory test and calibration guide](https://www.ti.com/lit/an/slaa779/slaa779.pdf)
+- [ROCKNIX Beryllium firmware and speaker notes](https://github.com/paradox-ng/rocknix-beryllium/blob/sdm845-beryllium/CLAUDE.md)
 - [SDM845 pinctrl GPIO region offsets and GPIO 12/76 groups](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/pinctrl/qcom/pinctrl-sdm845.c)
 - [SDM845 TLMM register base](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/arch/arm64/boot/dts/qcom/sdm845.dtsi)
 - [TI TAS2559 datasheet](https://www.ti.com/lit/ds/symlink/tas2559.pdf)
