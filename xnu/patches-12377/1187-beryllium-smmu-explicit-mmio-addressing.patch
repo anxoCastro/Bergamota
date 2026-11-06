@@ -1,0 +1,37 @@
+diff --git a/bsd/dev/sweet_smmu.c b/bsd/dev/sweet_smmu.c
+index 0565d19..b25cf87 100644
+--- a/bsd/dev/sweet_smmu.c
++++ b/bsd/dev/sweet_smmu.c
+@@ -55,25 +55,24 @@ static struct sweet_smmu_audio_mapping smmu_audio_mapping;
+ static uint32_t
+ smmu_rd(uint32_t off)
+ {
+-	uint32_t v = *(volatile uint32_t *)(smmu_base + off);
+-	__asm__ volatile("dmb oshld" ::: "memory");
++	uint32_t v;
++	uintptr_t p = (uintptr_t)smmu_base + off;
++	__asm__ volatile("ldr %w0, [%1]\n\tdmb oshld" : "=r"(v) : "r"(p) : "memory");
+ 	return v;
+ }
+ 
+ static void
+ smmu_wr(uint32_t off, uint32_t val)
+ {
+-	__asm__ volatile("dmb oshst" ::: "memory");
+-	*(volatile uint32_t *)(smmu_base + off) = val;
+-	__asm__ volatile("dsb osh" ::: "memory");
++	uintptr_t p = (uintptr_t)smmu_base + off;
++	__asm__ volatile("dmb oshst\n\tstr %w0, [%1]\n\tdsb osh" :: "r"(val), "r"(p) : "memory");
+ }
+ 
+ static void
+ smmu_wr64(uint32_t off, uint64_t val)
+ {
+-	__asm__ volatile("dmb oshst" ::: "memory");
+-	*(volatile uint64_t *)(smmu_base + off) = val;
+-	__asm__ volatile("dsb osh" ::: "memory");
++	uintptr_t p = (uintptr_t)smmu_base + off;
++	__asm__ volatile("dmb oshst\n\tstr %0, [%1]\n\tdsb osh" :: "r"(val), "r"(p) : "memory");
+ }
+ 
+ /* Build the shared context bank with an identity map of DRAM. Returns 0 or errno. */

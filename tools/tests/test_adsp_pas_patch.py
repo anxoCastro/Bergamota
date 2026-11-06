@@ -50,6 +50,7 @@ APR_WRITE_DONE_EVENT_PATCH = ROOT / "xnu/patches-12377/1182-beryllium-apr-write-
 GLINK_TX_OWNERSHIP_PATCH = ROOT / "xnu/patches-12377/1183-beryllium-glink-remote-index-race.patch"
 MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1185-beryllium-smmu-restore-stage-diagnostics.patch"
 MODE7_SMMU_RESTORE_TRACE_PATCH = ROOT / "xnu/patches-12377/1186-beryllium-smmu-cbar-restore-trace.patch"
+MODE7_SMMU_MMIO_ACCESS_PATCH = ROOT / "xnu/patches-12377/1187-beryllium-smmu-explicit-mmio-addressing.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -497,6 +498,42 @@ int main(void) {
             self.assertIn("cbar_after_cbar_write", header)
             self.assertIn("SWEET_SMMU_AUDIO_RESTORE_STAGE_TLB_SYNC", header)
             self.assertIn("sweet_smmu_audio_restore_stage_name", header)
+
+    def test_smmu_mmio_accessors_use_non_writeback_assembly_accesses(self):
+        paths = ("bsd/dev/sweet_smmu.c", "bsd/dev/sweet_smmu_audio_private.h")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+            earlier = []
+            for patch in sorted(PATCH.parent.glob("*.patch")):
+                prefix = re.match(r"\d+", patch.name)
+                if prefix is None or int(prefix.group(0)) >= 1185:
+                    continue
+                contents = patch.read_text(errors="replace")
+                if any(f"diff --git a/{path} b/{path}" in contents for path in paths):
+                    earlier.append(patch)
+            self.assertGreater(len(earlier), 5)
+            for patch in earlier:
+                command = ["git", "apply"]
+                command.extend(f"--include={path}" for path in paths)
+                command.append(str(patch))
+                subprocess.run(command, cwd=work, check=True, capture_output=True, text=True)
+            for patch in (MODE7_SMMU_RESTORE_DIAGNOSTICS_PATCH,
+                          MODE7_SMMU_RESTORE_TRACE_PATCH,
+                          MODE7_SMMU_MMIO_ACCESS_PATCH):
+                command = ["git", "apply"]
+                command.extend(f"--include={path}" for path in paths)
+                command.append(str(patch))
+                subprocess.run(command, cwd=work, check=True, capture_output=True, text=True)
+            source = (work / "bsd/dev/sweet_smmu.c").read_text()
+            for name, instruction in (("smmu_rd", r"ldr %w0, \[%1\]"),
+                                      ("smmu_wr", r"str %w0, \[%1\]"),
+                                      ("smmu_wr64", r"str %0, \[%1\]")):
+                with self.subTest(accessor=name):
+                    body = re.search(rf"(?ms)^{name}\([^)]*\)\s*\{{(.*?)^\}}", source)
+                    self.assertIsNotNone(body, f"{name} implementation is missing")
+                    self.assertRegex(body.group(1), instruction)
+                    self.assertNotIn("*(volatile", body.group(1))
 
     def test_private_audio_smmu_diagnostic_patch_replays_after_mode_seven(self):
         with tempfile.TemporaryDirectory() as tmp:

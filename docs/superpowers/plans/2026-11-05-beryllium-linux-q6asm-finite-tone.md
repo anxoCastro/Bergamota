@@ -85,3 +85,17 @@
 - [ ] Record the Linux PCM/ASM/ADM packet and session contract with primary Linux source links.
 - [ ] Record each patch/commit, CI run ID and head SHA, exact device result, capture checksum and current Fastboot state; distinguish observations from interpretations.
 - [ ] Commit the documentation handoff.
+
+### Task 5: Test explicit SMMU MMIO addressing (patch 1187)
+
+**Files:**
+- Modify: `tools/tests/test_adsp_pas_patch.py`
+- Create: `xnu/patches-12377/1187-beryllium-smmu-explicit-mmio-addressing.patch`
+- Modify: `NOTES.md`
+
+- [x] Add a regression asserting that all three SMMU accessors use explicit non-writeback AArch64 `ldr`/`str` instructions and no volatile C dereference; confirm it fails against the prior implementation.
+- [x] Replace only `smmu_rd`, `smmu_wr`, and `smmu_wr64` with explicit-address inline assembly and keep all restoration gates unchanged.
+- [x] Run focused ADSP tests (68/68) and the full host suite (72/72); the focused accessor regression passes.
+- [ ] Check whitespace, ordered patch replay, and inspect the diff; commit and push with the configured repository identity.
+- [ ] Build the exact pushed SHA through GitHub Actions, verify the kernel artifact and package a read-only RAM-only image.
+- [ ] Boot only with `fastboot boot` and compare CBAR/CBA2R readbacks against 1186. Treat an improved readback as evidence for the addressing hypothesis, not a confirmed root cause; keep mappings/pages retained on failed restore. Record the device and mount outcome.
