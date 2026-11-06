@@ -316,9 +316,30 @@ test_linux_asm_adm_packets(void)
 	assert(beryllium_adsp_apr_parse_asm_write_done(
 	    captured_asm_write_done_event, sizeof(captured_asm_write_done_event),
 	    write_token, 0x0000000110000000ULL, 0, 4800));
+	for (uint32_t sequence = 1; sequence < 4; sequence++) {
+		uint64_t period_address = 0x0000000110000000ULL +
+		    (uint64_t)sequence * 4800u;
+		memcpy(response, captured_asm_write_done_event,
+		    sizeof(captured_asm_write_done_event));
+		put32(response + 12, write_token | sequence);
+		put32(response + 32, (uint32_t)period_address);
+		put32(response + 36, (uint32_t)(period_address >> 32));
+		assert(beryllium_adsp_apr_parse_asm_write_done(response, 48,
+		    write_token | sequence, period_address, sequence, 4800));
+	}
 	memcpy(response, captured_asm_write_done_event,
 	    sizeof(captured_asm_write_done_event));
 	put16(response, 0x0181); /* A response header is not the captured event. */
+	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 48,
+	    write_token, 0x0000000110000000ULL, 0, 4800));
+	memcpy(response, captured_asm_write_done_event,
+	    sizeof(captured_asm_write_done_event));
+	put16(response + 6, 0x102);
+	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 48,
+	    write_token, 0x0000000110000000ULL, 0, 4800));
+	memcpy(response, captured_asm_write_done_event,
+	    sizeof(captured_asm_write_done_event));
+	put16(response + 10, 0x102);
 	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 48,
 	    write_token, 0x0000000110000000ULL, 0, 4800));
 	memcpy(response, captured_asm_write_done_event,
@@ -336,6 +357,11 @@ test_linux_asm_adm_packets(void)
 	assert(!beryllium_adsp_apr_parse_asm_write_done(
 	    captured_asm_write_done_event, sizeof(captured_asm_write_done_event),
 	    write_token, 0x0000000110000000ULL, 1, 4800));
+	memcpy(response, captured_asm_write_done_event,
+	    sizeof(captured_asm_write_done_event));
+	put16(response + 2, 44);
+	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 44,
+	    write_token, 0x0000000110000000ULL, 0, 4800));
 
 	service_table.service_count = 3;
 	service_table.services[0].service_id = 7;
