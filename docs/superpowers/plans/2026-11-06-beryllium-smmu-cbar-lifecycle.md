@@ -52,7 +52,7 @@
 
   Run the focused ADSP/SMMU test file and the full `tools/tests` discovery. Expected: both pass; sticky CBAR is accepted, while stuck SCTLR/TTBR/TLB/S2CR/SMR cases continue to fail.
 
-- [ ] **Step 5: Commit the implementation and test**
+- [x] **Step 5: Commit the implementation and test**
 
   Commit as `fix(audio): follow Linux SMMU CBAR teardown` using the configured GitHub identity; do not add co-author trailers.
 
@@ -62,22 +62,22 @@
 - Modify: `.github/workflows/xnu.yml` only if the normal workflow requires no source change; otherwise none.
 - Modify: `NOTES.md`
 
-- [ ] **Step 1: Push the implementation and start the XNU Actions build**
+- [x] **Step 1: Push the implementation and start the XNU Actions build**
 
   Record the run ID, exact commit SHA, workflow conclusion, kernel artifact ID and checksum.
 
-- [ ] **Step 2: Package a read-only mode-7 RAM image**
+- [x] **Step 2: Package a read-only mode-7 RAM image**
 
   Reuse the verified loader/ADT and read-only root arguments. Confirm `ufsrw=1` and `rootrw=1` are absent, and verify the packed kernel/payload hashes.
 
-- [ ] **Step 3: Confirm Fastboot target and boot temporarily**
+- [x] **Step 3: Confirm Fastboot target and boot temporarily**
 
   Require exactly one unlocked `beryllium`; run only `fastboot boot` and capture UDP/5140. No partition-write command is permitted.
 
-- [ ] **Step 4: Evaluate the hardware safety gates**
+- [x] **Step 4: Evaluate the hardware safety gates**
 
-  Expected: CB4 CBAR remains `0x1f300`; CBA2R and non-CBAR state match their saved values; SCTLR.M reads zero; S2CR/SMR restore exactly; the helper reports route restored and clears `mapping.uncertain`. If any check fails, keep the current retained-memory failure path and record the precise mismatch.
+  Expected: if saved CBAR is zero, accept zero or canonical `0x1f300`; if saved CBAR is canonical, require it exactly. CBA2R and all other context state must match their saved values, SCTLR.M must read zero, and S2CR/SMR must restore exactly. The helper's success path reports route restoration and clears `mapping.uncertain`; preserve the retained-memory failure path on any mismatch. The device log confirms the success path but does not print numeric CBAR/CBA2R readbacks.
 
-- [ ] **Step 5: Record and commit the device result**
+- [x] **Step 5: Record and commit the device result**
 
-  Update `NOTES.md` with run IDs, hashes, the exact Fastboot result, capture checksum, observed register states and any remaining limitation; commit and push with the user's GitHub identity.
+  Update `NOTES.md` with run IDs, hashes, the exact Fastboot result, capture checksum, observed restore gates and remaining limitations; commit and push with the user's GitHub identity.

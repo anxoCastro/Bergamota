@@ -52,3 +52,15 @@ restore CBAR/CBA2R or other register snapshots.
 - No ADSP protocol, PCM, amplifier, GPIO, clock, or PAS changes.
 - No relaxation of the TLB, SCTLR, TTBR, S2CR, or SMR checks.
 - No attempt to prove audible output in this lifecycle experiment.
+
+## Validation result (2026-11-06)
+
+The host fake-MMIO regressions pass, including rejection of a noncanonical
+candidate CBAR and acceptance of the persistent canonical value after restore.
+The 1188 KDK-enabled XNU 26.5 kernel built successfully and a read-only
+`fastboot boot` mode-7 run completed all four matched `WRITE_DONE` events and
+logged successful SMR/context-bank restoration. The device capture omits the
+numeric CBAR/CBA2R values, so it proves the restore gate passed, but does not
+show whether this run encountered a sticky canonical CBAR. TAS resets stayed
+low; no audible output was tested. See the current hardware evidence and next
+audio-layer task in `NOTES.md`.

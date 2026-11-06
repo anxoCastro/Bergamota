@@ -356,9 +356,15 @@ does not write CBAR back to zero. It verifies CBA2R, SCTLR (including the
 translation-enable bit), ACTLR, TCR/TCR2, TTBRs, MAIR, then requires the CBAR to
 remain zero or equal `0x1f300` before restoring the original S2CR and SMR.
 Noncanonical CBAR and any other context-bank mismatch retain the fail-closed
-path. The fake-MMIO test and host regression suite pass; hardware validation is
-still pending. This models Linux's teardown behavior but does not by itself
-prove the persistent CBAR is safe under every firmware state.
+path. The fake-MMIO test and full 72-test host suite pass. The 1188 XNU 26.5
+build succeeded, and its read-only mode-7 RAM boot completed ASM close/unmap,
+ADM close, AFE stop, and SMMU route restoration after all four `WRITE_DONE`
+acknowledgements. The device log does not print the numeric CBAR/CBA2R values,
+so this establishes that the helper's ordered restore gates passed on this
+boot, but does not reveal whether CBAR was already canonical or stayed at zero.
+The TAS reset GPIOs remained low; audible output was not tested. This is the
+first device evidence for the Linux-like CBAR lifecycle, not proof that the
+amplifier route is ready for playback.
 
 XNU already has `sweet_smmu_map_sid()`, but it creates a shared identity map
 for DRAM. That is not the per-buffer IOVA-to-physical mapping required by the
