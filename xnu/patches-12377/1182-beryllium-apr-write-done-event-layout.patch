@@ -1,0 +1,67 @@
+diff --git a/bsd/dev/beryllium_adsp_apr_probe.h b/bsd/dev/beryllium_adsp_apr_probe.h
+--- a/bsd/dev/beryllium_adsp_apr_probe.h
++++ b/bsd/dev/beryllium_adsp_apr_probe.h
+@@ -1145,6 +1145,51 @@
+ 	return true;
+ }
+ 
++/* WRITE_DONE is an APR event; Linux Q6ASM validates the DMA address from the
++ * first two result words in its event payload.
++ */
++static inline bool
++beryllium_adsp_apr_linux_event_view(const uint8_t *packet,
++	size_t packet_bytes, uint8_t expected_service, uint32_t expected_opcode,
++	uint32_t expected_token, uint16_t expected_port,
++	size_t expected_payload_bytes, const uint8_t **payload)
++{
++	uint16_t header_field, declared_bytes;
++	uint8_t header_version, header_words, message_type;
++	size_t header_bytes;
++	if (packet == NULL || payload == NULL ||
++	    (expected_service != BERYLLIUM_ADSP_APR_AFE_SERVICE &&
++	    expected_service != BERYLLIUM_ADSP_APR_ASM_SERVICE &&
++	    expected_service != BERYLLIUM_ADSP_APR_ADM_SERVICE) ||
++	    expected_opcode == 0 || expected_port == 0xffffu ||
++	    packet_bytes < BERYLLIUM_ADSP_APR_HEADER_BYTES ||
++	    packet_bytes > BERYLLIUM_ADSP_APR_MAX_DATA_BYTES) {
++		return false;
++	}
++	header_field = beryllium_adsp_apr_get16(packet);
++	header_version = (uint8_t)(header_field & 0x000fu);
++	header_words = (uint8_t)((header_field & 0x00f0u) >> 4);
++	message_type = (uint8_t)((header_field & 0x0300u) >> 8);
++	header_bytes = (size_t)header_words * 4u;
++	declared_bytes = beryllium_adsp_apr_get16(packet + 2);
++	if (header_version > 1u || message_type != 0u ||
++	    (header_field & 0xfc00u) != 0 || header_bytes != 32u ||
++	    declared_bytes != packet_bytes ||
++	    packet[4] != expected_service ||
++	    packet[5] != BERYLLIUM_ADSP_APR_DOMAIN_ADSP ||
++	    packet[8] != expected_service ||
++	    packet[9] != BERYLLIUM_ADSP_APR_DOMAIN_APPS ||
++	    beryllium_adsp_apr_get16(packet + 6) != expected_port ||
++	    beryllium_adsp_apr_get16(packet + 10) != expected_port ||
++	    beryllium_adsp_apr_get32(packet + 12) != expected_token ||
++	    beryllium_adsp_apr_get32(packet + 16) != expected_opcode ||
++	    packet_bytes != header_bytes + expected_payload_bytes) {
++		return false;
++	}
++	*payload = packet + header_bytes;
++	return true;
++}
++
+ static inline bool
+ beryllium_adsp_apr_parse_asm_map_result(const uint8_t *packet,
+ 	size_t packet_bytes, uint32_t expected_token, uint32_t *map_handle)
+@@ -1235,9 +1280,9 @@
+ 	if (expected_seq_id >= BERYLLIUM_ADSP_ASM_PERIOD_COUNT ||
+ 	    expected_write_bytes != BERYLLIUM_ADSP_ASM_PERIOD_BYTES ||
+ 	    expected_token != token ||
+-	    !beryllium_adsp_apr_linux_reply_view(packet, packet_bytes,
++	    !beryllium_adsp_apr_linux_event_view(packet, packet_bytes,
+ 	    BERYLLIUM_ADSP_APR_ASM_SERVICE, BERYLLIUM_ADSP_ASM_WRITE_DONE_V2, token,
+-	    BERYLLIUM_ADSP_ASM_PLAYBACK_PORT, 8, &payload)) {
++	    BERYLLIUM_ADSP_ASM_PLAYBACK_PORT, 16, &payload)) {
+ 		return false;
+ 	}
+ 	return beryllium_adsp_apr_get32(payload) == (uint32_t)expected_dma_addr &&

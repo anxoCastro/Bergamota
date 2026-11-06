@@ -177,6 +177,20 @@ because it expected an 8-byte result. Linux's APR router advances the payload
 by the declared header size and Q6ASM consumes the first 32-bit payload word as
 the map handle; see the pinned [`apr.c`](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/drivers/soc/qcom/apr.c), [`apr.h`](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/include/linux/soc/qcom/apr.h), and [`q6asm.c`](https://gitlab.com/sdm845-mainline/linux/-/blob/sdm845-6.18.2-r0/sound/soc/qcom/qdsp6/q6asm.c). XNU accepts this exact ASM-map response shape only for the single outstanding map request and only with one of those two observed token values. Treat the token variation as a Beryllium observation, not a general APR rule.
 
+The 2026-11-06 RAM boot reached `ASM RUN_V2` and received a 48-byte
+`WRITE_DONE_V2` packet, but the XNU parser rejected it. The capture decodes as
+`hdr_field=0x0081` (APR v1 event, 32-byte header), ASM service 7 / ADSP domain
+4 to ASM service 7 / APPS domain 5, ports `0x101`, token `0x12c00000`, and
+opcode `0x10d99`. Its 16-byte payload begins with DMA address
+`0x0000000110000000`; the next words are map handle `0xb0a93fb8` and zero.
+Linux's Q6ASM stream callback handles opcode `ASM_DATA_EVENT_WRITE_DONE_V2`
+and compares the first two payload words (`result->opcode` and
+`result->status`) with the expected DMA address. The XNU parser had instead
+required a type-1 response and an 8-byte payload. Patch 1182 adds a bounded
+event parser for the observed route, token, header size, and payload length,
+then checks those same two DMA words. The extra payload words remain opaque,
+as in Linux's callback.
+
 q6routing opens the QUAT device in ADM with playback path 1, endpoint
 `0x1006`, logical AFE port 22, NULL COPP topology `0x10312`, 2 channels,
 16-bit samples and 48 kHz. The open request is 48 bytes; its response provides

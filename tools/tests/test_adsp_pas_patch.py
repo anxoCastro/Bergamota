@@ -46,6 +46,7 @@ MODE7_APR_MAP_REPLY_PATCH = ROOT / "xnu/patches-12377/1178-beryllium-apr-dsp-map
 MODE7_APR_MAP_REPLY_TOKEN_PATCH = ROOT / "xnu/patches-12377/1179-beryllium-apr-variable-map-reply-token.patch"
 MODE7_ADM_ZERO_COPP_PATCH = ROOT / "xnu/patches-12377/1180-beryllium-adm-zero-copp-id.patch"
 GLINK_TX_DIAGNOSTICS_PATCH = ROOT / "xnu/patches-12377/1181-beryllium-glink-tx-rejection-diagnostics.patch"
+APR_WRITE_DONE_EVENT_PATCH = ROOT / "xnu/patches-12377/1182-beryllium-apr-write-done-event-layout.patch"
 sys.path.insert(0, str(ROOT / "tools"))
 import adt  # noqa: E402
 import mkpayload  # noqa: E402
@@ -1489,6 +1490,11 @@ class AdspAprMode4Tests(unittest.TestCase):
                             "patch 1180 must accept Linux-valid ADM COPP ID zero")
             subprocess.run(["git", "apply", f"--include={header_path}",
                             str(MODE7_ADM_ZERO_COPP_PATCH)], cwd=work,
+                           check=True, capture_output=True, text=True)
+            self.assertTrue(APR_WRITE_DONE_EVENT_PATCH.is_file(),
+                            "patch 1182 must parse the captured ASM WRITE_DONE event")
+            subprocess.run(["git", "apply", f"--include={header_path}",
+                            str(APR_WRITE_DONE_EVENT_PATCH)], cwd=work,
                            check=True, capture_output=True, text=True)
             executable = work / "test-apr-mode4"
             compile_result = subprocess.run([

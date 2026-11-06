@@ -103,6 +103,14 @@ test_linux_asm_adm_packets(void)
 	    0x89, 0xc6, 0x1c, 0x03, 0x00, 0x00, 0x00, 0x00,
 	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	};
+	const uint8_t captured_asm_write_done_event[48] = {
+	    0x81, 0x00, 0x30, 0x00, 0x07, 0x04, 0x01, 0x01,
+	    0x07, 0x05, 0x01, 0x01, 0x00, 0x00, 0xc0, 0x12,
+	    0x99, 0x0d, 0x01, 0x00, 0x02, 0x0b, 0x00, 0x04,
+	    0xb3, 0x9b, 0xd5, 0x03, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x10, 0x01, 0x00, 0x00, 0x00,
+	    0xb8, 0x3f, 0xa9, 0xb0, 0x00, 0x00, 0x00, 0x00,
+	};
 
 	assert(beryllium_adsp_apr_encode_asm_map_regions(packet, sizeof(packet),
 	    &packet_bytes, dma_base, 20480));
@@ -304,21 +312,30 @@ test_linux_asm_adm_packets(void)
 	assert(!beryllium_adsp_apr_parse_linux_basic_result(response, 40,
 	    BERYLLIUM_ADSP_APR_ASM_SERVICE, 0x101, 1, 0x10db3, &value));
 
-	const uint32_t write_token = 0x12c00002;
-	make_linux_apr_header(response, 40, 0, 0x101, write_token, 0x10d99);
-	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);
-	put32(response + 32, 0x10002580);
-	put32(response + 36, 1);
-	assert(beryllium_adsp_apr_parse_asm_write_done(response, 40,
-	    write_token, 0x0000000110002580ULL, 2, 4800));
+	const uint32_t write_token = 0x12c00000;
+	assert(beryllium_adsp_apr_parse_asm_write_done(
+	    captured_asm_write_done_event, sizeof(captured_asm_write_done_event),
+	    write_token, 0x0000000110000000ULL, 0, 4800));
+	memcpy(response, captured_asm_write_done_event,
+	    sizeof(captured_asm_write_done_event));
+	put16(response, 0x0181); /* A response header is not the captured event. */
+	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 48,
+	    write_token, 0x0000000110000000ULL, 0, 4800));
+	memcpy(response, captured_asm_write_done_event,
+	    sizeof(captured_asm_write_done_event));
 	response[9] = BERYLLIUM_ADSP_APR_DOMAIN_ADSP;
-	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 40,
-	    write_token, 0x0000000110002580ULL, 2, 4800));
-	set_linux_apr_reply_route(response, BERYLLIUM_ADSP_APR_ASM_SERVICE);
-	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 40,
-	    write_token, 0x0000000110002581ULL, 2, 4800));
-	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 40,
-	    write_token + 1, 0x0000000110002580ULL, 2, 4800));
+	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 48,
+	    write_token, 0x0000000110000000ULL, 0, 4800));
+	memcpy(response, captured_asm_write_done_event,
+	    sizeof(captured_asm_write_done_event));
+	assert(!beryllium_adsp_apr_parse_asm_write_done(response, 48,
+	    write_token + 1, 0x0000000110000000ULL, 0, 4800));
+	assert(!beryllium_adsp_apr_parse_asm_write_done(
+	    captured_asm_write_done_event, sizeof(captured_asm_write_done_event),
+	    write_token, 0x0000000110000001ULL, 0, 4800));
+	assert(!beryllium_adsp_apr_parse_asm_write_done(
+	    captured_asm_write_done_event, sizeof(captured_asm_write_done_event),
+	    write_token, 0x0000000110000000ULL, 1, 4800));
 
 	service_table.service_count = 3;
 	service_table.services[0].service_id = 7;
