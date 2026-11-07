@@ -478,13 +478,35 @@ However, its speaker is documented as quiet because the mainline driver lacks
 the downstream VBoost programming; it should not be treated as a full-power
 reference. Headphone playback uses a different WCD9340/SLIMbus route.
 
-Local artifact search did not find `tas2559_uCDSP.bin`, either `.ftcfg`, or
-`tas2559_cal.bin` under the GitHub workspace. These proprietary files must stay
-outside git. Until the matching firmware/configuration and SE5 bus support are
-available, keep GPIOs 12/76 asserted low and do not send TAS I2C writes. The
-first XNU amp milestone should be a bounded, opt-in SE5 I2C identity/read-only
-probe after the bus clocks and pinmux are separately validated; any later
-program/configuration upload and VBoost power-up is a distinct milestone.
+The postmarketOS `firmware-xiaomi-beryllium` package (13-r0) contains
+`usr/lib/firmware/tas2559_uCDSP.bin`; its package index lists no `.ftcfg` or
+`tas2559_cal.bin` companion. The downloaded APK and extracted firmware are
+kept under the ignored `.superpowers/ci/42310672294/firmware-source/` directory
+and must stay outside git. APK SHA-256 is
+`02b0328be0bf117f60b5b184ab2d61c093e2cd6fde9ac9664b4a5f8aa40f4497`; the
+96,514-byte firmware SHA-256 is
+`62c8d6454dac220cd953646623d8ba329c10177a8aca2c02031948ebd0d2e05c`.
+Sources: [postmarketOS package](https://pkgs.nura.eco/package/main/postmarketos/aarch64/firmware-xiaomi-beryllium),
+[package contents](https://pkgs.nura.eco/contents?arch=aarch64&branch=main&name=firmware-xiaomi-beryllium&repo=postmarketos).
+
+An offline parse following the Beryllium Sphinx `tas2559.c` parser consumed
+the 96,514-byte file through EOF: 5 PLL records, 4 programs, 18
+configurations, and no trailing calibration section. Driver version is
+`0x401`; the header labels the image `TI SmartAmp`, DDC `E10`, device 4. The
+48 kHz Tuning Mode configuration `s1_0` selects both devices and PLL source
+rate 1.536 MHz; it has coefficient, pre-configuration, and post-power-up
+blocks. Its program has 3,903 TAS2559 commands and 8 TAS2560 commands. These
+are parsed metadata and block sizes, not a validated or recommended playback
+profile: the header checksum was recorded but not independently verified, and
+the block stream has not been exercised on hardware. The firmware contains no
+speaker-specific calibration records, and the package provides neither the
+left/right `.ftcfg` files nor `/persist/audio/tas2559_cal.bin`.
+
+Until the matching factory configuration/calibration provenance and a safe
+normal playback profile are established, keep GPIOs 12/76 asserted low and do
+not send TAS I2C configuration writes. The XNU identity probe established the
+SE5 pins and reset control; later program/configuration upload, VBoost, and
+amplifier power-up must be reviewed as a separate bounded milestone.
 
 ## Cross-port XNU reference: HakiOS Redwood audio
 
