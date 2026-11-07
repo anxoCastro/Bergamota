@@ -40,11 +40,11 @@
 - Produces `beryllium_tas_parse_firmware(data, size, &fw)` and `beryllium_tas_parse_calibration(data, size, program, config, &cal)`; return false on malformed/unsupported input.
 - Produces iteration access to validated program 0, configuration 0, calibration 0 and their bounded blocks/commands; no allocations or writes during parse.
 
-- [ ] **Step 1: Write failing synthetic parser tests** for the 0x401 firmware layout, legacy 0x100 calibration layout, exact profile relation, block checksums, truncated header/name/block, count overflow, trailing bytes, and unsupported opcode/span.
-- [ ] **Step 2: Run** `python3 -I -m unittest discover -s tools/tests -p 'test_beryllium_tas_firmware.py' -v`; confirm the parser tests fail before the helper exists.
-- [ ] **Step 3: Implement** overflow-safe big-endian readers and version-gated record/block parsing in `bsd/dev/beryllium_tas_firmware.h`. Require firmware DDC `E10`, driver version `0x401`, program/configuration mapping 0/0, exactly one calibration record for 0/0, and full input consumption. Validate block checksum metadata before execution; runtime hardware CRC readback remains part of the writer.
-- [ ] **Step 4: Run parser tests** and confirm every positive/negative fixture passes.
-- [ ] **Step 5: Commit** `feat(audio): parse beryllium TAS playback data`.
+- [x] **Step 1: Write failing synthetic parser tests** for the 0x401 firmware layout, legacy 0x100 calibration layout, exact profile relation, block checksums, truncated header/name/block, count overflow, trailing bytes, and unsupported opcode/span; a later regression fixture also caught PPC bulk slot lengths 2–3 and reserved register writes.
+- [x] **Step 2: Run** `python3 -I -m unittest discover -s tools/tests -p 'test_beryllium_tas_firmware.py' -v`; initial missing-helper failure and the later bulk/reg-selector regression both failed before their fixes.
+- [x] **Step 3: Implement** overflow-safe big-endian readers and version-gated record/block parsing in `tools/beryllium_tas_firmware.h`. Require firmware DDC `E10`, driver version `0x401`, program/configuration mapping 0/0, exactly one calibration record for 0/0, and full input consumption. Validate block checksum metadata before execution; runtime hardware CRC readback remains part of the writer.
+- [x] **Step 4: Run parser tests** and confirm every positive/negative fixture passes, including the PPC bulk slot boundary and preflight rejection of page/book selector writes.
+- [x] **Step 5: Commit** `feat(audio): parse beryllium TAS playback data` (`cef47d6`; follow-up parser hardening is carried in 1191).
 
 ### Task 2: Local payload ADT firmware transport
 

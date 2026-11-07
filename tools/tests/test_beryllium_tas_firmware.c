@@ -140,6 +140,42 @@ main(void)
 {
 	struct beryllium_tas_firmware fw;
 	struct beryllium_tas_calibration cal;
+	const uint8_t bulk_length_2[] = {
+		0, 2, 0x85, 0,
+		0, 0, 8, 0xaa,
+		0xbb, 0xcc, 0xdd, 0xee,
+	};
+	const uint8_t bulk_length_3[] = {
+		0, 3, 0x85, 0,
+		0, 0, 8, 0xaa,
+		0xbb, 0xcc, 0xdd, 0xee,
+	};
+	const uint8_t reserved_register[] = {
+		0, 0, 4, 1,
+		0, 0, 0, 0,
+	};
+	const uint8_t reserved_book_select[] = {
+		0, 0, 4, 1,
+		0, 0, 0x7f, 0,
+	};
+	const uint8_t page_zero_bulk_book_select[] = {
+		0, 2, 0x85, 0,
+		0, 0, 126, 1,
+		2, 0, 0, 0,
+	};
+	const uint8_t page_one_data_book_select_offset[] = {
+		0, 2, 0x85, 0,
+		0, 1, 126, 1,
+		2, 0, 0, 0,
+	};
+	if (!beryllium_tas_validate_commands(bulk_length_2, 3) ||
+	    !beryllium_tas_validate_commands(bulk_length_3, 3) ||
+	    beryllium_tas_validate_commands(bulk_length_2, 2) ||
+	    beryllium_tas_validate_commands(reserved_register, 2) ||
+	    beryllium_tas_validate_commands(reserved_book_select, 2) ||
+	    beryllium_tas_validate_commands(page_zero_bulk_book_select, 3) ||
+	    !beryllium_tas_validate_commands(page_one_data_book_select_offset, 3))
+		return 10;
 	size_t n = make_firmware(0, 1);
 	if (!beryllium_tas_parse_firmware(image, n, &fw) || fw.sampling_rate != 48000 ||
 	    fw.configuration_program != 0 || fw.program_zero.block_count != 1 ||

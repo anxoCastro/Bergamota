@@ -126,6 +126,8 @@ beryllium_tas_validate_commands(const uint8_t *p, uint32_t count)
 		const uint8_t *cmd = p + (size_t)i * 4;
 		uint8_t offset = cmd[2];
 		if (offset <= 0x7f) {
+			if (offset == 0 || (offset == 0x7f && cmd[1] == 0))
+				return false;
 			++i;
 		} else if (offset == 0x81) {
 			uint32_t delay_ms = ((uint32_t)cmd[0] << 8) | cmd[1];
@@ -143,9 +145,11 @@ beryllium_tas_validate_commands(const uint8_t *p, uint32_t count)
 			if (len + 3 > ((size_t)count - i - 1) * 4)
 				return false;
 			span = cmd + 4;
-			if (span[2] > 0x7f || len > 0x80u - span[2])
+			if (span[2] == 0 || span[2] > 0x7f ||
+			    (span[1] == 0 && len > 0x7fu - span[2]) ||
+			    len > 0x80u - span[2])
 				return false;
-			slots = 1 + (len > 3 ? (len - 3 + 3) / 4 : 0);
+			slots = len == 1 ? 1 : 2 + (len - 2) / 4;
 			if (slots > count - i - 1)
 				return false;
 			i += 1 + slots;
