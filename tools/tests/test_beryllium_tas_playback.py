@@ -11,9 +11,12 @@ PATCH = ROOT / "xnu/patches-12377/1190-beryllium-tas-finite-playback.patch"
 WRITER_PATCH = ROOT / "xnu/patches-12377/1191-beryllium-tas-linux-register-writer.patch"
 I2C_WRITE_PATCH = ROOT / "xnu/patches-12377/1192-beryllium-tas-i2c-register-write.patch"
 ADAPTER_PATCH = ROOT / "xnu/patches-12377/1193-beryllium-tas-writer-i2c-adapter.patch"
+SEQUENCE_PATCH = ROOT / "xnu/patches-12377/1194-beryllium-tas-ordered-sequence.patch"
+MODE9_PATCH = ROOT / "xnu/patches-12377/1195-beryllium-tas-mode9-q6-playback.patch"
 PARSER = ROOT / "tools/beryllium_tas_firmware.h"
 WRITER = ROOT / "tools/beryllium_tas_writer.h"
 I2C = ROOT / "tools/beryllium_tas_id_probe.h"
+SEQUENCE = ROOT / "tools/beryllium_tas_sequence.h"
 
 
 class BerylliumTasPlaybackPatchTests(unittest.TestCase):
@@ -53,6 +56,51 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
         self.assertIn("beryllium_tas_i2c_read_reg", read)
         self.assertIn("delay(milliseconds * 1000u)", delay)
 
+    def test_linux_ordered_sequence_fixture_compiles_and_runs(self):
+        self.assertTrue(SEQUENCE.is_file(), "TAS ordered playback sequence helper is missing")
+        with tempfile.TemporaryDirectory() as temp:
+            binary = Path(temp) / "test-beryllium-tas-sequence"
+            result = subprocess.run([
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "tools"),
+                str(ROOT / "tools/tests/test_beryllium_tas_sequence.c"), "-o", str(binary),
+            ], check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run = subprocess.run([str(binary)], check=False, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr + run.stdout)
+            self.assertIn("TAS ordered sequence checks passed", run.stdout)
+
+    def test_ordered_sequence_patch_carries_tested_host_helper(self):
+        self.assertTrue(SEQUENCE_PATCH.is_file(), "TAS ordered sequence patch is missing")
+        patch = SEQUENCE_PATCH.read_text()
+        marker = "diff --git a/bsd/dev/beryllium_tas_sequence.h b/bsd/dev/beryllium_tas_sequence.h\n"
+        self.assertIn(marker, patch)
+        section = patch.split(marker, 1)[1].split("\ndiff --git ", 1)[0]
+        added = "\n".join(line[1:] for line in section.splitlines()
+                            if line.startswith("+") and not line.startswith("+++"))
+        self.assertEqual(added + "\n", SEQUENCE.read_text())
+
+    def test_mode_nine_wraps_existing_q6_route_with_reset_and_amp_hooks(self):
+        self.assertTrue(MODE9_PATCH.is_file(), "mode-9 Q6 playback integration patch is missing")
+        patch = MODE9_PATCH.read_text()
+        driver = patch.split("diff --git a/bsd/dev/beryllium_adsp.c", 1)[1]
+        branch = driver.split("if (mode == 9)", 1)[1].split("if (mode == 8)", 1)[0]
+        self.assertIn("adsp_tas_validate_payload_properties()", branch)
+        self.assertIn("if (!adsp_tas_validate_payload_properties())", branch)
+        self.assertIn("adsp_tas_playback_requested = true", branch)
+        self.assertIn("mode = 7", branch)
+        route = driver.split("adsp_linux_asm_mode7_start(void)", 1)[1]
+        self.assertLess(route.index("beryllium_tas_sequence_prepare"),
+                        route.index("beryllium_adsp_apr_encode_afe_clock_set"))
+        self.assertLess(route.index('"ASM RUN_V2"'),
+                        route.index("beryllium_tas_sequence_start"))
+        self.assertLess(route.index("beryllium_tas_sequence_start"),
+                        route.index("for (unsigned period"))
+        self.assertLess(route.index("for (unsigned period"),
+                        route.index("beryllium_tas_sequence_finish"))
+        self.assertLess(route.index("beryllium_tas_sequence_finish"),
+                        route.index("beryllium_adsp_apr_encode_asm_close"))
+        self.assertIn("beryllium_tas_sequence_abort", route)
+
     def test_patch_replays_after_the_adsp_chain_and_matches_its_staged_source(self):
         with tempfile.TemporaryDirectory() as temp:
             work = Path(temp)
@@ -61,21 +109,22 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
             includes = ("bsd/dev/beryllium_adsp.c",
                         "bsd/dev/beryllium_tas_id_probe.h",
                         "bsd/dev/beryllium_tas_firmware.h",
-                        "bsd/dev/beryllium_tas_writer.h")
+                        "bsd/dev/beryllium_tas_writer.h",
+                        "bsd/dev/beryllium_tas_sequence.h")
             patches = sorted((ROOT / "xnu/patches-12377").glob("*.patch"))
             for patch in patches:
                 try:
                     number = int(patch.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1193:
+                if not 1131 <= number <= 1195:
                     continue
                 command = ["git", "apply"]
                 command.extend(f"--include={name}" for name in includes)
                 command.append(str(patch))
                 subprocess.run(command, cwd=work, check=True,
                                capture_output=True, text=True)
-            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1193/bsd/dev")
+            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1195/bsd/dev")
             self.assertEqual((work / includes[0]).read_bytes(),
                              (staged / "beryllium_adsp.c").read_bytes())
             self.assertEqual((work / includes[2]).read_bytes(),
@@ -83,6 +132,7 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
             self.assertEqual((work / includes[3]).read_bytes(),
                              WRITER.read_bytes())
             self.assertEqual((work / includes[1]).read_bytes(), I2C.read_bytes())
+            self.assertEqual((work / includes[4]).read_bytes(), SEQUENCE.read_bytes())
 
     def test_mode_nine_parser_preflight_stops_before_hardware_or_adsp_start(self):
         patch = PATCH.read_text()

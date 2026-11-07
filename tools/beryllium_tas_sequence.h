@@ -1,0 +1,211 @@
+#ifndef BERYLLIUM_TAS_SEQUENCE_H
+#define BERYLLIUM_TAS_SEQUENCE_H
+
+#include "beryllium_tas_firmware.h"
+#include <stdbool.h>
+#include <stdint.h>
+
+struct beryllium_tas_sequence_ops {
+	int (*set_reset)(void *context, bool release);
+	int (*prepare_bus)(void *context);
+	int (*identify)(void *context);
+	int (*software_reset_defaults)(void *context);
+	int (*load_block)(void *context, const struct beryllium_tas_block *block,
+	    bool ycrc_enabled);
+	int (*startup)(void *context);
+	int (*unmute)(void *context);
+	int (*mute)(void *context);
+	int (*shutdown)(void *context);
+	int (*restore_bus)(void *context);
+};
+
+struct beryllium_tas_sequence {
+	const struct beryllium_tas_sequence_ops *ops;
+	void *context;
+	bool bus_prepared;
+	bool reset_released;
+	bool configured;
+	bool powered;
+	bool unmuted;
+	bool finished;
+	bool failed;
+	const struct beryllium_tas_block *post_powerup_block;
+};
+
+static inline bool
+beryllium_tas_sequence_ops_valid(const struct beryllium_tas_sequence_ops *ops)
+{
+	return ops != 0 && ops->set_reset != 0 && ops->prepare_bus != 0 &&
+	    ops->identify != 0 && ops->software_reset_defaults != 0 &&
+	    ops->load_block != 0 && ops->startup != 0 && ops->unmute != 0 &&
+	    ops->mute != 0 &&
+	    ops->shutdown != 0 && ops->restore_bus != 0;
+}
+
+static inline const struct beryllium_tas_block *
+beryllium_tas_sequence_find_block(const struct beryllium_tas_data *data,
+	uint32_t type)
+{
+	const struct beryllium_tas_block *found = 0;
+	if (data == 0 || data->block_count > BERYLLIUM_TAS_MAX_BLOCKS)
+		return 0;
+	for (unsigned i = 0; i < data->block_count; ++i) {
+		if (data->blocks[i].type != type)
+			continue;
+		if (found != 0)
+			return 0;
+		found = &data->blocks[i];
+	}
+	return found;
+}
+
+static inline bool
+beryllium_tas_sequence_profile_valid(const struct beryllium_tas_firmware *firmware,
+	const struct beryllium_tas_calibration *calibration)
+{
+	return firmware != 0 && calibration != 0 &&
+	    firmware->sampling_rate == 48000 && firmware->configuration_pll == 0 &&
+	    firmware->pll_zero.type == 0 &&
+	    beryllium_tas_sequence_find_block(&firmware->program_zero, 1) != 0 &&
+	    beryllium_tas_sequence_find_block(&firmware->program_zero, 8) != 0 &&
+	    beryllium_tas_sequence_find_block(&firmware->configuration_zero, 4) != 0 &&
+	    beryllium_tas_sequence_find_block(&firmware->configuration_zero, 11) != 0 &&
+	    beryllium_tas_sequence_find_block(&firmware->configuration_zero, 3) != 0 &&
+	    beryllium_tas_sequence_find_block(&firmware->configuration_zero, 14) != 0 &&
+	    beryllium_tas_sequence_find_block(&calibration->data, 3) != 0;
+}
+
+static inline bool
+beryllium_tas_sequence_init(struct beryllium_tas_sequence *sequence,
+	const struct beryllium_tas_sequence_ops *ops, void *context)
+{
+	if (sequence == 0 || !beryllium_tas_sequence_ops_valid(ops) || context == 0)
+		return false;
+	*sequence = (struct beryllium_tas_sequence) {
+		.ops = ops,
+		.context = context,
+	};
+	return true;
+}
+
+static inline bool
+beryllium_tas_sequence_cleanup(struct beryllium_tas_sequence *sequence)
+{
+	bool ok = true;
+	if (sequence == 0 || sequence->ops == 0 || sequence->context == 0)
+		return false;
+	if (sequence->powered || sequence->unmuted) {
+		if (sequence->ops->mute(sequence->context) != 0)
+			ok = false;
+		sequence->unmuted = false;
+		if (sequence->ops->shutdown(sequence->context) != 0)
+			ok = false;
+		sequence->powered = false;
+	}
+	sequence->reset_released = false;
+	if (sequence->ops->set_reset(sequence->context, false) != 0)
+		ok = false;
+	if (sequence->bus_prepared) {
+		if (sequence->ops->restore_bus(sequence->context) != 0)
+			ok = false;
+		else
+			sequence->bus_prepared = false;
+	}
+	sequence->finished = ok;
+	return ok;
+}
+
+static inline bool
+beryllium_tas_sequence_abort(struct beryllium_tas_sequence *sequence)
+{
+	if (!beryllium_tas_sequence_cleanup(sequence)) {
+		if (sequence != 0)
+			sequence->failed = true;
+		return false;
+	}
+	return true;
+}
+
+static inline bool
+beryllium_tas_sequence_prepare(struct beryllium_tas_sequence *sequence,
+	const struct beryllium_tas_firmware *firmware,
+	const struct beryllium_tas_calibration *calibration)
+{
+	const struct beryllium_tas_block *block;
+	if (sequence == 0 || sequence->finished || sequence->failed ||
+	    !beryllium_tas_sequence_profile_valid(firmware, calibration))
+		return false;
+	if (sequence->ops->set_reset(sequence->context, false) != 0)
+		goto fail;
+	sequence->bus_prepared = true;
+	if (sequence->ops->prepare_bus(sequence->context) != 0)
+		goto fail;
+	sequence->reset_released = true;
+	if (sequence->ops->set_reset(sequence->context, true) != 0 ||
+	    sequence->ops->identify(sequence->context) != 0 ||
+	    sequence->ops->software_reset_defaults(sequence->context) != 0)
+		goto fail;
+	block = beryllium_tas_sequence_find_block(&firmware->program_zero, 1);
+	if (sequence->ops->load_block(sequence->context, block, true) != 0)
+		goto fail;
+	block = beryllium_tas_sequence_find_block(&firmware->program_zero, 8);
+	if (sequence->ops->load_block(sequence->context, block, true) != 0 ||
+	    sequence->ops->load_block(sequence->context, &firmware->pll_zero, true) != 0)
+		goto fail;
+	block = beryllium_tas_sequence_find_block(&firmware->configuration_zero, 4);
+	if (sequence->ops->load_block(sequence->context, block, true) != 0)
+		goto fail;
+	block = beryllium_tas_sequence_find_block(&firmware->configuration_zero, 11);
+	if (sequence->ops->load_block(sequence->context, block, true) != 0)
+		goto fail;
+	block = beryllium_tas_sequence_find_block(&firmware->configuration_zero, 3);
+	if (sequence->ops->load_block(sequence->context, block, true) != 0)
+		goto fail;
+	block = beryllium_tas_sequence_find_block(&calibration->data, 3);
+	if (sequence->ops->load_block(sequence->context, block, true) != 0)
+		goto fail;
+	sequence->post_powerup_block = beryllium_tas_sequence_find_block(
+	    &firmware->configuration_zero, 14);
+	sequence->configured = true;
+	return true;
+fail:
+	sequence->failed = true;
+	(void)beryllium_tas_sequence_cleanup(sequence);
+	return false;
+}
+
+static inline bool
+beryllium_tas_sequence_start(struct beryllium_tas_sequence *sequence)
+{
+	if (sequence == 0 || !sequence->configured || sequence->finished ||
+	    sequence->failed)
+		return false;
+	sequence->powered = true;
+	if (sequence->ops->startup(sequence->context) != 0)
+		goto fail;
+	if (sequence->ops->load_block(sequence->context,
+	    sequence->post_powerup_block, true) != 0)
+		goto fail;
+	sequence->unmuted = true;
+	if (sequence->ops->unmute(sequence->context) != 0)
+		goto fail;
+	return true;
+fail:
+	sequence->failed = true;
+	(void)beryllium_tas_sequence_cleanup(sequence);
+	return false;
+}
+
+static inline bool
+beryllium_tas_sequence_finish(struct beryllium_tas_sequence *sequence)
+{
+	if (sequence == 0 || !sequence->powered || sequence->finished)
+		return false;
+	if (!beryllium_tas_sequence_cleanup(sequence)) {
+		sequence->failed = true;
+		return false;
+	}
+	return true;
+}
+
+#endif /* BERYLLIUM_TAS_SEQUENCE_H */

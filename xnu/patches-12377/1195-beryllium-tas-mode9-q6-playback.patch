@@ -1,0 +1,452 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 8cff84a..1fd00c9 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -34,6 +34,7 @@
+ #include "beryllium_tas_id_probe.h"
+ #include "beryllium_tas_firmware.h"
+ #include "beryllium_tas_writer.h"
++#include "beryllium_tas_sequence.h"
+ #include "beryllium_smp2p_negotiation.h"
+ #include "sweet_smmu_audio_private.h"
+ 
+@@ -150,6 +151,9 @@ static bool adsp_glink_requested;
+ static bool adsp_apr_requested;
+ static bool adsp_linux_afe_requested;
+ static bool adsp_linux_asm_requested;
++static bool adsp_tas_playback_requested;
++static struct beryllium_tas_firmware adsp_tas_firmware;
++static struct beryllium_tas_calibration adsp_tas_calibration;
+ static uint8_t adsp_apr_rx_buffers[BERYLLIUM_ADSP_APR_INTENT_COUNT][BERYLLIUM_ADSP_APR_INTENT_BYTES];
+ static bool adsp_smp2p_known;
+ static bool adsp_remote_ready;
+@@ -3468,6 +3472,34 @@ adsp_apr_linux_afe_mode5_start(void)
+ 	printf("SWEET ADSP: Linux QUAT AFE lifecycle completed; no PCM/ASM/ADM/codec route was opened\n");
+ }
+ 
++#define ADSP_TAS2559_ADDR 0x4cu
++#define ADSP_TAS2560_ADDR 0x4du
++#define ADSP_TAS2559_PGID_REG 0x03u
++#define ADSP_TAS2560_ID_REG 0x7du
++/* Pinctrl EAST GPIO windows: GPIO85=0x03555000, GPIO86=0x03556000. */
++#define ADSP_TAS_SDA_GPIO 85u
++#define ADSP_TAS_SCL_GPIO 86u
++#define ADSP_TAS_TLMM_MAP_SIZE 0x00060000u
++
++struct adsp_tas_i2c_context {
++	vm_offset_t gpio;
++};
++
++struct adsp_tas_hardware {
++	vm_offset_t gpiosouth;
++	vm_offset_t gpioeast;
++	struct adsp_tas_i2c_context bus;
++	struct beryllium_tas_writer writer;
++	uint32_t sda_cfg;
++	uint32_t sda_io;
++	uint32_t scl_cfg;
++	uint32_t scl_io;
++	bool pins_saved;
++};
++
++static const struct beryllium_tas_io_ops adsp_tas_writer_ops;
++static const struct beryllium_tas_sequence_ops adsp_tas_sequence_ops;
++
+ static void
+ adsp_linux_asm_mode7_start(void)
+ {
+@@ -3483,6 +3515,9 @@ adsp_linux_asm_mode7_start(void)
+ 	uint32_t map_handle = 0;
+ 	uint16_t copp_id = 0;
+ 	bool route_installed = false;
++	bool tas_sequence_initialized = false;
++	struct adsp_tas_hardware tas_hardware = { 0 };
++	struct beryllium_tas_sequence tas_sequence = { 0 };
+ 	bzero(&state, sizeof(state));
+ 	beryllium_adsp_audio_sequence_init(&sequence);
+ 	if (!sweet_board_beryllium() || !adsp_glink_survey_read_items(4, &items) ||
+@@ -3577,6 +3612,28 @@ adsp_linux_asm_mode7_start(void)
+ 	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ASM PCM format")) {
+ 		goto retain;
+ 	}
++	if (adsp_tas_playback_requested) {
++		tas_hardware.gpiosouth = ml_io_map(ADSP_TLMM_SOUTH_PA,
++		    ADSP_TAS_TLMM_MAP_SIZE);
++		tas_hardware.gpioeast = ml_io_map(ADSP_TLMM_EAST_PA,
++		    ADSP_TAS_TLMM_MAP_SIZE);
++		tas_hardware.bus.gpio = tas_hardware.gpioeast;
++		if (tas_hardware.gpiosouth == 0 || tas_hardware.gpioeast == 0 ||
++		    !beryllium_tas_writer_init(&tas_hardware.writer,
++		    &adsp_tas_writer_ops, &tas_hardware.bus) ||
++		    !beryllium_tas_sequence_init(&tas_sequence,
++		    &adsp_tas_sequence_ops, &tas_hardware)) {
++			printf("SWEET TAS: mode 9 stopped before reset release; TLMM/writer setup failed\n");
++			goto retain;
++		}
++		tas_sequence_initialized = true;
++		if (!beryllium_tas_sequence_prepare(&tas_sequence,
++		    &adsp_tas_firmware, &adsp_tas_calibration)) {
++			printf("SWEET TAS: mode 9 profile programming failed; reset/bus cleanup attempted\n");
++			goto retain;
++		}
++		printf("SWEET TAS: Linux profile program/PLL/config/calibration loaded while output remains muted\n");
++	}
+ 	if (!beryllium_adsp_apr_encode_afe_clock_set(packet, sizeof(packet),
+ 	    &packet_bytes, true) ||
+ 	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
+@@ -3608,6 +3665,11 @@ adsp_linux_asm_mode7_start(void)
+ 	    BERYLLIUM_ADSP_AUDIO_NO_PERIOD, "ASM RUN_V2")) {
+ 		goto retain;
+ 	}
++	if (adsp_tas_playback_requested &&
++	    !beryllium_tas_sequence_start(&tas_sequence)) {
++		printf("SWEET TAS: amp startup/post-powerup/unmute failed after DSP route readiness\n");
++		goto retain;
++	}
+ 	for (unsigned period = 0; period < BERYLLIUM_ADSP_ASM_PERIOD_COUNT; period++) {
+ 		uint64_t period_address = dma_addr +
+ 		    (uint64_t)period * BERYLLIUM_ADSP_ASM_PERIOD_BYTES;
+@@ -3621,6 +3683,11 @@ adsp_linux_asm_mode7_start(void)
+ 			goto retain;
+ 		}
+ 	}
++	if (adsp_tas_playback_requested &&
++	    !beryllium_tas_sequence_finish(&tas_sequence)) {
++		printf("SWEET TAS: mute/shutdown/reset/bus restore failed after finite playback\n");
++		goto retain;
++	}
+ 	if (!beryllium_adsp_apr_encode_asm_close(packet, sizeof(packet),
+ 	    &packet_bytes) ||
+ 	    !adsp_apr_linux_audio_command(&items, &state, &sequence,
+@@ -3654,15 +3721,22 @@ adsp_linux_asm_mode7_start(void)
+ 		beryllium_adsp_audio_sequence_abort(&sequence);
+ 		goto retain;
+ 	}
+-	printf("SWEET ADSP AUDIO: mode 7 complete; four matched WRITE_DONE events, SMMU state restored, TAS resets remain low\n");
++	printf("SWEET ADSP AUDIO: mode %u complete; four matched WRITE_DONE events, SMMU state restored, TAS resets remain low\n",
++	    adsp_tas_playback_requested ? 9u : 7u);
+ 	return;
+ retain:
++	if (tas_sequence_initialized &&
++	    !beryllium_tas_sequence_abort(&tas_sequence)) {
++		printf("SWEET TAS: emergency mute/shutdown/reset/bus restoration is uncertain; keep device powered until reboot\n");
++	}
+ 	if (route_installed) {
+ 		beryllium_adsp_audio_sequence_abort(&sequence);
+-		printf("SWEET ADSP AUDIO: mode 7 failed/uncertain sequence.failed=%u; permanent PCM and private SMMU route retained until reboot\n",
++		printf("SWEET ADSP AUDIO: mode %u failed/uncertain sequence.failed=%u; permanent PCM and private SMMU route retained until reboot\n",
++		    adsp_tas_playback_requested ? 9u : 7u,
+ 		    sequence.failed ? 1u : 0u);
+ 	} else {
+-		printf("SWEET ADSP AUDIO: mode 7 stopped before a private SMMU route was installed\n");
++		printf("SWEET ADSP AUDIO: mode %u stopped before a private SMMU route was installed\n",
++		    adsp_tas_playback_requested ? 9u : 7u);
+ 	}
+ }
+ 
+@@ -3941,8 +4015,8 @@ adsp_tas_validate_payload_properties(void)
+ 	DTEntry chosen = NULL;
+ 	void *firmware = NULL, *calibration = NULL;
+ 	uint32_t firmware_size = 0, calibration_size = 0;
+-	struct beryllium_tas_firmware parsed_firmware = {0};
+-	struct beryllium_tas_calibration parsed_calibration = {0};
++	bzero(&adsp_tas_firmware, sizeof(adsp_tas_firmware));
++	bzero(&adsp_tas_calibration, sizeof(adsp_tas_calibration));
+ 
+ 	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess || chosen == NULL ||
+ 	    SecureDTGetProperty(chosen, "sweet-tas-firmware", &firmware,
+@@ -3954,32 +4028,22 @@ adsp_tas_validate_payload_properties(void)
+ 		printf("SWEET TAS: mode 9 stopped: bounded /chosen firmware/calibration pair missing\n");
+ 		return false;
+ 	}
+-	if (!beryllium_tas_parse_firmware(firmware, firmware_size, &parsed_firmware) ||
++	if (!beryllium_tas_parse_firmware(firmware, firmware_size, &adsp_tas_firmware) ||
+ 	    !beryllium_tas_parse_calibration(calibration, calibration_size, 0, 0,
+-	    &parsed_calibration)) {
++	    &adsp_tas_calibration) ||
++	    !beryllium_tas_sequence_profile_valid(&adsp_tas_firmware,
++	    &adsp_tas_calibration)) {
+ 		printf("SWEET TAS: mode 9 stopped: firmware/calibration format or profile 0/0 rejected before MMIO\n");
+ 		return false;
+ 	}
+ 	printf("SWEET TAS: mode 9 inputs accepted: firmware=%u bytes calibration=%u bytes "
+ 	    "PLL=%u program=0 configuration=0 rate=%u calibration-record=%u blocks\n",
+-	    firmware_size, calibration_size, parsed_firmware.configuration_pll,
+-	    parsed_firmware.sampling_rate, (unsigned)parsed_calibration.data.block_count);
++	    firmware_size, calibration_size, adsp_tas_firmware.configuration_pll,
++	    adsp_tas_firmware.sampling_rate,
++	    (unsigned)adsp_tas_calibration.data.block_count);
+ 	return true;
+ }
+ 
+-#define ADSP_TAS2559_ADDR 0x4cu
+-#define ADSP_TAS2560_ADDR 0x4du
+-#define ADSP_TAS2559_PGID_REG 0x03u
+-#define ADSP_TAS2560_ID_REG 0x7du
+-/* Pinctrl EAST GPIO windows: GPIO85=0x03555000, GPIO86=0x03556000. */
+-#define ADSP_TAS_SDA_GPIO 85u
+-#define ADSP_TAS_SCL_GPIO 86u
+-#define ADSP_TAS_TLMM_MAP_SIZE 0x00060000u
+-
+-struct adsp_tas_i2c_context {
+-	vm_offset_t gpio;
+-};
+-
+ static void
+ adsp_tas_i2c_set_line(vm_offset_t gpio, unsigned pin, bool release)
+ {
+@@ -4094,6 +4158,228 @@ adsp_tas_reset(vm_offset_t gpio12, vm_offset_t gpioeast, bool release)
+ 	return true;
+ }
+ 
++static int
++adsp_tas_sequence_set_reset(void *context, bool release)
++{
++	struct adsp_tas_hardware *hw = context;
++	if (hw == NULL || !adsp_tas_reset(hw->gpiosouth, hw->gpioeast, release))
++		return -1;
++	if (release)
++		delay(10000);
++	return 0;
++}
++
++static int
++adsp_tas_sequence_prepare_bus(void *context)
++{
++	struct adsp_tas_hardware *hw = context;
++	if (hw == NULL || hw->gpioeast == 0)
++		return -1;
++	hw->sda_cfg = adsp_audio_gpio_read(hw->gpioeast,
++	    ADSP_TLMM_GPIO_CFG(ADSP_TAS_SDA_GPIO));
++	hw->sda_io = adsp_audio_gpio_read(hw->gpioeast,
++	    ADSP_TLMM_GPIO_IO(ADSP_TAS_SDA_GPIO));
++	hw->scl_cfg = adsp_audio_gpio_read(hw->gpioeast,
++	    ADSP_TLMM_GPIO_CFG(ADSP_TAS_SCL_GPIO));
++	hw->scl_io = adsp_audio_gpio_read(hw->gpioeast,
++	    ADSP_TLMM_GPIO_IO(ADSP_TAS_SCL_GPIO));
++	hw->pins_saved = true;
++	/* GPIO mode, 2 mA, no internal pulls; bit-bang code releases both lines. */
++	adsp_audio_gpio_write(hw->gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SDA_GPIO),
++	    (hw->sda_cfg & ~0x3ffu) | (2u << 6));
++	adsp_audio_gpio_write(hw->gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SCL_GPIO),
++	    (hw->scl_cfg & ~0x3ffu) | (2u << 6));
++	if (!adsp_tas_i2c_read_sda(&hw->bus) || !adsp_tas_i2c_read_scl(&hw->bus)) {
++		printf("SWEET TAS: SE5 SDA/SCL not both pulled high; resets stay low\n");
++		return -1;
++	}
++	return 0;
++}
++
++static int
++adsp_tas_sequence_identify(void *context)
++{
++	struct adsp_tas_hardware *hw = context;
++	uint8_t left = 0, right = 0;
++	int left_result, right_result;
++	left_result = beryllium_tas_i2c_read_reg(&adsp_tas_i2c_ops, &hw->bus,
++	    ADSP_TAS2559_ADDR, ADSP_TAS2559_PGID_REG, &left);
++	right_result = left_result == BERYLLIUM_TAS_I2C_OK ?
++	    beryllium_tas_i2c_read_reg(&adsp_tas_i2c_ops, &hw->bus,
++	    ADSP_TAS2560_ADDR, ADSP_TAS2560_ID_REG, &right) :
++	    BERYLLIUM_TAS_I2C_INVALID;
++	printf("SWEET TAS: identity ACKs TAS2559=%d value=%#02x TAS2560=%d value=%#02x (values recorded, no fixed silicon allowlist)\n",
++	    left_result, left, right_result, right);
++	return left_result == BERYLLIUM_TAS_I2C_OK &&
++	    right_result == BERYLLIUM_TAS_I2C_OK ? 0 : -1;
++}
++
++static int
++adsp_tas_reg_write(struct adsp_tas_hardware *hw, unsigned device,
++	uint8_t book, uint8_t page, uint8_t reg, uint8_t value)
++{
++	return beryllium_tas_write_register(&hw->writer, device, book, page,
++	    reg, value);
++}
++
++static int
++adsp_tas_update_bits(struct adsp_tas_hardware *hw, unsigned device,
++	uint8_t book, uint8_t page, uint8_t reg, uint8_t mask, uint8_t value)
++{
++	uint8_t old_value;
++	int result = beryllium_tas_read_register(&hw->writer, device, book, page,
++	    reg, &old_value);
++	if (result != 0)
++		return result;
++	return adsp_tas_reg_write(hw, device, book, page, reg,
++	    (uint8_t)((old_value & ~mask) | (value & mask)));
++}
++
++static int
++adsp_tas_sequence_software_reset_defaults(void *context)
++{
++	struct adsp_tas_hardware *hw = context;
++	int result;
++	result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 1, 1);
++	if (result == 0)
++		result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 1, 1);
++	if (result != 0)
++		return result;
++	delay(1000);
++	/* Sphinx tas2559_load_default() and Beryllium load_platdata() values. */
++	if ((result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 21, 0x05)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 45, 0x21)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 46, 0x21)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 80, 0x21)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 37, 0x5a)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 44, 0x00)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 33, 0x00)) != 0 ||
++	    (result = adsp_tas_update_bits(hw, BERYLLIUM_TAS_DEVA, 0, 1, 1, 0x01, 0x01)) != 0 ||
++	    (result = adsp_tas_update_bits(hw, BERYLLIUM_TAS_DEVB, 0, 0, 24, 0x02, 0x02)) != 0 ||
++	    (result = adsp_tas_update_bits(hw, BERYLLIUM_TAS_DEVA, 0, 1, 80, 0x30, 0x30)) != 0)
++		return result;
++	printf("SWEET TAS: Linux software reset/defaults applied; forced VBoost is disabled\n");
++	return 0;
++}
++
++static int
++adsp_tas_sequence_load_block(void *context,
++	const struct beryllium_tas_block *block, bool ycrc_enabled)
++{
++	struct adsp_tas_hardware *hw = context;
++	return beryllium_tas_load_block(&hw->writer, block, ycrc_enabled);
++}
++
++static int
++adsp_tas_sequence_startup(void *context)
++{
++	struct adsp_tas_hardware *hw = context;
++	int result;
++	if ((result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 1, 61, 0x01)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 1, 62, 0x01)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 5, 0xa0)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 5, 0xa3)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 4, 0xf8)) != 0)
++		return result;
++	delay(2000);
++	if ((result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 2, 0x02)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 7, 0x41)) != 0)
++		return result;
++	delay(2000);
++	if ((result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 44, 0x2b)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 33, 0x0b)) != 0)
++		return result;
++	return 0;
++}
++
++static int
++adsp_tas_sequence_unmute(void *context)
++{
++	struct adsp_tas_hardware *hw = context;
++	int result;
++	if ((result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 7, 0x00)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 7, 0x40)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 100, 0, 7, 0x00)) != 0)
++		return result;
++	return 0;
++}
++
++static int
++adsp_tas_sequence_mute(void *context)
++{
++	struct adsp_tas_hardware *hw = context;
++	int result;
++	if ((result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 100, 0, 7, 0x01)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 7, 0x41)) != 0)
++		return result;
++	delay(10000);
++	return adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 7, 0x03);
++}
++
++static int
++adsp_tas_sequence_shutdown(void *context)
++{
++	struct adsp_tas_hardware *hw = context;
++	int result;
++	if ((result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 44, 0x00)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 33, 0x00)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 100, 0, 7, 0x01)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 7, 0x41)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 7, 0x01)) != 0)
++		return result;
++	delay(10000);
++	delay(20000);
++	if ((result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 4, 0x60)) != 0)
++		return result;
++	delay(2000);
++	if ((result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 7, 0x03)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 5, 0x00)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 0, 4, 0x00)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVB, 0, 0, 2, 0x01)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 1, 61, 0x00)) != 0 ||
++	    (result = adsp_tas_reg_write(hw, BERYLLIUM_TAS_DEVA, 0, 1, 62, 0x00)) != 0)
++		return result;
++	return 0;
++}
++
++static int
++adsp_tas_sequence_restore_bus(void *context)
++{
++	struct adsp_tas_hardware *hw = context;
++	if (!hw->pins_saved)
++		return 0;
++	adsp_audio_gpio_write(hw->gpioeast, ADSP_TLMM_GPIO_IO(ADSP_TAS_SDA_GPIO),
++	    hw->sda_io);
++	adsp_audio_gpio_write(hw->gpioeast, ADSP_TLMM_GPIO_IO(ADSP_TAS_SCL_GPIO),
++	    hw->scl_io);
++	adsp_audio_gpio_write(hw->gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SDA_GPIO),
++	    hw->sda_cfg);
++	adsp_audio_gpio_write(hw->gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SCL_GPIO),
++	    hw->scl_cfg);
++	if (adsp_audio_gpio_read(hw->gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SDA_GPIO)) !=
++	    hw->sda_cfg || adsp_audio_gpio_read(hw->gpioeast,
++	    ADSP_TLMM_GPIO_IO(ADSP_TAS_SDA_GPIO)) != hw->sda_io ||
++	    adsp_audio_gpio_read(hw->gpioeast, ADSP_TLMM_GPIO_CFG(ADSP_TAS_SCL_GPIO)) !=
++	    hw->scl_cfg || adsp_audio_gpio_read(hw->gpioeast,
++	    ADSP_TLMM_GPIO_IO(ADSP_TAS_SCL_GPIO)) != hw->scl_io)
++		return -1;
++	hw->pins_saved = false;
++	return 0;
++}
++
++static const struct beryllium_tas_sequence_ops adsp_tas_sequence_ops = {
++	.set_reset = adsp_tas_sequence_set_reset,
++	.prepare_bus = adsp_tas_sequence_prepare_bus,
++	.identify = adsp_tas_sequence_identify,
++	.software_reset_defaults = adsp_tas_sequence_software_reset_defaults,
++	.load_block = adsp_tas_sequence_load_block,
++	.startup = adsp_tas_sequence_startup,
++	.unmute = adsp_tas_sequence_unmute,
++	.mute = adsp_tas_sequence_mute,
++	.shutdown = adsp_tas_sequence_shutdown,
++	.restore_bus = adsp_tas_sequence_restore_bus,
++};
++
+ static bool
+ adsp_tas_id_probe_start(void)
+ {
+@@ -4180,9 +4466,11 @@ beryllium_adsp_probe(void)
+ 	}
+ 	(void)PE_parse_boot_argn("sweetadsp", &mode, sizeof(mode));
+ 	if (mode == 9) {
+-		/* Input-only milestone: validate the ADT pair before any hardware access. */
+-		(void)adsp_tas_validate_payload_properties();
+-		return;
++		/* Validate both blobs before enabling the existing mode-7 Q6 route. */
++		if (!adsp_tas_validate_payload_properties())
++			return;
++		adsp_tas_playback_requested = true;
++		mode = 7;
+ 	}
+ 	if (mode == 8) {
+ 		(void)adsp_tas_id_probe_start();
+@@ -4205,7 +4493,9 @@ beryllium_adsp_probe(void)
+ 	adsp_linux_asm_requested = mode == 7;
+ 	adsp_state = BERYLLIUM_ADSP_PREFLIGHT;
+ 	printf("SWEET ADSP: opt-in %s\n", adsp_linux_asm_requested ?
+-	    "PAS plus GLINK, APR, TAS-safe finite Q6ASM/ADM PCM route requested" :
++	    (adsp_tas_playback_requested ?
++	    "mode 9 PAS/GLINK/APR with Linux-matched TAS finite speaker playback" :
++	    "PAS plus GLINK, APR, TAS-safe finite Q6ASM/ADM PCM route requested") :
+ 	    (adsp_linux_afe_requested ?
+ 	    "PAS plus GLINK and Linux QUAT AFE lifecycle requested; no PCM path" :
+ 	    (adsp_apr_requested ?
