@@ -435,10 +435,14 @@ It holds the active-low reset GPIOs 12/76 low, snapshots GPIO85/86 TLMM state,
 uses bounded open-drain software I2C to read TAS2559 register `0x03` at `0x4c`
 and TAS2560 register `0x7d` at `0x4d`, then reasserts and verifies reset-low
 before restoring the bus pins. It performs no amplifier configuration writes,
-firmware upload, VBoost, or audio routing. Host tests cover the I2C helper and
-static dispatch/mapping checks. Hardware IDs and XNU build status belong in
-`NOTES.md`; until confirmed on-device, this is an implementation target rather
-than evidence that the bus is operational.
+firmware upload, VBoost, or audio routing. Host tests cover the I2C helper and static dispatch/mapping checks. The 2026-11-07
+read-only RAM boot acknowledged both reads: TAS2559 `0x03 = 0xa0` and TAS2560
+`0x7d = 0x00`; reset GPIO12/76 were readback-verified low afterward. The
+downstream Sphinx probe also reads and logs these registers without enforcing
+a fixed value, so the bytes remain raw observations. This establishes the I2C
+route and reset control, not amplifier configuration or audible playback; the
+image and full capture details are recorded in `NOTES.md`. [Downstream TAS
+probe](https://github.com/Matheus-Garbelini/Kernel-Sphinx-Pocophone-F1/blob/master/techpack/audio/asoc/codecs/tas2559/tas2559-regmap.c)
 
 ### TAS2559/TAS2560 firmware and power-up sequence
 

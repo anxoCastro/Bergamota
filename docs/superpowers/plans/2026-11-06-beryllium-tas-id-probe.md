@@ -86,8 +86,8 @@
 - Produces: exact boot result and bounded TAS identity log; resets remain low after the probe.
 
 - [x] **Step 1: Preflight Fastboot** and stop if the target is absent or product/unlocked state is not confirmed.
-- [ ] **Step 2: Run `fastboot boot` only** and capture the finite log; do not use `fastboot flash` or any userdata command.
-- [ ] **Step 3: Record result and pending playback prerequisites** in `NOTES.md`; commit and push the completed milestone.
+- [x] **Step 2: Run `fastboot boot` only** and capture the finite log; do not use `fastboot flash` or any userdata command.
+- [x] **Step 3: Record result and pending playback prerequisites** in `NOTES.md`; commit and push the completed milestone.
 
 ## Self-review
 
