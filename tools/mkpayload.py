@@ -184,6 +184,31 @@ def add_adsp_metadata_region_to_adt(adt_blob, base, size):
     return adt.serialize(root)
 
 
+def add_tas_firmware_to_adt(adt_blob, firmware, calibration):
+    """Add an optional local TAS firmware/calibration pair to /chosen."""
+    if firmware is None and calibration is None:
+        return adt_blob
+    if firmware is None or calibration is None:
+        raise ValueError('TAS firmware and calibration must be provided together')
+    firmware = bytes(firmware)
+    calibration = bytes(calibration)
+    if not firmware or not calibration:
+        raise ValueError('TAS firmware and calibration must be non-empty')
+    if len(firmware) > 128 * 1024 or len(calibration) > 128 * 1024:
+        raise ValueError('TAS firmware and calibration are each limited to 128 KiB')
+    root, _ = adt.parse(adt_blob)
+    chosen_nodes = [c for c in root.children if c.name == 'chosen']
+    if len(chosen_nodes) != 1:
+        raise ValueError('ADT must have exactly one /chosen node')
+    chosen = chosen_nodes[0]
+    names = ('sweet-tas-firmware', 'sweet-tas-calibration')
+    for name in names:
+        if sum(1 for prop, _, _ in chosen.props if prop == name):
+            raise ValueError(f'/chosen/{name} already exists')
+    chosen.props.extend(((names[0], 0, firmware), (names[1], 0, calibration)))
+    return adt.serialize(root)
+
+
 def parse_adsp_region(value):
     """Parse the only currently verified ADSP reservation for a test payload."""
     try:
@@ -259,7 +284,10 @@ def adt_dram(adt_blob):
 
 
 def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img4_nodes=True,
-          adsp_region=None, adsp_metadata_region=None):
+          adsp_region=None, adsp_metadata_region=None, tas_firmware_path=None,
+          tas_calibration_path=None):
+    if (tas_firmware_path is None) != (tas_calibration_path is None):
+        raise ValueError('TAS firmware and calibration must be provided together')
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -279,6 +307,15 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img
         adt_blob = add_adsp_region_to_adt(adt_blob, *adsp_region)
     if adsp_metadata_region is not None:
         adt_blob = add_adsp_metadata_region_to_adt(adt_blob, *adsp_metadata_region)
+    if tas_firmware_path is not None:
+        if os.path.getsize(tas_firmware_path) > 128 * 1024 or \
+                os.path.getsize(tas_calibration_path) > 128 * 1024:
+            raise ValueError('TAS firmware and calibration are each limited to 128 KiB')
+        with open(tas_firmware_path, 'rb') as f:
+            tas_firmware = f.read()
+        with open(tas_calibration_path, 'rb') as f:
+            tas_calibration = f.read()
+        adt_blob = add_tas_firmware_to_adt(adt_blob, tas_firmware, tas_calibration)
     # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
@@ -337,9 +374,14 @@ if __name__ == '__main__':
                     help='opt in to the verified Beryllium ADSP region marker (0x8c500000:0x01e00000)')
     ap.add_argument('--adsp-metadata-region', type=parse_adsp_metadata_region,
                     help='opt in to the candidate Beryllium PAS DMA page marker (0xc0000000:0x4000)')
+    ap.add_argument('--tas-firmware', help='local tas2559_uCDSP.bin (kept outside Git)')
+    ap.add_argument('--tas-calibration', help='local Beryllium tas2559_cal.bin (kept outside Git)')
     a = ap.parse_args()
+    if (a.tas_firmware is None) != (a.tas_calibration is None):
+        ap.error('--tas-firmware and --tas-calibration must be provided together')
     blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.compress,
-                       not a.no_img4_nodes, a.adsp_region, a.adsp_metadata_region)
+                       not a.no_img4_nodes, a.adsp_region, a.adsp_metadata_region,
+                       a.tas_firmware, a.tas_calibration)
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':

@@ -56,10 +56,10 @@
 - CLI adds `--tas-firmware PATH --tas-calibration PATH`; both are required together and each is capped at 128 KiB.
 - ADT properties: `/chosen/sweet-tas-firmware` and `/chosen/sweet-tas-calibration`, exact raw byte payloads.
 
-- [ ] **Step 1: Write failing tests** for property insertion, round-trip bytes, no-argument compatibility, one-file-only rejection, duplicate/conflicting property rejection, and oversize input rejection.
-- [ ] **Step 2: Run** `python3 -I -m unittest discover -s tools/tests -p 'test_beryllium_tas_payload.py' -v`; confirm the new CLI/property tests fail.
-- [ ] **Step 3: Implement** the two paired CLI inputs and safe ADT property insertion. Do not put blob paths, bytes, or hashes in source control.
-- [ ] **Step 4: Run payload tests** and confirm an existing payload build with neither new argument is byte-identical to its old ADT output.
+- [x] **Step 1: Write failing tests** for property insertion, round-trip bytes, no-argument compatibility, one-file-only rejection, duplicate/conflicting property rejection, and oversize input rejection.
+- [x] **Step 2: Run** `python3 -I -m unittest discover -s tools/tests -p 'test_beryllium_tas_payload.py' -v`; the missing helper and CLI flags were observed failing before implementation.
+- [x] **Step 3: Implement** the two paired CLI inputs and safe ADT property insertion. Do not put blob paths, bytes, or hashes in source control.
+- [x] **Step 4: Run payload tests**; no-input insertion is byte-identical to the input ADT, and an ADT round-trip with the exact local proprietary files preserved every firmware/calibration byte. Existing payload build options remain unchanged when neither argument is passed.
 - [ ] **Step 5: Commit** `feat(audio): pass local TAS data through boot ADT`.
 
 ### Task 3: Bounded TAS setup and mode-9 finite playback
