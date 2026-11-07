@@ -60,36 +60,48 @@
 - [x] **Step 2: Run** `python3 -I -m unittest discover -s tools/tests -p 'test_beryllium_tas_payload.py' -v`; the missing helper and CLI flags were observed failing before implementation.
 - [x] **Step 3: Implement** the two paired CLI inputs and safe ADT property insertion. Do not put blob paths, bytes, or hashes in source control.
 - [x] **Step 4: Run payload tests**; no-input insertion is byte-identical to the input ADT, and an ADT round-trip with the exact local proprietary files preserved every firmware/calibration byte. Existing payload build options remain unchanged when neither argument is passed.
-- [ ] **Step 5: Commit** `feat(audio): pass local TAS data through boot ADT`.
+- [x] **Step 5: Commit** `feat(audio): pass local TAS data through boot ADT` (`0b78ada`, pushed).
 
-### Task 3: Bounded TAS setup and mode-9 finite playback
+### Task 3: Mode-9 SecureDT parser preflight (patch 1190)
 
 **Files:**
-- Modify: staged `bsd/dev/beryllium_adsp.c`, generated as `xnu/patches-12377/1190-beryllium-tas-finite-playback.patch`.
-- Modify: staged `bsd/dev/beryllium_tas_id_probe.h` only if shared bus helpers need a small explicit extension.
-- Test: extend `tools/tests/test_adsp_tas_probe.c` or add `tools/tests/test_beryllium_tas_playback.c` with a scripted I2C/MMIO/route fixture.
-- Test: `tools/tests/test_beryllium_tas_playback.py` for ordered patch replay and mode dispatch.
+- Modify staged `bsd/dev/beryllium_adsp.c`; add a byte-identical copy of `tools/beryllium_tas_firmware.h` under `bsd/dev/`, generated as `xnu/patches-12377/1190-beryllium-tas-finite-playback.patch`.
+- Test: `tools/tests/test_beryllium_tas_playback.py` for parser copy, mode dispatch, no-hardware ordering, and complete ordered patch replay.
 
 **Interfaces:**
-- Add `adsp_tas_finite_playback_start()` behind `sweetadsp=9`.
-- Reuse the current mode-7 PCM allocation, SMMU map, ASM/ADM/AFE sequence and four matching WRITE_DONE checks through a shared internal route helper; do not alter mode-7 behavior.
-- Consume the two SecureDT properties and parser result from Tasks 1–2.
+- `sweetadsp=9` reads both bounded `/chosen` payloads, validates profile 0/0, and returns without ADSP or TAS hardware access.
+- Modes 7 and 8 remain untouched.
+
+- [x] **Step 1: Write failing patch-integration tests** proving patch 1190 is absent and the validated helper isn't copied into XNU.
+- [x] **Step 2: Run** `python3 -I -m unittest discover -s tools/tests -p 'test_beryllium_tas_playback.py' -v`; the missing patch failed as expected.
+- [x] **Step 3: Implement** parser-only SecureDT preflight; no reset, GPIO, I2C, PAS, or APR access occurs in mode 9 yet.
+- [x] **Step 4: Run** parser/preflight tests and replay the complete ordered patch series through 1190, byte-comparing driver and parser helper with staged sources.
+- [ ] **Step 5: Build XNU 26.5 and commit** the parser-preflight patch.
+
+### Task 4: TAS programming and finite playback
+
+**Files:**
+- Modify staged `bsd/dev/beryllium_adsp.c` and TAS helper(s), generating the next ordered XNU patch.
+- Test: scripted I2C/MMIO/route state machine in `tools/tests/test_beryllium_tas_playback.c` and patch replay in `tools/tests/test_beryllium_tas_playback.py`.
+
+**Interfaces:**
+- Reuse the mode-7 PCM allocation, SMMU map, ASM/ADM/AFE setup and four matched WRITE_DONE checks through explicit pre-play/post-play hooks; mode 7 behavior must remain unchanged.
+- Mode 9 consumes the two validated SecureDT views. Failures keep resets low and retain uncertain DMA/SMMU resources until reboot.
 
 - [ ] **Step 1: Write failing state-machine tests** for reset-held parse failure; exact reset/identity/program/PLL/config/calibration/startup/post-powerup/unmute/period/mute/shutdown/reset/restore order; no forced VBoost; and cleanup on each injected I2C/APR/SMMU error.
-- [ ] **Step 2: Run** `python3 -I -m unittest discover -s tools/tests -p 'test_beryllium_tas_playback.py' -v`; confirm the tests fail before mode 9 exists.
-- [ ] **Step 3: Implement** complete ADT parse before GPIO or I2C changes, bounded register/bulk/sleep commands, CRC reset/readback checks, and Beryllium's default VBoost handling. Reject any command not explicitly supported. Open speaker output only after the route is ready; after the fourth event mute and shut down before reset/pin/SMMU cleanup.
-- [ ] **Step 4: Run** both TAS probe/playback fixtures and `python3 -I -m unittest discover -s tools/tests -v`; confirm modes 7/8 fixtures remain unchanged.
-- [ ] **Step 5: Replay the complete ordered XNU patch series** through 1190 and byte-compare each modified staged source with the source used to generate the patch.
-- [ ] **Step 6: Commit** `feat(audio): add finite Beryllium speaker playback mode`.
+- [ ] **Step 2: Implement** exact Linux Beryllium defaults and supported write/bulk/sleep commands, CRC reset/readback checks, and pre-play/post-play hooks. Reject all unsupported operations. Keep the speaker muted until the DSP route is ready; mute and shut down after the final event and before GPIO/SMMU cleanup.
+- [ ] **Step 3: Run** the TAS probe/playback fixtures and `python3 -I -m unittest discover -s tools/tests -v`; confirm modes 7/8 remain unchanged.
+- [ ] **Step 4: Replay the complete ordered XNU patch series** through the playback patch and byte-compare each modified staged source.
+- [ ] **Step 5: Commit** the finite Beryllium speaker playback mode.
 
-### Task 4: Build and RAM-only device validation
+### Task 5: Build and RAM-only device validation
 
 **Files:**
 - Modify: `NOTES.md` and `docs/audio/BERYLLIUM_LINUX_AUDIO_REFERENCE.md` with measured results and exact artifact hashes.
 - Local only: ignored image and diagnostic capture under `.superpowers/ci/<run-id>/`.
 
-- [ ] **Step 1: Run** `git diff --check`, verify both downloaded calibration files remain ignored, and dispatch the KDK-enabled XNU 26.5 kernel workflow with `gh` for the commit containing patch 1190.
-- [ ] **Step 2: Download and inspect CI**: verify patch 1190 applied, build/errors/link diagnostics, artifact checksums, and arm64 Mach-O output.
+- [ ] **Step 1: Run** `git diff --check`, verify local calibration inputs remain ignored, and dispatch the KDK-enabled XNU 26.5 kernel workflow with `gh` for the playback patch commit.
+- [ ] **Step 2: Download and inspect CI**: verify ordered patch application, build/errors/link diagnostics, artifact checksums, and arm64 Mach-O output.
 - [ ] **Step 3: Package a local mode-9 image** using the exact CI kernel plus local ignored firmware/calibration; verify ADT lengths and byte-for-byte payload round-trip, no `ufsrw=1`/`rootrw=1` and no partition-write command.
 - [ ] **Step 4: Return the phone to Fastboot, verify `product=beryllium` and `unlocked=yes`, start UDP capture, and issue only `fastboot boot` with the temporary image.
 - [ ] **Step 5: Inspect the full log** for parser acceptance, reset state, CRC matches, amp start/mute/shutdown/reset, four WRITE_DONE events, AFE/ADM/ASM close, and SMMU restore. Record any output failure literally; a successful trace is not proof that the speaker was audible.

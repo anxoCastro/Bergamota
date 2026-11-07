@@ -1,0 +1,2 @@
+# XNU patch files are nested unified diffs; their context prefixes look like whitespace to the outer diff checker.
+xnu/patches-12377/*.patch -whitespace
