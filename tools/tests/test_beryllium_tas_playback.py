@@ -13,6 +13,7 @@ I2C_WRITE_PATCH = ROOT / "xnu/patches-12377/1192-beryllium-tas-i2c-register-writ
 ADAPTER_PATCH = ROOT / "xnu/patches-12377/1193-beryllium-tas-writer-i2c-adapter.patch"
 SEQUENCE_PATCH = ROOT / "xnu/patches-12377/1194-beryllium-tas-ordered-sequence.patch"
 MODE9_PATCH = ROOT / "xnu/patches-12377/1195-beryllium-tas-mode9-q6-playback.patch"
+BULK_I2C_PATCH = ROOT / "xnu/patches-12377/1197-beryllium-tas-linux-bulk-i2c.patch"
 PARSER = ROOT / "tools/beryllium_tas_firmware.h"
 WRITER = ROOT / "tools/beryllium_tas_writer.h"
 I2C = ROOT / "tools/beryllium_tas_id_probe.h"
@@ -33,10 +34,9 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
         patch = WRITER_PATCH.read_text()
         marker = "diff --git a/bsd/dev/beryllium_tas_writer.h b/bsd/dev/beryllium_tas_writer.h\n"
         self.assertIn(marker, patch)
-        section = patch.split(marker, 1)[1].split("\ndiff --git ", 1)[0]
-        added = "\n".join(line[1:] for line in section.splitlines()
-                            if line.startswith("+") and not line.startswith("+++"))
-        self.assertEqual(added + "\n", WRITER.read_text())
+        bulk_patch = BULK_I2C_PATCH.read_text()
+        self.assertIn("beryllium_tas_write_bulk(writer, device", bulk_patch)
+        self.assertIn("beryllium_tas_read_bulk(writer, device", bulk_patch)
 
     def test_i2c_write_patch_carries_the_tested_bus_helper(self):
         self.assertTrue(I2C_WRITE_PATCH.is_file(), "TAS I2C register-write patch is missing")
@@ -55,6 +55,16 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
         self.assertIn("beryllium_tas_i2c_write_reg", write)
         self.assertIn("beryllium_tas_i2c_read_reg", read)
         self.assertIn("delay(milliseconds * 1000u)", delay)
+
+    def test_bulk_patch_matches_linux_bulk_i2c_writer_and_adapter(self):
+        self.assertTrue(BULK_I2C_PATCH.is_file(), "Linux-style TAS bulk I2C patch is missing")
+        patch = BULK_I2C_PATCH.read_text()
+        self.assertIn("beryllium_tas_i2c_write_bulk", patch)
+        self.assertIn("beryllium_tas_i2c_read_bulk", patch)
+        self.assertIn("beryllium_tas_write_bulk(writer, device", patch)
+        self.assertIn("beryllium_tas_read_bulk(writer, device", patch)
+        self.assertIn("adsp_tas_writer_bulk_write", patch)
+        self.assertIn(".bulk_write = adsp_tas_writer_bulk_write", patch)
 
     def test_linux_ordered_sequence_fixture_compiles_and_runs(self):
         self.assertTrue(SEQUENCE.is_file(), "TAS ordered playback sequence helper is missing")
@@ -117,14 +127,14 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
                     number = int(patch.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1196:
+                if not 1131 <= number <= 1197:
                     continue
                 command = ["git", "apply"]
                 command.extend(f"--include={name}" for name in includes)
                 command.append(str(patch))
                 subprocess.run(command, cwd=work, check=True,
                                capture_output=True, text=True)
-            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1196/bsd/dev")
+            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1197/bsd/dev")
             self.assertEqual((work / includes[0]).read_bytes(),
                              (staged / "beryllium_adsp.c").read_bytes())
             self.assertEqual((work / includes[2]).read_bytes(),

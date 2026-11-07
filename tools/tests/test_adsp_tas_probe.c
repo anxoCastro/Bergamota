@@ -15,7 +15,7 @@ struct fake_bus {
 	unsigned delay_us;
 	unsigned sda_index;
 	unsigned sda_count;
-	bool sda_script[16];
+	bool sda_script[64];
 };
 
 static void
@@ -213,6 +213,49 @@ test_write_reg_nack_and_invalid_arguments(void)
 }
 
 static int
+test_bulk_write_and_read(void)
+{
+	struct fake_bus write_bus = { .scl_high = false };
+	const bool write_responses[] = { true, false, false, false, false };
+	for (unsigned i = 0; i < sizeof(write_responses) / sizeof(write_responses[0]); ++i)
+		write_bus.sda_script[i] = write_responses[i];
+	write_bus.sda_count = sizeof(write_responses) / sizeof(write_responses[0]);
+	const uint8_t write_values[] = { 0x03, 0x04 };
+	int result = beryllium_tas_i2c_write_bulk(&fake_ops, &write_bus, 0x4c,
+	    0x71, write_values, sizeof(write_values));
+	if (result != BERYLLIUM_TAS_I2C_OK ||
+	    write_bus.sda_index != write_bus.sda_count || write_bus.scl_rises != 38) {
+		fprintf(stderr, "bulk write failed: result=%d reads=%u/%u scl=%u\n",
+		    result, write_bus.sda_index, write_bus.sda_count, write_bus.scl_rises);
+		return 10;
+	}
+
+	struct fake_bus read_bus = { .scl_high = false };
+	unsigned n = 0;
+	read_bus.sda_script[n++] = true;  /* idle */
+	read_bus.sda_script[n++] = false; /* write address ACK */
+	read_bus.sda_script[n++] = false; /* register ACK */
+	read_bus.sda_script[n++] = true;  /* repeated-start idle */
+	read_bus.sda_script[n++] = false; /* read address ACK */
+	const uint8_t expected[] = { 0x03, 0x04 };
+	for (unsigned byte = 0; byte < 2; ++byte)
+		for (int bit = 7; bit >= 0; --bit)
+			read_bus.sda_script[n++] = (expected[byte] & (1u << bit)) != 0;
+	read_bus.sda_count = n;
+	uint8_t read_values[2] = { 0, 0 };
+	result = beryllium_tas_i2c_read_bulk(&fake_ops, &read_bus, 0x4c,
+	    0x71, read_values, 2);
+	if (result != BERYLLIUM_TAS_I2C_OK || read_values[0] != expected[0] ||
+	    read_values[1] != expected[1] || read_bus.sda_index != read_bus.sda_count) {
+		fprintf(stderr, "bulk read failed: result=%d data=%02x,%02x reads=%u/%u\n",
+		    result, read_values[0], read_values[1], read_bus.sda_index,
+		    read_bus.sda_count);
+		return 11;
+	}
+	return 0;
+}
+
+static int
 test_stuck_scl_times_out(void)
 {
 	struct fake_bus bus = { .scl_high = false, .scl_stuck_low = true };
@@ -255,6 +298,7 @@ main(void)
 	if (test_read_ack(0x4c, 0x03) || test_read_ack(0x4d, 0x7d) ||
 	    test_nack() || test_write_reg_ack() ||
 	    test_write_reg_nack_and_invalid_arguments() ||
+	    test_bulk_write_and_read() ||
 	    test_stuck_scl_times_out() ||
 	    test_bus_busy_and_invalid_arguments())
 		return 1;

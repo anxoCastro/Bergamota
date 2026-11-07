@@ -17,6 +17,10 @@
 struct beryllium_tas_io_ops {
 	int (*write)(void *context, uint8_t address, uint8_t reg, uint8_t value);
 	int (*read)(void *context, uint8_t address, uint8_t reg, uint8_t *value);
+	int (*bulk_write)(void *context, uint8_t address, uint8_t reg,
+	    const uint8_t *values, size_t count);
+	int (*bulk_read)(void *context, uint8_t address, uint8_t reg,
+	    uint8_t *values, size_t count);
 	void (*delay_ms)(void *context, uint32_t milliseconds);
 };
 
@@ -125,6 +129,44 @@ beryllium_tas_read_register(struct beryllium_tas_writer *writer,
 	return writer->ops->read(writer->context, addresses[device], reg, value);
 }
 
+static inline int
+beryllium_tas_write_bulk(struct beryllium_tas_writer *writer,
+	unsigned device, uint8_t book, uint8_t page, uint8_t reg,
+	const uint8_t *values, size_t count)
+{
+	static const uint8_t addresses[2] = {
+		BERYLLIUM_TAS_ADDRESS_DEVA, BERYLLIUM_TAS_ADDRESS_DEVB
+	};
+	if (writer == 0 || writer->ops == 0 || writer->ops->bulk_write == 0 ||
+	    writer->context == 0 || device > BERYLLIUM_TAS_DEVB || values == 0 ||
+	    count == 0 || count > 256 || reg == 0 || (size_t)reg + count > 0x80u)
+		return -1;
+	int result = beryllium_tas_select_page(writer, device, book, page);
+	if (result != 0)
+		return result;
+	return writer->ops->bulk_write(writer->context, addresses[device], reg,
+	    values, count);
+}
+
+static inline int
+beryllium_tas_read_bulk(struct beryllium_tas_writer *writer,
+	unsigned device, uint8_t book, uint8_t page, uint8_t reg,
+	uint8_t *values, size_t count)
+{
+	static const uint8_t addresses[2] = {
+		BERYLLIUM_TAS_ADDRESS_DEVA, BERYLLIUM_TAS_ADDRESS_DEVB
+	};
+	if (writer == 0 || writer->ops == 0 || writer->ops->bulk_read == 0 ||
+	    writer->context == 0 || device > BERYLLIUM_TAS_DEVB || values == 0 ||
+	    count == 0 || count > 256 || reg == 0 || (size_t)reg + count > 0x80u)
+		return -1;
+	int result = beryllium_tas_select_page(writer, device, book, page);
+	if (result != 0)
+		return result;
+	return writer->ops->bulk_read(writer->context, addresses[device], reg,
+	    values, count);
+}
+
 static inline bool
 beryllium_tas_is_yram(unsigned device, uint8_t book, uint8_t page, uint8_t reg)
 {
@@ -222,23 +264,41 @@ beryllium_tas_load_block_once(struct beryllium_tas_writer *writer,
 			slots = length == 1u ? 1u : 2u + (length - 2u) / 4u;
 			if (slots > block->command_count - command - 1u)
 				return -1;
-			for (uint32_t i = 0; i < length; ++i) {
-				value = payload[3u + i];
-				int result = beryllium_tas_write_register(writer, device,
-				    book, page, (uint8_t)(reg + i), value);
-				if (result != 0)
-					return result;
-				if (ycrc_enabled && block->ycrc_present &&
-				    beryllium_tas_is_yram(device, book, page,
-				    (uint8_t)(reg + i))) {
-					uint8_t readback;
-					result = beryllium_tas_read_register(writer, device, book,
-					    page, (uint8_t)(reg + i), &readback);
+			int result;
+			if (length == 1u) {
+				result = beryllium_tas_write_register(writer, device, book,
+				    page, reg, payload[3]);
+			} else {
+				result = beryllium_tas_write_bulk(writer, device, book, page,
+				    reg, payload + 3u, length);
+			}
+			if (result != 0)
+				return result;
+			if (ycrc_enabled && block->ycrc_present) {
+				uint32_t start = 0;
+				while (start < length) {
+					while (start < length && !beryllium_tas_is_yram(device,
+					    book, page, (uint8_t)(reg + start)))
+						++start;
+					uint32_t end = start;
+					while (end < length && beryllium_tas_is_yram(device,
+					    book, page, (uint8_t)(reg + end)))
+						++end;
+					if (end == start)
+						continue;
+					uint8_t readback[256];
+					result = beryllium_tas_read_bulk(writer, device, book,
+					    page, (uint8_t)(reg + start), readback, end - start);
 					if (result != 0)
 						return result;
-					if (readback != value)
-						return -11;
-					ycrc = (uint8_t)(ycrc + beryllium_tas_crc8_byte(readback));
+					for (uint32_t i = start; i < end; ++i) {
+						uint8_t actual = readback[i - start];
+						if (actual != payload[3u + i])
+							return -11;
+						ycrc = (uint8_t)(ycrc +
+						    beryllium_tas_crc8_byte(actual));
+					}
+					start = end;
 				}
 			}
 			command += 1u + slots;

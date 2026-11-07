@@ -2,6 +2,7 @@
 #define BERYLLIUM_TAS_ID_PROBE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define BERYLLIUM_TAS_I2C_HALF_PERIOD_US 5u
@@ -179,6 +180,86 @@ beryllium_tas_i2c_write_reg(const struct beryllium_tas_i2c_ops *ops,
 		result = beryllium_tas_i2c_write_byte(ops, context, reg);
 	if (result == BERYLLIUM_TAS_I2C_OK)
 		result = beryllium_tas_i2c_write_byte(ops, context, value);
+	beryllium_tas_i2c_stop(ops, context);
+	return result;
+}
+
+static int
+beryllium_tas_i2c_write_bulk(const struct beryllium_tas_i2c_ops *ops,
+	void *context, uint8_t address, uint8_t reg, const uint8_t *values,
+	size_t count)
+{
+	if (!beryllium_tas_i2c_ops_valid(ops) || context == 0 || values == 0 ||
+	    count == 0 || count > 256 || address > 0x7fu ||
+	    (size_t)reg + count > 0x80u)
+		return BERYLLIUM_TAS_I2C_INVALID;
+	int result = beryllium_tas_i2c_start(ops, context);
+	if (result != BERYLLIUM_TAS_I2C_OK) {
+		ops->set_sda_release(context, true);
+		ops->set_scl_release(context, true);
+		return result;
+	}
+	result = beryllium_tas_i2c_write_byte(ops, context,
+	    (uint8_t)(address << 1));
+	if (result == BERYLLIUM_TAS_I2C_OK)
+		result = beryllium_tas_i2c_write_byte(ops, context, reg);
+	for (size_t i = 0; result == BERYLLIUM_TAS_I2C_OK && i < count; ++i)
+		result = beryllium_tas_i2c_write_byte(ops, context, values[i]);
+	beryllium_tas_i2c_stop(ops, context);
+	return result;
+}
+
+static int
+beryllium_tas_i2c_read_byte_master(const struct beryllium_tas_i2c_ops *ops,
+	void *context, uint8_t *value, bool acknowledge)
+{
+	uint8_t result = 0;
+	ops->set_sda_release(context, true);
+	for (int bit = 7; bit >= 0; --bit) {
+		ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
+		if (!beryllium_tas_i2c_scl_high(ops, context))
+			return BERYLLIUM_TAS_I2C_TIMEOUT;
+		if (ops->read_sda(context))
+			result |= (uint8_t)(1u << bit);
+		ops->set_scl_release(context, false);
+	}
+	ops->set_sda_release(context, !acknowledge);
+	ops->delay_us(context, BERYLLIUM_TAS_I2C_HALF_PERIOD_US);
+	if (!beryllium_tas_i2c_scl_high(ops, context))
+		return BERYLLIUM_TAS_I2C_TIMEOUT;
+	ops->set_scl_release(context, false);
+	ops->set_sda_release(context, true);
+	*value = result;
+	return BERYLLIUM_TAS_I2C_OK;
+}
+
+static int
+beryllium_tas_i2c_read_bulk(const struct beryllium_tas_i2c_ops *ops,
+	void *context, uint8_t address, uint8_t reg, uint8_t *values,
+	size_t count)
+{
+	if (!beryllium_tas_i2c_ops_valid(ops) || context == 0 || values == 0 ||
+	    count == 0 || count > 256 || address > 0x7fu ||
+	    (size_t)reg + count > 0x80u)
+		return BERYLLIUM_TAS_I2C_INVALID;
+	int result = beryllium_tas_i2c_start(ops, context);
+	if (result != BERYLLIUM_TAS_I2C_OK) {
+		ops->set_sda_release(context, true);
+		ops->set_scl_release(context, true);
+		return result;
+	}
+	result = beryllium_tas_i2c_write_byte(ops, context,
+	    (uint8_t)(address << 1));
+	if (result == BERYLLIUM_TAS_I2C_OK)
+		result = beryllium_tas_i2c_write_byte(ops, context, reg);
+	if (result == BERYLLIUM_TAS_I2C_OK)
+		result = beryllium_tas_i2c_start(ops, context);
+	if (result == BERYLLIUM_TAS_I2C_OK)
+		result = beryllium_tas_i2c_write_byte(ops, context,
+		    (uint8_t)((address << 1) | 1u));
+	for (size_t i = 0; result == BERYLLIUM_TAS_I2C_OK && i < count; ++i)
+		result = beryllium_tas_i2c_read_byte_master(ops, context, &values[i],
+		    i + 1u < count);
 	beryllium_tas_i2c_stop(ops, context);
 	return result;
 }

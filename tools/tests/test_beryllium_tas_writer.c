@@ -13,6 +13,10 @@ struct write_event {
 struct fake_bus {
 	struct write_event events[32];
 	size_t count;
+	uint8_t bulk_write_data[256];
+	size_t bulk_write_count;
+	uint8_t bulk_read_data[256];
+	size_t bulk_read_count;
 	int fail_at;
 	uint8_t read_value;
 };
@@ -39,6 +43,34 @@ fake_read(void *context, uint8_t address, uint8_t reg, uint8_t *value)
 	return 0;
 }
 
+static int
+fake_bulk_write(void *context, uint8_t address, uint8_t reg,
+	const uint8_t *values, size_t count)
+{
+	struct fake_bus *bus = context;
+	(void)address;
+	(void)reg;
+	if (count > sizeof(bus->bulk_write_data))
+		return -8;
+	memcpy(bus->bulk_write_data, values, count);
+	bus->bulk_write_count = count;
+	return 0;
+}
+
+static int
+fake_bulk_read(void *context, uint8_t address, uint8_t reg,
+	uint8_t *values, size_t count)
+{
+	struct fake_bus *bus = context;
+	(void)address;
+	(void)reg;
+	if (count > sizeof(bus->bulk_read_data))
+		return -8;
+	memcpy(values, bus->bulk_read_data, count);
+	bus->bulk_read_count = count;
+	return 0;
+}
+
 #define CHECK(x) do { if (!(x)) { \
 	fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; \
 } } while (0)
@@ -49,6 +81,8 @@ main(void)
 	const struct beryllium_tas_io_ops ops = {
 		.write = fake_write,
 		.read = fake_read,
+		.bulk_write = fake_bulk_write,
+		.bulk_read = fake_bulk_read,
 	};
 	struct beryllium_tas_writer writer;
 	struct fake_bus bus = { .fail_at = -1 };
@@ -115,6 +149,32 @@ main(void)
 	CHECK(bus.count == 4 && bus.events[0].address == 0x4d &&
 	    bus.events[1].reg == 0x7f && bus.events[2].reg == 0x00 &&
 	    bus.events[2].value == 50 && bus.events[3].reg == 8);
+
+	memset(&bus, 0, sizeof(bus));
+	bus.fail_at = -1;
+	bus.bulk_read_data[0] = 0x03;
+	bus.bulk_read_data[1] = 0x04;
+	CHECK(beryllium_tas_writer_init(&writer, &ops, &bus));
+	const uint8_t bulk_yram_commands[] = {
+		0, 2, 0x85, 0,
+		0, 50, 0x71, 0x03, 0x04,
+	};
+	const struct beryllium_tas_block bulk_yram_block = {
+		.type = 1,
+		.ycrc_present = 1,
+		.ycrc = 0x50,
+		.command_count = 3,
+		.commands = bulk_yram_commands,
+	};
+	int bulk_result = beryllium_tas_load_block(&writer, &bulk_yram_block, true);
+	if (bulk_result != 0)
+		fprintf(stderr, "bulk YRAM block returned %d (ycrc=%02x)\n",
+		    bulk_result, bulk_yram_block.ycrc);
+	CHECK(bulk_result == 0);
+	CHECK(bus.bulk_write_count == 2 && bus.bulk_write_data[0] == 0x03 &&
+	    bus.bulk_write_data[1] == 0x04);
+	CHECK(bus.bulk_read_count == 2 && bus.bulk_read_data[0] == 0x03 &&
+	    bus.bulk_read_data[1] == 0x04);
 	const struct beryllium_tas_block invalid_block = { .type = 7 };
 	size_t before_invalid = bus.count;
 	CHECK(beryllium_tas_load_block(&writer, &invalid_block, true) != 0);
