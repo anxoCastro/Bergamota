@@ -9,8 +9,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / "xnu/patches-12377/1190-beryllium-tas-finite-playback.patch"
 WRITER_PATCH = ROOT / "xnu/patches-12377/1191-beryllium-tas-linux-register-writer.patch"
+I2C_WRITE_PATCH = ROOT / "xnu/patches-12377/1192-beryllium-tas-i2c-register-write.patch"
 PARSER = ROOT / "tools/beryllium_tas_firmware.h"
 WRITER = ROOT / "tools/beryllium_tas_writer.h"
+I2C = ROOT / "tools/beryllium_tas_id_probe.h"
 
 
 class BerylliumTasPlaybackPatchTests(unittest.TestCase):
@@ -32,6 +34,12 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
                             if line.startswith("+") and not line.startswith("+++"))
         self.assertEqual(added + "\n", WRITER.read_text())
 
+    def test_i2c_write_patch_carries_the_tested_bus_helper(self):
+        self.assertTrue(I2C_WRITE_PATCH.is_file(), "TAS I2C register-write patch is missing")
+        patch = I2C_WRITE_PATCH.read_text()
+        self.assertIn("beryllium_tas_i2c_write_reg", patch)
+        self.assertIn("beryllium_tas_i2c_stop(ops, context)", patch)
+
     def test_patch_replays_after_the_adsp_chain_and_matches_its_staged_source(self):
         with tempfile.TemporaryDirectory() as temp:
             work = Path(temp)
@@ -47,20 +55,21 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
                     number = int(patch.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1191:
+                if not 1131 <= number <= 1192:
                     continue
                 command = ["git", "apply"]
                 command.extend(f"--include={name}" for name in includes)
                 command.append(str(patch))
                 subprocess.run(command, cwd=work, check=True,
                                capture_output=True, text=True)
-            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1191/bsd/dev")
+            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1192/bsd/dev")
             self.assertEqual((work / includes[0]).read_bytes(),
                              (staged / "beryllium_adsp.c").read_bytes())
             self.assertEqual((work / includes[2]).read_bytes(),
                              (staged / "beryllium_tas_firmware.h").read_bytes())
             self.assertEqual((work / includes[3]).read_bytes(),
                              WRITER.read_bytes())
+            self.assertEqual((work / includes[1]).read_bytes(), I2C.read_bytes())
 
     def test_mode_nine_parser_preflight_stops_before_hardware_or_adsp_start(self):
         patch = PATCH.read_text()

@@ -1780,16 +1780,13 @@ class TasIdentityProbeTests(unittest.TestCase):
         self.assertIn("(address << 1) | 1u", section)
         self.assertIn("context, reg", section)
         self.assertGreaterEqual(section.count("beryllium_tas_i2c_start(ops, context)"), 2)
-        header_lines = [line[1:] for line in section.splitlines()
-                        if line.startswith("+") and not line.startswith("+++")]
-        self.assertTrue(header_lines, "TAS I2C helper header has no added contents")
+        header_path = ROOT / "tools/beryllium_tas_id_probe.h"
+        self.assertTrue(header_path.is_file(), "TAS I2C helper source is missing")
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            header = work / "beryllium_tas_id_probe.h"
-            header.write_text("\n".join(header_lines) + "\n")
             binary = work / "test-adsp-tas-probe"
             compile_result = subprocess.run([
-                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(work),
+                "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "tools"),
                 str(ROOT / "tools/tests/test_adsp_tas_probe.c"), "-o", str(binary),
             ], check=False, capture_output=True, text=True)
             self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
@@ -1797,6 +1794,28 @@ class TasIdentityProbeTests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("TAS I2C helper checks passed", result.stdout)
+
+    def test_register_write_helper_matches_ordered_xnu_patch(self):
+        patch_path = ROOT / "xnu/patches-12377/1192-beryllium-tas-i2c-register-write.patch"
+        self.assertTrue(patch_path.is_file(), "patch 1192 is missing")
+        source = (ROOT / "tools/beryllium_tas_id_probe.h").read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+            header = work / "bsd/dev/beryllium_tas_id_probe.h"
+            header.parent.mkdir(parents=True)
+            base_patch = TAS_ID_PROBE_PATCH.read_text()
+            section = diff_section(base_patch, "bsd/dev/beryllium_tas_id_probe.h")
+            lines = [line[1:] for line in section.splitlines()
+                     if line.startswith("+") and not line.startswith("+++")]
+            header.write_text("\n".join(lines) + "\n")
+            subprocess.run(["git", "add", str(header.relative_to(work))], cwd=work,
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                            "commit", "-qm", "base"], cwd=work, check=True)
+            subprocess.run(["git", "apply", str(patch_path)], cwd=work, check=True,
+                           capture_output=True, text=True)
+            self.assertEqual(header.read_bytes(), source)
 
     def test_tas_mode_8_is_separate_and_never_programs_the_amplifiers(self):
         self.assertTrue(TAS_ID_PROBE_PATCH.is_file(), "patch 1189 is missing")

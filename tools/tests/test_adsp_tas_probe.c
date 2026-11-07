@@ -150,6 +150,69 @@ test_nack(void)
 }
 
 static int
+test_write_reg_ack(void)
+{
+	struct fake_bus bus = { .scl_high = false };
+	const bool response[] = { true, false, false, false };
+	for (unsigned i = 0; i < sizeof(response) / sizeof(response[0]); ++i)
+		bus.sda_script[i] = response[i];
+	bus.sda_count = sizeof(response) / sizeof(response[0]);
+	int result = beryllium_tas_i2c_write_reg(&fake_ops, &bus, 0x4c, 0x02,
+	    0xa5);
+	bool expected[96];
+	unsigned expected_count = 0;
+	expect_sda(expected, &expected_count, true); /* idle / START setup */
+	expect_sda(expected, &expected_count, false); /* START */
+	expect_write_byte(expected, &expected_count, 0x98);
+	expect_write_byte(expected, &expected_count, 0x02);
+	expect_write_byte(expected, &expected_count, 0xa5);
+	expect_sda(expected, &expected_count, false); /* STOP */
+	expect_sda(expected, &expected_count, true);
+	if (result != BERYLLIUM_TAS_I2C_OK ||
+	    bus.sda_index != bus.sda_count ||
+	    bus.sda_trace_count != expected_count || bus.scl_rises != 29) {
+		fprintf(stderr, "register write failed: result=%d reads=%u/%u trace=%u/%u scl-rises=%u\n",
+		    result, bus.sda_index, bus.sda_count, bus.sda_trace_count,
+		    expected_count, bus.scl_rises);
+		return 6;
+	}
+	for (unsigned i = 0; i < expected_count; ++i) {
+		if (bus.sda_trace[i] != expected[i]) {
+			fprintf(stderr, "wrong write SDA event %u: got=%u expected=%u\n",
+			    i, bus.sda_trace[i], expected[i]);
+			return 7;
+		}
+	}
+	return 0;
+}
+
+static int
+test_write_reg_nack_and_invalid_arguments(void)
+{
+	struct fake_bus bus = { .scl_high = true };
+	bus.sda_script[0] = true;  /* idle */
+	bus.sda_script[1] = false; /* address ACK */
+	bus.sda_script[2] = true;  /* register NACK */
+	bus.sda_count = 3;
+	int result = beryllium_tas_i2c_write_reg(&fake_ops, &bus, 0x4d, 0x10,
+	    0x77);
+	if (result != BERYLLIUM_TAS_I2C_NACK || bus.sda_index != 3 ||
+	    bus.sda_trace_count == 0 || bus.sda_trace[bus.sda_trace_count - 1] != true) {
+		fprintf(stderr, "write NACK not propagated/stopped: result=%d reads=%u trace=%u\n",
+		    result, bus.sda_index, bus.sda_trace_count);
+		return 8;
+	}
+	if (beryllium_tas_i2c_write_reg(&fake_ops, 0, 0x4c, 0x03, 0x01) !=
+	    BERYLLIUM_TAS_I2C_INVALID ||
+	    beryllium_tas_i2c_write_reg(&fake_ops, &bus, 0x80, 0x03, 0x01) !=
+	    BERYLLIUM_TAS_I2C_INVALID) {
+		fputs("invalid write arguments were accepted\n", stderr);
+		return 9;
+	}
+	return 0;
+}
+
+static int
 test_stuck_scl_times_out(void)
 {
 	struct fake_bus bus = { .scl_high = false, .scl_stuck_low = true };
@@ -190,7 +253,9 @@ int
 main(void)
 {
 	if (test_read_ack(0x4c, 0x03) || test_read_ack(0x4d, 0x7d) ||
-	    test_nack() || test_stuck_scl_times_out() ||
+	    test_nack() || test_write_reg_ack() ||
+	    test_write_reg_nack_and_invalid_arguments() ||
+	    test_stuck_scl_times_out() ||
 	    test_bus_busy_and_invalid_arguments())
 		return 1;
 	puts("TAS I2C helper checks passed");

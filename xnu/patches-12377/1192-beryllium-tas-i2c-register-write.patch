@@ -1,0 +1,31 @@
+diff --git a/bsd/dev/beryllium_tas_id_probe.h b/bsd/dev/beryllium_tas_id_probe.h
+index 74e55e3..10bd521 100644
+--- a/bsd/dev/beryllium_tas_id_probe.h
++++ b/bsd/dev/beryllium_tas_id_probe.h
+@@ -161,4 +161,26 @@ beryllium_tas_i2c_read_reg(const struct beryllium_tas_i2c_ops *ops,
+ 	return BERYLLIUM_TAS_I2C_OK;
+ }
+ 
++static int
++beryllium_tas_i2c_write_reg(const struct beryllium_tas_i2c_ops *ops,
++	void *context, uint8_t address, uint8_t reg, uint8_t value)
++{
++	if (!beryllium_tas_i2c_ops_valid(ops) || context == 0 || address > 0x7fu)
++		return BERYLLIUM_TAS_I2C_INVALID;
++	int result = beryllium_tas_i2c_start(ops, context);
++	if (result != BERYLLIUM_TAS_I2C_OK) {
++		ops->set_sda_release(context, true);
++		ops->set_scl_release(context, true);
++		return result;
++	}
++	result = beryllium_tas_i2c_write_byte(ops, context,
++	    (uint8_t)(address << 1));
++	if (result == BERYLLIUM_TAS_I2C_OK)
++		result = beryllium_tas_i2c_write_byte(ops, context, reg);
++	if (result == BERYLLIUM_TAS_I2C_OK)
++		result = beryllium_tas_i2c_write_byte(ops, context, value);
++	beryllium_tas_i2c_stop(ops, context);
++	return result;
++}
++
+ #endif /* BERYLLIUM_TAS_ID_PROBE_H */
