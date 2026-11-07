@@ -73,7 +73,7 @@
 
 - [x] **Step 1: Run focused and full host tests** and verify patch replay before CI.
 - [x] **Step 2: Trigger the XNU build with `gh`** and record the workflow/job IDs and exact build result in `NOTES.md`.
-- [ ] **Step 3: Verify kernel checksum and image header/payload**, confirm the image omits writable-root flags, and record hashes.
+- [x] **Step 3: Verify kernel checksum and image header/payload**, confirm the image omits writable-root flags, and record hashes.
 
 ### Task 4: RAM-boot and inspect the identity result
 
@@ -85,7 +85,7 @@
 - Consumes: one unlocked Fastboot target whose product is `beryllium`, verified image, and the existing UDP diagnostic listener.
 - Produces: exact boot result and bounded TAS identity log; resets remain low after the probe.
 
-- [ ] **Step 1: Preflight Fastboot** and stop if the target is absent or product/unlocked state is not confirmed.
+- [x] **Step 1: Preflight Fastboot** and stop if the target is absent or product/unlocked state is not confirmed.
 - [ ] **Step 2: Run `fastboot boot` only** and capture the finite log; do not use `fastboot flash` or any userdata command.
 - [ ] **Step 3: Record result and pending playback prerequisites** in `NOTES.md`; commit and push the completed milestone.
 
