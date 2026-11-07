@@ -117,14 +117,14 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
                     number = int(patch.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1195:
+                if not 1131 <= number <= 1196:
                     continue
                 command = ["git", "apply"]
                 command.extend(f"--include={name}" for name in includes)
                 command.append(str(patch))
                 subprocess.run(command, cwd=work, check=True,
                                capture_output=True, text=True)
-            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1195/bsd/dev")
+            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1196/bsd/dev")
             self.assertEqual((work / includes[0]).read_bytes(),
                              (staged / "beryllium_adsp.c").read_bytes())
             self.assertEqual((work / includes[2]).read_bytes(),

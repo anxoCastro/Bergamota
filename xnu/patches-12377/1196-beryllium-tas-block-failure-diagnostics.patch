@@ -1,0 +1,79 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 1fd00c9..d815bb8 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -3483,6 +3483,13 @@ adsp_apr_linux_afe_mode5_start(void)
+ 
+ struct adsp_tas_i2c_context {
+ 	vm_offset_t gpio;
++	uint32_t operation_count;
++	uint8_t last_address;
++	uint8_t last_register;
++	uint8_t last_write_value;
++	uint8_t last_read_value;
++	int last_result;
++	bool last_op_read;
+ };
+ 
+ struct adsp_tas_hardware {
+@@ -4107,15 +4114,31 @@ static const struct beryllium_tas_i2c_ops adsp_tas_i2c_ops = {
+ static int
+ adsp_tas_writer_write(void *context, uint8_t address, uint8_t reg, uint8_t value)
+ {
+-	return beryllium_tas_i2c_write_reg(&adsp_tas_i2c_ops, context, address,
+-	    reg, value);
++	struct adsp_tas_i2c_context *bus = context;
++	int result = beryllium_tas_i2c_write_reg(&adsp_tas_i2c_ops, context,
++	    address, reg, value);
++	bus->operation_count++;
++	bus->last_address = address;
++	bus->last_register = reg;
++	bus->last_write_value = value;
++	bus->last_result = result;
++	bus->last_op_read = false;
++	return result;
+ }
+ 
+ static int
+ adsp_tas_writer_read(void *context, uint8_t address, uint8_t reg, uint8_t *value)
+ {
+-	return beryllium_tas_i2c_read_reg(&adsp_tas_i2c_ops, context, address, reg,
+-	    value);
++	struct adsp_tas_i2c_context *bus = context;
++	int result = beryllium_tas_i2c_read_reg(&adsp_tas_i2c_ops, context,
++	    address, reg, value);
++	bus->operation_count++;
++	bus->last_address = address;
++	bus->last_register = reg;
++	bus->last_read_value = result == BERYLLIUM_TAS_I2C_OK ? *value : 0;
++	bus->last_result = result;
++	bus->last_op_read = true;
++	return result;
+ }
+ 
+ static void
+@@ -4267,7 +4290,23 @@ adsp_tas_sequence_load_block(void *context,
+ 	const struct beryllium_tas_block *block, bool ycrc_enabled)
+ {
+ 	struct adsp_tas_hardware *hw = context;
+-	return beryllium_tas_load_block(&hw->writer, block, ycrc_enabled);
++	uint32_t operations_before = hw->bus.operation_count;
++	int result;
++	result = beryllium_tas_load_block(&hw->writer, block, ycrc_enabled);
++	if (result != 0) {
++		printf("SWEET TAS: block failed type=%u commands=%u ycrc=%u result=%d "
++		    "i2c-ops=%u last=%s addr=%#02x reg=%#02x write=%#02x read=%#02x i2c-result=%d\n",
++		    block->type, block->command_count, ycrc_enabled ? 1u : 0u,
++		    result, hw->bus.operation_count - operations_before,
++		    hw->bus.last_op_read ? "read" : "write", hw->bus.last_address,
++		    hw->bus.last_register, hw->bus.last_write_value,
++		    hw->bus.last_read_value, hw->bus.last_result);
++	} else {
++		printf("SWEET TAS: block loaded type=%u commands=%u i2c-ops=%u\n",
++		    block->type, block->command_count,
++		    hw->bus.operation_count - operations_before);
++	}
++	return result;
+ }
+ 
+ static int
