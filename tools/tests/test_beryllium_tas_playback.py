@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / "xnu/patches-12377/1190-beryllium-tas-finite-playback.patch"
 WRITER_PATCH = ROOT / "xnu/patches-12377/1191-beryllium-tas-linux-register-writer.patch"
 I2C_WRITE_PATCH = ROOT / "xnu/patches-12377/1192-beryllium-tas-i2c-register-write.patch"
+ADAPTER_PATCH = ROOT / "xnu/patches-12377/1193-beryllium-tas-writer-i2c-adapter.patch"
 PARSER = ROOT / "tools/beryllium_tas_firmware.h"
 WRITER = ROOT / "tools/beryllium_tas_writer.h"
 I2C = ROOT / "tools/beryllium_tas_id_probe.h"
@@ -40,6 +41,18 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
         self.assertIn("beryllium_tas_i2c_write_reg", patch)
         self.assertIn("beryllium_tas_i2c_stop(ops, context)", patch)
 
+    def test_writer_adapter_routes_all_io_through_the_bit_banged_bus(self):
+        self.assertTrue(ADAPTER_PATCH.is_file(), "TAS writer I2C adapter patch is missing")
+        patch = ADAPTER_PATCH.read_text()
+        driver = patch.split("diff --git a/bsd/dev/beryllium_adsp.c", 1)[1]
+        self.assertIn('#include "beryllium_tas_writer.h"', driver)
+        write = driver.split("adsp_tas_writer_write(void *context", 1)[1].split("\n+}", 1)[0]
+        read = driver.split("adsp_tas_writer_read(void *context", 1)[1].split("\n+}", 1)[0]
+        delay = driver.split("adsp_tas_writer_delay_ms(void *context", 1)[1].split("\n+}", 1)[0]
+        self.assertIn("beryllium_tas_i2c_write_reg", write)
+        self.assertIn("beryllium_tas_i2c_read_reg", read)
+        self.assertIn("delay(milliseconds * 1000u)", delay)
+
     def test_patch_replays_after_the_adsp_chain_and_matches_its_staged_source(self):
         with tempfile.TemporaryDirectory() as temp:
             work = Path(temp)
@@ -55,14 +68,14 @@ class BerylliumTasPlaybackPatchTests(unittest.TestCase):
                     number = int(patch.name.split("-", 1)[0])
                 except ValueError:
                     continue
-                if not 1131 <= number <= 1192:
+                if not 1131 <= number <= 1193:
                     continue
                 command = ["git", "apply"]
                 command.extend(f"--include={name}" for name in includes)
                 command.append(str(patch))
                 subprocess.run(command, cwd=work, check=True,
                                capture_output=True, text=True)
-            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1192/bsd/dev")
+            staged = (ROOT / ".superpowers/sdd/2026-11-07-beryllium-tas-finite-playback/source1193/bsd/dev")
             self.assertEqual((work / includes[0]).read_bytes(),
                              (staged / "beryllium_adsp.c").read_bytes())
             self.assertEqual((work / includes[2]).read_bytes(),

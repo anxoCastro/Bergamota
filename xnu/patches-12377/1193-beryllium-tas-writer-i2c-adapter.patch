@@ -1,0 +1,46 @@
+diff --git a/bsd/dev/beryllium_adsp.c b/bsd/dev/beryllium_adsp.c
+index 52ddff0..8cff84a 100644
+--- a/bsd/dev/beryllium_adsp.c
++++ b/bsd/dev/beryllium_adsp.c
+@@ -33,6 +33,7 @@
+ #include "beryllium_adsp_audio_sequence.h"
+ #include "beryllium_tas_id_probe.h"
+ #include "beryllium_tas_firmware.h"
++#include "beryllium_tas_writer.h"
+ #include "beryllium_smp2p_negotiation.h"
+ #include "sweet_smmu_audio_private.h"
+ 
+@@ -4039,6 +4040,33 @@ static const struct beryllium_tas_i2c_ops adsp_tas_i2c_ops = {
+ 	.delay_us = adsp_tas_i2c_delay,
+ };
+ 
++static int
++adsp_tas_writer_write(void *context, uint8_t address, uint8_t reg, uint8_t value)
++{
++	return beryllium_tas_i2c_write_reg(&adsp_tas_i2c_ops, context, address,
++	    reg, value);
++}
++
++static int
++adsp_tas_writer_read(void *context, uint8_t address, uint8_t reg, uint8_t *value)
++{
++	return beryllium_tas_i2c_read_reg(&adsp_tas_i2c_ops, context, address, reg,
++	    value);
++}
++
++static void
++adsp_tas_writer_delay_ms(void *context, uint32_t milliseconds)
++{
++	(void)context;
++	delay(milliseconds * 1000u);
++}
++
++static const struct beryllium_tas_io_ops adsp_tas_writer_ops = {
++	.write = adsp_tas_writer_write,
++	.read = adsp_tas_writer_read,
++	.delay_ms = adsp_tas_writer_delay_ms,
++};
++
+ static bool
+ adsp_tas_reset(vm_offset_t gpio12, vm_offset_t gpioeast, bool release)
+ {
